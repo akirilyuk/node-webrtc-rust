@@ -170,16 +170,17 @@ Sherpa roundtrip harnesses assert these sequences — see [ROUNDTRIP.md § STT l
 
 ---
 
-## VAD providers (energy vs Silero)
+## VAD providers (energy, adaptive, Silero)
 
-Two backends share the same `VadConfig` timing fields (`minSpeechDurationMs`, `minSilenceDurationMs`, `speechPadMs`, barge-in, `gateStt`). Only **detection** differs.
+Three backends share the same `VadConfig` timing fields (`minSpeechDurationMs`, `minSilenceDurationMs`, `speechPadMs`, barge-in, `gateStt`). Only **detection** differs.
 
 ### How to choose
 
-| `vad.provider`         | When to use                                                                                                               |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| **`energy`** (default) | **npm `build:native` / published binaries** — no extra deps, tune `threshold` for your mic/noise floor                    |
-| **`silero`**           | Custom native build with `silero-vad` Cargo feature **and** `provider: "silero"` — better speech vs noise, heavier binary |
+| `vad.provider`         | When to use                                                                                                                                                    |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`energy`** (default) | **npm `build:native` / published binaries** — no extra deps, tune `threshold` for your mic/noise floor                                                         |
+| **`adaptive`**         | Opt-in, same binary as `energy`: the threshold follows the noise floor and the caller's level (quiet callers, steady background noise)                         |
+| **`silero`**           | Custom native build with `silero-vad` Cargo feature **and** `provider: "silero"` — heavier binary. **Not recommended for noisy calls** (see the warning below) |
 
 ```typescript
 // Shipped binary (energy) — recommended default
@@ -214,6 +215,8 @@ If you set `provider: 'silero'` on the **stock** `.node` without rebuilding, `Vo
 | **Runtime on disk**    | —        | **ONNX Runtime** you install yourself (~**15–50 MB** depending on platform/build) |
 
 Published macOS arm64 `.node` today is ~**90 MB** (WebRTC, vendors, Sherpa, etc.). Sherpa already ships **its own** ONNX stack for STT/TTS; Silero VAD uses a **second** ONNX Runtime via `ort` — we do **not** bundle that into npm artifacts.
+
+> **Warning:** Silero treats continuous background voices as speech and does not end turns in babble (measured in a CI run with a babble bed), so it is not recommended for noisy calls. It is not in the default build.
 
 **Status:** `silero-vad` is an optional feature on `node-webrtc-rust-speech` and `node-webrtc-rust-bindings`. Default npm / CI builds use **energy only**. Silero is **documented, opt-in, not CI-shipped** (ORT + model size).
 
@@ -274,14 +277,63 @@ Run your app with the same `DYLD_LIBRARY_PATH` / `LD_LIBRARY_PATH` / `PATH` you 
 vad: { ...VOICE_AGENT_VAD_PRESET, provider: 'silero', threshold: 0.5, sampleRate: 16000 }
 ```
 
+### Adaptive energy VAD
+
+`provider: 'adaptive'` is the energy VAD with a threshold that moves. `"energy"` stays the default and behaves exactly as before.
+
+How it works, per 20 ms frame (mono 16 kHz, the same signal the energy VAD sees):
+
+1. The frame level is its RMS in dBFS.
+2. For the first `warmupMs` the plain energy rule decides (`vad.threshold`), so the start of a call is never worse than `energy`. Frames judged quiet feed the noise window.
+3. The **noise level** is the `noisePercentile` (70) of the levels of the last `noiseWindowMs` (3 s) of frames judged quiet. If an utterance stays open longer than `stuckActiveMs` (8 s), its active frames also feed the noise window until the utterance ends, so a level step in the background noise cannot hold the VAD open. A caller who speaks without pausing for longer than this can be cut off; raise it for monologue-style use.
+4. The **caller level** is a slow average (factor 0.05) of the active frames after warm-up.
+5. The **threshold** is noise + `noiseMarginDb` (6 dB). With `useSpeechLevel`, and when the caller is more than twice the margin above the noise, it is raised to halfway between noise and caller. It is clamped to `minThresholdDbfs`..`maxThresholdDbfs`.
+6. A frame starts speech at the threshold and stays active down to `hysteresisDb` (3 dB) below it, so word gaps do not split an utterance.
+
+Minimum speech and silence, pre-roll and barge-in work as for `energy`. Set `VOICE_DEBUG=1` to log the threshold, noise and caller levels at every speech start.
+
+```typescript
+vad: { ...VOICE_AGENT_VAD_PRESET, provider: 'adaptive', adaptive: { noiseMarginDb: 6 } }
+```
+
+| `vad.adaptive.*`   | Default | Range              | Meaning                                                                 |
+| ------------------ | ------- | ------------------ | ----------------------------------------------------------------------- |
+| `warmupMs`         | `400`   | 0..`noiseWindowMs` | Start of the call decided by `vad.threshold`                            |
+| `noiseWindowMs`    | `3000`  | >= 500             | Window the noise level is read from                                     |
+| `noisePercentile`  | `70`    | 1..99              | Percentile of that window taken as noise                                |
+| `noiseMarginDb`    | `6`     | 0..30              | Speech must be this far above the noise                                 |
+| `useSpeechLevel`   | `true`  |                    | Raise the threshold toward the caller's level                           |
+| `hysteresisDb`     | `3`     | 0..30              | Stay active this far below the threshold                                |
+| `minThresholdDbfs` | `-50`   | < max              | Lower clamp of the threshold                                            |
+| `maxThresholdDbfs` | `-10`   | <= 0               | Upper clamp of the threshold                                            |
+| `stuckActiveMs`    | `8000`  | >= 1000            | An utterance open this long feeds its active frames to the noise window |
+
+The defaults (`noiseMarginDb` 6, `useSpeechLevel` true) come from bench run 5. With `adaptive`, `vad.threshold` only matters during warm-up.
+
+Bench results (main caller at −20 dBFS, raw audio, one bystander at the given level below the caller):
+
+| Bystander | `energy`: oracle / onset | `adaptive`: oracle / onset | `adaptive` merged / missed turns |
+| --------- | ------------------------ | -------------------------- | -------------------------------- |
+| −20 dB    | 50 % / 706 ms            | **100 % / 74 ms**          | 0 / 0                            |
+| −15 dB    | 50 % / 654 ms            | **100 % / 77 ms**          | 0 / 0                            |
+| −10 dB    | 75 % / 554 ms            | 75 % / 194 ms              | 2 / 2                            |
+| −6 dB     | 50 % / 574 ms            | 75 % / 144 ms              | 1 / 2                            |
+
+Use `adaptive` for quiet callers; a bystander within about 10 dB of the caller can merge or split turns (accepted limit, not tuned).
+
+**When to use it:** a caller who is quiet or far from the mic (the fixed threshold never fires), or a noise level that differs per call (the fixed threshold is either too high or too low).
+
+**Caveat:** it follows level, not voice. A bystander who is louder than the caller is still speech. Telling voices apart is the job of the speaker gate, not of the VAD.
+
 ### Which should I use?
 
-| Situation                                                                     | Recommendation                                                                  |
-| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| Default npm package, demos, Sherpa local example                              | **`energy`** + `VOICE_AGENT_VAD_PRESET`; tune `threshold` (Sherpa uses `0.05`)  |
-| Noisy office, fan, music bleed, false barge-in                                | Try higher `minSpeechDurationMs` first; then consider a **Silero custom build** |
-| Maximum simplicity, CI, edge devices                                          | **Energy**                                                                      |
-| You control native builds, can install ORT locally, and want best VAD quality | **Silero** custom build                                                         |
+| Situation                                                                     | Recommendation                                                                         |
+| ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Default npm package, demos, Sherpa local example                              | **`energy`** + `VOICE_AGENT_VAD_PRESET`; tune `threshold` (Sherpa uses `0.05`)         |
+| Noisy office, fan, music bleed, false barge-in                                | Try `adaptive`, or a higher `minSpeechDurationMs`; Silero is not recommended in babble |
+| Quiet or distant caller that the fixed `threshold` misses                     | **`adaptive`**                                                                         |
+| Maximum simplicity, CI, edge devices                                          | **Energy**                                                                             |
+| You control native builds, can install ORT locally, and want best VAD quality | **Silero** custom build                                                                |
 
 ---
 

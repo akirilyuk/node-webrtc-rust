@@ -101,7 +101,7 @@ fn voice_debug_enabled() -> bool {
     })
 }
 
-fn voice_debug(message: impl AsRef<str>) {
+pub(crate) fn voice_debug(message: impl AsRef<str>) {
     if voice_debug_enabled() {
         eprintln!("[voice-debug] {}", message.as_ref());
     }

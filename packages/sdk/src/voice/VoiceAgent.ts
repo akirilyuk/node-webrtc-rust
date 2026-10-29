@@ -58,7 +58,8 @@ function isInboundStreamEndError(error: unknown): boolean {
   )
 }
 
-function toJsVadConfig(vad?: VadConfig): JsVadConfig | undefined {
+/** @internal Maps the SDK VAD config onto the NAPI object (exported for tests). */
+export function toJsVadConfig(vad?: VadConfig): JsVadConfig | undefined {
   if (!vad) return undefined
   return {
     enabled: vad.enabled,
@@ -89,6 +90,19 @@ function toJsVadConfig(vad?: VadConfig): JsVadConfig | undefined {
     sttGateHoldMs: vad.sttGateHoldMs,
     sttListenTimeoutMs: vad.sttListenTimeoutMs,
     utteranceFinalizeTimeoutMs: vad.utteranceFinalizeTimeoutMs,
+    adaptive: vad.adaptive
+      ? {
+          warmupMs: vad.adaptive.warmupMs,
+          noiseWindowMs: vad.adaptive.noiseWindowMs,
+          noisePercentile: vad.adaptive.noisePercentile,
+          noiseMarginDb: vad.adaptive.noiseMarginDb,
+          useSpeechLevel: vad.adaptive.useSpeechLevel,
+          hysteresisDb: vad.adaptive.hysteresisDb,
+          minThresholdDbfs: vad.adaptive.minThresholdDbfs,
+          maxThresholdDbfs: vad.adaptive.maxThresholdDbfs,
+          stuckActiveMs: vad.adaptive.stuckActiveMs,
+        }
+      : undefined,
   }
 }
 

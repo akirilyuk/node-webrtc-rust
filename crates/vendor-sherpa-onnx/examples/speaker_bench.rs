@@ -132,6 +132,9 @@ struct SceneInfo {
     level_db: i32,
     /// Main voice level in dBFS; -20 unless the fixtures were built with `--main-levels`.
     main_db: i32,
+    /// Voiced RMS of the main voice after the fixtures' peak limiter, dBFS (`None` without main
+    /// speech or in manifests that predate the limiter).
+    effective_main_db: Option<f64>,
     segments: Vec<Seg>,
 }
 
@@ -195,6 +198,10 @@ fn load_manifest(text: &str) -> Result<Vec<SceneInfo>, String> {
             main_db: match scene.get("main_db") {
                 Some(Json::Num(n)) => *n as i32,
                 _ => -20,
+            },
+            effective_main_db: match scene.get("effective_main_db") {
+                Some(Json::Num(n)) => Some(*n),
+                _ => None,
             },
             segments,
         });
@@ -1468,8 +1475,11 @@ struct Part3Run<'a> {
     check_s: f32,
     threshold: f32,
     recognizer: &'a sherpa_onnx::OnlineRecognizer,
+    vad_name: &'a str,
     vad_config: &'a VadConfig,
     leak_vocab: &'a HashSet<String>,
+    /// The cost and S1 WER tables do not depend on the VAD: only the first VAD run computes them.
+    with_cost: bool,
     cost_seconds: usize,
     streams_seconds: usize,
 }
@@ -1478,6 +1488,9 @@ struct GridRow {
     pre: String,
     agc: bool,
     main_db: i32,
+    /// Caller level the row is labelled with: the mean `effective_main_db` of its scenes in 0.5 dB
+    /// steps (the nominal `main_db` for manifests without it).
+    main_label: f64,
     level_db: i32,
     stats: LevelStats,
 }
@@ -1514,6 +1527,7 @@ struct WerRow {
 }
 
 struct Part3 {
+    vad: String,
     model: String,
     check_s: f32,
     threshold: f32,
@@ -1913,7 +1927,7 @@ fn part3_run(fx: &mut Fixtures, r: &Part3Run, rows: &mut Vec<Row>) -> Result<Par
     for (name, scene_dir) in &combos {
         for agc in [false, true] {
             let in_b = scene_dir.is_some() || GRID_B_PRE.contains(name);
-            let mut by: BTreeMap<(i32, i32), LevelStats> = BTreeMap::new();
+            let mut by: BTreeMap<(i32, i32), (LevelStats, f64, usize)> = BTreeMap::new();
             let combo_started = std::time::Instant::now();
             for &scene in &scenes {
                 let main_db = fx.scenes[scene].main_db;
@@ -1935,7 +1949,7 @@ fn part3_run(fx: &mut Fixtures, r: &Part3Run, rows: &mut Vec<Row>) -> Result<Par
                     check_s: r.check_s,
                     threshold: r.threshold,
                     recognizer: r.recognizer,
-                    vad_name: "energy",
+                    vad_name: r.vad_name,
                     vad_config: r.vad_config,
                     leak_vocab: r.leak_vocab,
                 };
@@ -1945,7 +1959,12 @@ fn part3_run(fx: &mut Fixtures, r: &Part3Run, rows: &mut Vec<Row>) -> Result<Par
                     fx.scenes[scene].id
                 );
                 let (stats, scene_rows) = part2_scene(fx, scene, &p2)?;
-                add_stats(by.entry((main_db, level)).or_default(), &stats);
+                let entry = by.entry((main_db, level)).or_default();
+                add_stats(&mut entry.0, &stats);
+                if let Some(e) = fx.scenes[scene].effective_main_db {
+                    entry.1 += e;
+                    entry.2 += 1;
+                }
                 rows.extend(scene_rows);
             }
             eprintln!(
@@ -1953,23 +1972,35 @@ fn part3_run(fx: &mut Fixtures, r: &Part3Run, rows: &mut Vec<Row>) -> Result<Par
                 on_off(agc),
                 combo_started.elapsed().as_secs_f64()
             );
-            for ((main_db, level_db), stats) in by {
+            for ((main_db, level_db), (stats, eff_sum, eff_n)) in by {
                 grid.push(GridRow {
                     pre: (*name).to_string(),
                     agc,
                     main_db,
+                    main_label: effective_label(eff_sum, eff_n, main_db),
                     level_db,
                     stats,
                 });
             }
         }
     }
-    let wer = s1_wer(fx, r, &pre_names)?;
-    let mut cost = cost_rows(fx, r, &pre_names, &scenes)?;
-    for (name, dir) in &precomputed {
-        cost.push(precomputed_cost_row(name, dir)?);
+    let wer = if r.with_cost {
+        s1_wer(fx, r, &pre_names)?
+    } else {
+        Vec::new()
+    };
+    let mut cost = if r.with_cost {
+        cost_rows(fx, r, &pre_names, &scenes)?
+    } else {
+        Vec::new()
+    };
+    if r.with_cost {
+        for (name, dir) in &precomputed {
+            cost.push(precomputed_cost_row(name, dir)?);
+        }
     }
     Ok(Part3 {
+        vad: r.vad_name.to_string(),
         model: r.emb.id.clone(),
         check_s: r.check_s,
         threshold: r.threshold,
@@ -2011,6 +2042,14 @@ fn stats_cells(s: &LevelStats) -> String {
 
 const STATS_HEAD: &str = "VAD utt | merged utt | missed main | missed bystander | (a) oracle % (qualified) | WER % (long) | (b) main to caller % | (c) bystander to other % | (e) leakage % | (f) unmatched utt | median onset ms | underruns";
 
+/// Grid B label: the mean effective caller level of the pooled scenes, in 0.5 dB steps.
+fn effective_label(sum: f64, n: usize, nominal: i32) -> f64 {
+    if n == 0 {
+        return f64::from(nominal);
+    }
+    (sum / n as f64 * 2.0).round() / 2.0
+}
+
 fn pooled(grid: &[GridRow], pre: &str, agc: bool, main_db: i32) -> LevelStats {
     let mut all = LevelStats::default();
     for g in grid
@@ -2037,8 +2076,8 @@ fn cost_caption(precomputed: &[String]) -> String {
 fn part3_md(p: &Part3) -> String {
     let mut md = String::new();
     md.push_str(&format!(
-        "\n## Part 3: denoisers and caller AGC\n\nSpeaker model `{}`, check {} s, threshold {:.4} (tune set, FAR 1 %). Scenes: {}. Pipeline per combo: preprocessor, then AGC if on, on the 20 ms 48 kHz stereo frames; energy VAD (`VadConfig::default()`) on that PCM; STT and embedding on its mono 16 kHz conversion, starting at SpeechStart minus the product pre-roll. `turns.jsonl` has every turn (`pre`, `agc`); `conversations.md` shows raw/off, gtcrn/on, dpdfnet2/on and voxlock-live/on. A precomputed preprocessor (`voxlock-*`) reads scene audio that `benchmarks/speaker/voxlock_preprocess.py` wrote; its cost row comes from `voxlock_cost.json` (process CPU seconds per audio second on one pinned core; RTF columns are that ratio, not per 20 ms frame; streams and delay are not measured).\n",
-        p.model, p.check_s, p.threshold, p.set
+        "\n## Part 3: denoisers and caller AGC, VAD {}\n\nSpeaker model `{}`, check {} s, threshold {:.4} (tune set, FAR 1 %). Scenes: {}. Pipeline per combo: preprocessor, then AGC if on, on the 20 ms 48 kHz stereo frames; the VAD named in the heading on that PCM; STT and embedding on its mono 16 kHz conversion, starting at SpeechStart minus the product pre-roll. `turns.jsonl` has every turn (`pre`, `agc`); `conversations.md` shows raw/off, gtcrn/on, dpdfnet2/on and voxlock-live/on. A precomputed preprocessor (`voxlock-*`) reads scene audio that `benchmarks/speaker/voxlock_preprocess.py` wrote; its cost row comes from `voxlock_cost.json` (process CPU seconds per audio second on one pinned core; RTF columns are that ratio, not per 20 ms frame; streams and delay are not measured).\n",
+        p.vad, p.model, p.check_s, p.threshold, p.set
     ));
     md.push_str("\n### Grid A: preprocessor x AGC (S3 scenes at main -20 dBFS)\n\n");
     md.push_str(&format!("| pre | AGC | level | {STATS_HEAD} |\n"));
@@ -2080,9 +2119,9 @@ fn part3_md(p: &Part3) -> String {
                 g.pre == *name && g.agc == agc && (g.level_db == -15 || g.level_db == -10)
             }) {
                 md.push_str(&format!(
-                    "| {name} | {} | {} | {} dB | {} |\n",
+                    "| {name} | {} | {:.1} | {} dB | {} |\n",
                     on_off(agc),
-                    g.main_db,
+                    g.main_label,
                     g.level_db,
                     stats_cells(&g.stats)
                 ));
@@ -2154,10 +2193,10 @@ fn stats_json(s: &LevelStats) -> String {
     )
 }
 
-fn part3_json(p: &Part3) -> String {
+fn part3_json(p: &Part3, key: &str) -> String {
     let mut j = String::new();
     j.push_str(&format!(
-        "  \"part3\": {{\n    \"model\": \"{}\",\n    \"check_s\": {},\n    \"threshold\": {:.6},\n    \"set\": \"{}\",\n    \"grid\": [\n",
+        "  \"{key}\": {{\n    \"model\": \"{}\",\n    \"check_s\": {},\n    \"threshold\": {:.6},\n    \"set\": \"{}\",\n    \"grid\": [\n",
         json_escape(&p.model),
         p.check_s,
         p.threshold,
@@ -2168,10 +2207,11 @@ fn part3_json(p: &Part3) -> String {
         .iter()
         .map(|g| {
             format!(
-                "      {{\"pre\": \"{}\", \"agc\": {}, \"main_db\": {}, \"level_db\": {}, {}}}",
+                "      {{\"pre\": \"{}\", \"agc\": {}, \"main_db\": {}, \"effective_main_db\": {:.1}, \"level_db\": {}, {}}}",
                 g.pre,
                 g.agc,
                 g.main_db,
+                g.main_label,
                 g.level_db,
                 stats_json(&g.stats)
             )
@@ -2237,10 +2277,46 @@ fn part3_json(p: &Part3) -> String {
 }
 
 struct VariantOutcome {
-    name: &'static str,
+    name: String,
     min_silence_ms: u32,
     pre_roll_ms: u32,
     levels: BTreeMap<i32, LevelStats>,
+}
+
+/// One adaptive-VAD sweep candidate on the tune scenes.
+struct SweepRow {
+    margin_db: f32,
+    use_speech_level: bool,
+    main_turns: usize,
+    detected: usize,
+    merged: usize,
+    unmatched: usize,
+}
+
+const SWEEP_MARGINS: [f32; 4] = [4.0, 6.0, 8.0, 10.0];
+
+/// The candidate with the most detected main turns whose `merged + unmatched` does not exceed
+/// the energy VAD's `bound`; ties go to the larger margin, then `useSpeechLevel = false`.
+/// `None` when no candidate stays within the bound.
+fn pick_sweep(rows: &[SweepRow], bound: usize) -> Option<usize> {
+    rows.iter()
+        .enumerate()
+        .filter(|(_, r)| r.merged + r.unmatched <= bound)
+        .max_by(|(_, a), (_, b)| {
+            a.detected
+                .cmp(&b.detected)
+                .then(a.margin_db.total_cmp(&b.margin_db))
+                .then(b.use_speech_level.cmp(&a.use_speech_level))
+        })
+        .map(|(i, _)| i)
+}
+
+fn adaptive_vad_config(base: &VadConfig, margin_db: f32, use_speech_level: bool) -> VadConfig {
+    let mut cfg = base.clone();
+    cfg.provider = "adaptive".to_string();
+    cfg.adaptive.noise_margin_db = margin_db;
+    cfg.adaptive.use_speech_level = use_speech_level;
+    cfg
 }
 
 struct Args {
@@ -2249,6 +2325,10 @@ struct Args {
     stt_model: PathBuf,
     out: PathBuf,
     vad_min_silence_ms: Option<u32>,
+    /// VAD providers to run (`energy`, `adaptive`).
+    vad: Vec<String>,
+    /// Sweep the adaptive margin and `useSpeechLevel` on the tune scenes and use the pick.
+    adaptive_sweep: bool,
     /// Part 3: directory with the denoiser models (`.models/enhance`).
     enhance: Option<PathBuf>,
     /// Part 3: preprocessors to run (default: all of [`ALL_PRE`]).
@@ -2279,6 +2359,8 @@ fn parse_precomputed(item: &str) -> Result<Option<(String, PathBuf)>, String> {
 fn parse_args() -> Result<Args, String> {
     let (mut fixtures, mut models, mut stt, mut out, mut silence) = (None, None, None, None, None);
     let mut enhance = None;
+    let mut vad: Vec<String> = vec!["energy".to_string(), "adaptive".to_string()];
+    let mut adaptive_sweep = false;
     let mut pre: Vec<String> = ALL_PRE.iter().map(|p| (*p).to_string()).collect();
     let mut precomputed: Vec<(String, PathBuf)> = Vec::new();
     let (mut cost_seconds, mut streams_seconds) = (60usize, 10usize);
@@ -2297,6 +2379,23 @@ fn parse_args() -> Result<Args, String> {
                         .map_err(|e| format!("--vad-min-silence-ms: {e}"))?,
                 )
             }
+            "--vad" => {
+                vad = value("--vad")?
+                    .split(',')
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+                    .collect();
+                if let Some(bad) = vad
+                    .iter()
+                    .find(|v| !["energy", "adaptive"].contains(&v.as_str()))
+                {
+                    return Err(format!("--vad: unknown provider {bad} (energy, adaptive)"));
+                }
+                if vad.is_empty() {
+                    return Err("--vad selects no provider".into());
+                }
+            }
+            "--adaptive-sweep" => adaptive_sweep = true,
             "--enhance" => enhance = Some(PathBuf::from(value("--enhance")?)),
             "--pre" => {
                 let all: Vec<String> = value("--pre")?
@@ -2335,6 +2434,8 @@ fn parse_args() -> Result<Args, String> {
         stt_model: stt.ok_or("--stt-model is required")?,
         out: out.ok_or("--out is required")?,
         vad_min_silence_ms: silence,
+        vad,
+        adaptive_sweep,
         enhance,
         pre,
         precomputed,
@@ -2472,10 +2573,120 @@ fn run() -> Result<(), String> {
         vad_config.min_silence_duration_ms = ms;
     }
     let recognizer = create_recognizer(&args.stt_model)?;
+
+    // The adaptive VAD: defaults, or the sweep's pick on the tune scenes (raw audio, AGC off).
+    let mut adaptive_cfg = adaptive_vad_config(
+        &vad_config,
+        vad_config.adaptive.noise_margin_db,
+        vad_config.adaptive.use_speech_level,
+    );
+    let mut sweep_json = String::new();
+    let mut sweep_md = String::new();
+    if args.adaptive_sweep && args.vad.iter().any(|v| v == "adaptive") {
+        let tune_scenes: Vec<usize> = (0..fx.scenes.len())
+            .filter(|i| fx.scenes[*i].kind == "conversation" && fx.scenes[*i].set == Set::Tune)
+            .collect();
+        let sweep_stats =
+            |fx: &mut Fixtures, cfg: &VadConfig, name: &str| -> Result<LevelStats, String> {
+                let p2 = P2 {
+                    enhance: None,
+                    emb: &embedders[best_model],
+                    check_s: best_check,
+                    threshold: best_threshold,
+                    recognizer: &recognizer,
+                    vad_name: name,
+                    vad_config: cfg,
+                    leak_vocab: &leak_vocab,
+                };
+                let mut total = LevelStats::default();
+                for &scene in &tune_scenes {
+                    eprintln!("sweep {name} scene {}", fx.scenes[scene].id);
+                    let (stats, _) = part2_scene(fx, scene, &p2)?;
+                    add_stats(&mut total, &stats);
+                }
+                Ok(total)
+            };
+        let energy = sweep_stats(&mut fx, &vad_config, "sweep-energy")?;
+        let bound = energy.merged + energy.unmatched;
+        let mut sweep: Vec<SweepRow> = Vec::new();
+        for margin in SWEEP_MARGINS {
+            for use_level in [false, true] {
+                let cfg = adaptive_vad_config(&vad_config, margin, use_level);
+                let st = sweep_stats(&mut fx, &cfg, "sweep-adaptive")?;
+                sweep.push(SweepRow {
+                    margin_db: margin,
+                    use_speech_level: use_level,
+                    main_turns: st.main_turns,
+                    detected: st.main_turns - st.main_missed,
+                    merged: st.merged,
+                    unmatched: st.unmatched,
+                });
+            }
+        }
+        let pick = pick_sweep(&sweep, bound);
+        if let Some(i) = pick {
+            adaptive_cfg =
+                adaptive_vad_config(&vad_config, sweep[i].margin_db, sweep[i].use_speech_level);
+        }
+        sweep_md.push_str(&format!(
+            "\n## Adaptive VAD sweep (tune scenes: {}, raw audio, AGC off)\n\nEnergy on the same scenes: {} of {} main turns detected, merged + unmatched = {} (the bound). Pick: most detected main turns with merged + unmatched <= the bound; tie: larger margin, then `useSpeechLevel` false.\n\n| noiseMarginDb | useSpeechLevel | main turns detected | merged utt | unmatched utt | within bound | pick |\n|---|---|---|---|---|---|---|\n",
+            tune_scenes.len(),
+            energy.main_turns - energy.main_missed,
+            energy.main_turns,
+            bound
+        ));
+        let mut rows_json = Vec::new();
+        for (i, r) in sweep.iter().enumerate() {
+            let within = r.merged + r.unmatched <= bound;
+            sweep_md.push_str(&format!(
+                "| {} | {} | {} / {} | {} | {} | {} | {} |\n",
+                r.margin_db,
+                r.use_speech_level,
+                r.detected,
+                r.main_turns,
+                r.merged,
+                r.unmatched,
+                if within { "yes" } else { "no" },
+                if pick == Some(i) { "**pick**" } else { "" }
+            ));
+            rows_json.push(format!(
+                "      {{\"noise_margin_db\": {}, \"use_speech_level\": {}, \"main_turns\": {}, \"detected\": {}, \"merged\": {}, \"unmatched\": {}, \"within_bound\": {}}}",
+                r.margin_db, r.use_speech_level, r.main_turns, r.detected, r.merged, r.unmatched, within
+            ));
+        }
+        if pick.is_none() {
+            sweep_md.push_str(
+                "\nNo candidate stayed within the bound: the adaptive defaults are used below.\n",
+            );
+        }
+        sweep_json = format!(
+            "  \"adaptive_sweep\": {{\n    \"scenes\": {},\n    \"energy_detected\": {},\n    \"energy_main_turns\": {},\n    \"bound_merged_plus_unmatched\": {},\n    \"pick\": {},\n    \"rows\": [\n{}\n    ]\n  }},\n",
+            tune_scenes.len(),
+            energy.main_turns - energy.main_missed,
+            energy.main_turns,
+            bound,
+            pick.map_or("null".to_string(), |i| format!(
+                "{{\"noise_margin_db\": {}, \"use_speech_level\": {}}}",
+                sweep[i].margin_db, sweep[i].use_speech_level
+            )),
+            rows_json.join(",\n")
+        );
+    }
+
+    let vad_runs: Vec<(String, VadConfig)> = args
+        .vad
+        .iter()
+        .map(|v| {
+            if v == "adaptive" {
+                (v.clone(), adaptive_cfg.clone())
+            } else {
+                (v.clone(), vad_config.clone())
+            }
+        })
+        .collect();
     let mut outcomes: Vec<VariantOutcome> = Vec::new();
     let mut rows: Vec<Row> = Vec::new();
-    {
-        let name = "energy";
+    for (name, cfg) in &vad_runs {
         let p2 = P2 {
             enhance: None,
             emb: &embedders[best_model],
@@ -2483,7 +2694,7 @@ fn run() -> Result<(), String> {
             threshold: best_threshold,
             recognizer: &recognizer,
             vad_name: name,
-            vad_config: &vad_config,
+            vad_config: cfg,
             leak_vocab: &leak_vocab,
         };
         let mut by_level: BTreeMap<i32, LevelStats> = BTreeMap::new();
@@ -2495,9 +2706,9 @@ fn run() -> Result<(), String> {
             rows.extend(scene_rows);
         }
         outcomes.push(VariantOutcome {
-            name,
-            min_silence_ms: vad_config.min_silence_duration_ms,
-            pre_roll_ms: pre_roll_ms(&vad_config),
+            name: name.clone(),
+            min_silence_ms: cfg.min_silence_duration_ms,
+            pre_roll_ms: pre_roll_ms(cfg),
             levels: by_level,
         });
     }
@@ -2525,20 +2736,26 @@ fn run() -> Result<(), String> {
                 ),
                 None => (best_model, best_check, best_threshold),
             };
-            let run3 = Part3Run {
-                models,
-                pre_filter: &args.pre,
-                precomputed: &args.precomputed,
-                emb: &embedders[model_idx],
-                check_s,
-                threshold,
-                recognizer: &recognizer,
-                vad_config: &vad_config,
-                leak_vocab: &leak_vocab,
-                cost_seconds: args.cost_seconds,
-                streams_seconds: args.streams_seconds,
-            };
-            Some(part3_run(&mut fx, &run3, &mut rows)?)
+            let mut runs = Vec::new();
+            for (i, (name, cfg)) in vad_runs.iter().enumerate() {
+                let run3 = Part3Run {
+                    models,
+                    pre_filter: &args.pre,
+                    precomputed: &args.precomputed,
+                    emb: &embedders[model_idx],
+                    check_s,
+                    threshold,
+                    recognizer: &recognizer,
+                    vad_name: name,
+                    vad_config: cfg,
+                    leak_vocab: &leak_vocab,
+                    with_cost: i == 0,
+                    cost_seconds: args.cost_seconds,
+                    streams_seconds: args.streams_seconds,
+                };
+                runs.push(part3_run(&mut fx, &run3, &mut rows)?);
+            }
+            Some(runs)
         }
     };
     let turns_jsonl: String = rows.iter().map(|r| row_json(r) + "\n").collect();
@@ -2602,6 +2819,7 @@ fn run() -> Result<(), String> {
         ));
     }
     json.push_str("    ]\n  },\n");
+    json.push_str(&sweep_json);
     json.push_str(&format!(
         "  \"part2\": {{\n    \"model\": \"{}\",\n    \"check_s\": {},\n    \"threshold\": {:.6},\n    \"set\": \"{}\",\n    \"vad\": {{\n",
         json_escape(&embedders[best_model].id), best_check, best_threshold, json_escape(part2_set),
@@ -2618,7 +2836,7 @@ fn run() -> Result<(), String> {
                 let level_count = by_level.len();
                 for (i, (level, s)) in by_level.iter().enumerate() {
                     json.push_str(&format!(
-                        "          {{\"level_db\": {level}, \"vad_utterances\": {}, \"merged_utterances\": {}, \"main_turns\": {}, \"main_missed\": {}, \"qualified_turns\": {}, \"a_qualified_oracle_pct\": {}, \"long_turns\": {}, \"long_wer_pct\": {}, \"long_word_similarity_pct\": {}, \"b_main_caller_pct\": {}, \"b_qualified_caller_pct\": {}, \"b_long_caller_pct\": {}, \"bystander_turns\": {}, \"bystander_missed\": {}, \"c_bystander_other_pct\": {}, \"d_bystander_caller_pct\": {}, \"e_leakage_pct\": {}, \"f_unmatched_utterances\": {}, \"f_unmatched_caller\": {}, \"f_unmatched_other\": {}}}{}\n",
+                        "          {{\"level_db\": {level}, \"vad_utterances\": {}, \"merged_utterances\": {}, \"main_turns\": {}, \"main_missed\": {}, \"qualified_turns\": {}, \"a_qualified_oracle_pct\": {}, \"long_turns\": {}, \"long_wer_pct\": {}, \"long_word_similarity_pct\": {}, \"b_main_caller_pct\": {}, \"b_qualified_caller_pct\": {}, \"b_long_caller_pct\": {}, \"bystander_turns\": {}, \"bystander_missed\": {}, \"c_bystander_other_pct\": {}, \"d_bystander_caller_pct\": {}, \"e_leakage_pct\": {}, \"f_unmatched_utterances\": {}, \"f_unmatched_caller\": {}, \"f_unmatched_other\": {}, \"median_onset_ms\": {}}}{}\n",
                         s.utterances, s.merged, s.main_turns, s.main_missed,
                         s.q_turns,
                         json_num(pct(s.q_recognized, s.q_turns)),
@@ -2633,6 +2851,7 @@ fn run() -> Result<(), String> {
                         json_num(pct(s.byst_caller, s.byst_turns)),
                         json_num(pct(s.leak_words, s.main_words)),
                         s.unmatched, s.unmatched_caller, s.unmatched_other,
+                        json_num(median_i64(&s.onset_delays)),
                         if i + 1 < level_count { "," } else { "" }
                     ));
                 }
@@ -2641,9 +2860,16 @@ fn run() -> Result<(), String> {
         }
     }
     json.push_str("    }\n  }");
-    if let Some(p3) = &part3 {
-        json.push_str(",\n");
-        json.push_str(&part3_json(p3));
+    if let Some(runs) = &part3 {
+        for (i, p3) in runs.iter().enumerate() {
+            json.push_str(",\n");
+            let key = if i == 0 {
+                "part3".to_string()
+            } else {
+                format!("part3_{}", p3.vad)
+            };
+            json.push_str(&part3_json(p3, &key));
+        }
     }
     json.push_str("\n}\n");
     fs::write(args.out.join("results.json"), json)
@@ -2712,10 +2938,10 @@ fn run() -> Result<(), String> {
                     "\n### VAD {} (min_silence {} ms, pre-roll {} ms)\n\n",
                     o.name, o.min_silence_ms, o.pre_roll_ms
                 ));
-                md.push_str("| level | VAD utt | merged utt | main turns (missed) | (a) oracle % (qualified) | WER % (long, measured, not qualified) | (b) main to caller %: all / qualified / long | bystander turns (missed) | (c) other % | (d) caller % | (e) leakage % | (f) unmatched utt (caller/other) |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+                md.push_str("| level | VAD utt | merged utt | main turns (missed) | (a) oracle % (qualified) | WER % (long, measured, not qualified) | (b) main to caller %: all / qualified / long | bystander turns (missed) | (c) other % | (d) caller % | (e) leakage % | (f) unmatched utt (caller/other) | median onset ms |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
                 for (level, s) in by_level {
                     md.push_str(&format!(
-                        "| {level} dB | {} | {} | {} ({}) | {} | {} | {} / {} / {} | {} ({}) | {} | {} | {} | {} ({}/{}) |\n",
+                        "| {level} dB | {} | {} | {} ({}) | {} | {} | {} / {} / {} | {} ({}) | {} | {} | {} | {} ({}/{}) | {} |\n",
                         s.utterances,
                         s.merged,
                         s.main_turns,
@@ -2732,14 +2958,18 @@ fn run() -> Result<(), String> {
                         fmt_opt(pct(s.leak_words, s.main_words), 2),
                         s.unmatched,
                         s.unmatched_caller,
-                        s.unmatched_other
+                        s.unmatched_other,
+                        fmt_opt(median_i64(&s.onset_delays), 0)
                     ));
                 }
             }
         }
     }
-    if let Some(p3) = &part3 {
-        md.push_str(&part3_md(p3));
+    md.push_str(&sweep_md);
+    if let Some(runs) = &part3 {
+        for p3 in runs {
+            md.push_str(&part3_md(p3));
+        }
     }
     fs::write(args.out.join("summary.md"), md).map_err(|e| format!("write summary.md: {e}"))?;
     eprintln!("wrote {}/results.json and summary.md", args.out.display());
@@ -2756,6 +2986,44 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sweep_row(
+        margin_db: f32,
+        use_speech_level: bool,
+        detected: usize,
+        merged: usize,
+    ) -> SweepRow {
+        SweepRow {
+            margin_db,
+            use_speech_level,
+            main_turns: 10,
+            detected,
+            merged,
+            unmatched: 0,
+        }
+    }
+
+    #[test]
+    fn sweep_pick_respects_energy_bound() {
+        let rows = [
+            sweep_row(4.0, false, 10, 5), // best detection but over the bound
+            sweep_row(6.0, false, 8, 2),
+            sweep_row(8.0, true, 8, 2),
+            sweep_row(8.0, false, 8, 1), // tie on detection: larger margin, then speech level off
+        ];
+        assert_eq!(pick_sweep(&rows, 2), Some(3));
+        assert_eq!(pick_sweep(&rows, 0), None);
+        assert_eq!(pick_sweep(&rows, 5), Some(0));
+    }
+
+    #[test]
+    fn grid_b_labels_use_effective_level() {
+        // Mean of -14.9 and -15.4 is -15.15 -> -15.0; the nominal level is only the fallback.
+        assert_eq!(effective_label(-14.9 + -15.4, 2, -14), -15.0);
+        assert_eq!(effective_label(-20.3, 1, -20), -20.5);
+        assert_eq!(effective_label(0.0, 0, -26), -26.0);
+    }
+
     use support::write_wav_stereo_48k;
 
     #[test]

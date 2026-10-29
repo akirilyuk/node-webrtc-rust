@@ -483,7 +483,10 @@ struct Scene {
     babble_db: i32,
     seed: u64,
     segments: Vec<Segment>,
-    peak_scale: f32,
+    /// Deepest gain reduction of the peak limiter in dB (0 when it never acted).
+    limiter_max_gr_db: f32,
+    /// Voiced RMS in dBFS of the main voice after the limiter; `None` without main speech.
+    effective_main_db: Option<f32>,
     sha256_16k: String,
     sha256_48k: String,
 }
@@ -511,14 +514,9 @@ impl Ctx {
         seed: u64,
         segments: Vec<Segment>,
         mut mix: Vec<f32>,
+        main_track: Option<Vec<f32>>,
     ) -> Result<(), String> {
-        let peak = mix.iter().fold(0f32, |m, s| m.max(s.abs()));
-        let peak_scale = if peak > 0.98 { 0.98 / peak } else { 1.0 };
-        if peak_scale != 1.0 {
-            for s in mix.iter_mut() {
-                *s *= peak_scale;
-            }
-        }
+        let (limiter_max_gr_db, effective_main_db) = apply_limiter(&mut mix, main_track.as_deref());
         let dir = self.out.join("scenes");
         let path16 = dir.join(format!("{id}.16k.wav"));
         let path48 = dir.join(format!("{id}.wav"));
@@ -536,7 +534,8 @@ impl Ctx {
             babble_db,
             seed,
             segments,
-            peak_scale,
+            limiter_max_gr_db,
+            effective_main_db,
             sha256_16k,
             sha256_48k,
         });
@@ -578,6 +577,8 @@ impl Ctx {
         scale_babble(&mut bab, MAIN_REF_DB + level_db as f32);
         let mut mix = bab;
         add_at(&mut mix, &main, ms(LEAD_MS));
+        let mut main_track = vec![0f32; mix.len()];
+        add_at(&mut main_track, &main, ms(LEAD_MS));
         segments.push(segment(
             "main",
             &MAIN_VOICE,
@@ -597,6 +598,7 @@ impl Ctx {
             seed,
             segments,
             mix,
+            Some(main_track),
         )
     }
 
@@ -609,6 +611,7 @@ impl Ctx {
         let total = ms(LEAD_MS) + main.len() + ms(TAIL_MS);
         let mut mix = vec![0f32; total];
         add_at(&mut mix, &main, ms(LEAD_MS));
+        let main_track = mix.clone();
         let segments = vec![segment(
             "main",
             &MAIN_VOICE,
@@ -627,6 +630,7 @@ impl Ctx {
             seed,
             segments,
             mix,
+            Some(main_track),
         )
     }
 
@@ -672,6 +676,7 @@ impl Ctx {
             seed,
             segments,
             mix,
+            None,
         )
     }
 
@@ -779,8 +784,12 @@ impl Ctx {
             *s *= gain;
         }
         let mut mix = bab;
+        let mut main_track = vec![0f32; mix.len()];
         for p in placed {
             add_at(&mut mix, &p.clip, p.start);
+            if p.segment.role == "main" {
+                add_at(&mut main_track, &p.clip, p.start);
+            }
             segments.push(p.segment);
         }
         segments.sort_by_key(|s| (s.start_ms, s.end_ms));
@@ -794,8 +803,66 @@ impl Ctx {
             seed,
             segments,
             mix,
+            Some(main_track),
         )
     }
+}
+
+/// Peak limiter for a finished scene. Gain `g[n] = min(1, 0.98 / max|mix| over +-5 ms)`: instant
+/// attack, 50 ms one-pole release. A scene whose peak stays at or below 0.98 is returned
+/// untouched. Returns the deepest gain reduction in dB (0 or negative) and, when `main_track`
+/// (the main voice alone, same length) is given, its voiced RMS in dBFS after the gain.
+fn apply_limiter(mix: &mut [f32], main_track: Option<&[f32]>) -> (f32, Option<f32>) {
+    const CEIL: f32 = 0.98;
+    let half = ms(5);
+    let alpha = 1.0 - (-1.0 / (0.05 * SR as f32)).exp();
+    let n = mix.len();
+    let mut gains = vec![1f32; n];
+    let mut min_gain = 1f32;
+    // Sliding maximum of |mix| over [i - half, i + half] with a monotonic deque.
+    let mut deque: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+    let mut next = 0usize;
+    let mut g = 1f32;
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..n {
+        let hi = (i + half).min(n.saturating_sub(1));
+        while next <= hi && next < n {
+            let v = mix[next].abs();
+            while deque.back().is_some_and(|&b| mix[b].abs() <= v) {
+                deque.pop_back();
+            }
+            deque.push_back(next);
+            next += 1;
+        }
+        while deque.front().is_some_and(|&f| f + half < i) {
+            deque.pop_front();
+        }
+        let peak = deque.front().map_or(0.0, |&f| mix[f].abs());
+        let target = if peak > CEIL { CEIL / peak } else { 1.0 };
+        if target < g {
+            g = target;
+        } else {
+            g += (target - g) * alpha;
+        }
+        gains[i] = g;
+        min_gain = min_gain.min(g);
+    }
+    let max_gr_db = if min_gain < 1.0 {
+        20.0 * min_gain.log10()
+    } else {
+        0.0
+    };
+    let effective = main_track.and_then(|track| {
+        let limited: Vec<f32> = track.iter().zip(&gains).map(|(s, g)| s * g).collect();
+        let db = rms_voiced_db(&limited, SR);
+        db.is_finite().then_some(db)
+    });
+    if min_gain < 1.0 {
+        for (s, g) in mix.iter_mut().zip(&gains) {
+            *s *= g;
+        }
+    }
+    (max_gr_db, effective)
 }
 
 /// Texts of one S3 scene: two long enrollment sentences and the main turns, which alternate a
@@ -872,7 +939,14 @@ fn manifest_json(scenes: &[Scene]) -> String {
         }
         out.push_str(&format!("      \"babble_db\": {},\n", scene.babble_db));
         out.push_str(&format!("      \"seed\": {},\n", scene.seed));
-        out.push_str(&format!("      \"peak_scale\": {:.6},\n", scene.peak_scale));
+        out.push_str(&format!(
+            "      \"limiter_max_gr_db\": {:.3},\n",
+            scene.limiter_max_gr_db
+        ));
+        match scene.effective_main_db {
+            Some(v) => out.push_str(&format!("      \"effective_main_db\": {v:.2},\n")),
+            None => out.push_str("      \"effective_main_db\": null,\n"),
+        }
         out.push_str(&format!(
             "      \"wav48\": \"scenes/{}.wav\",\n",
             json_escape(&scene.id)
@@ -1113,6 +1187,10 @@ fn run() -> Result<(), String> {
             for level in [-15, -10] {
                 ctx.conversation_at(Set::Test, level, 16, main_db)?;
             }
+            // Tune-set twins, so the VAD sweep tunes on voices it does not report.
+            for level in [-15, -10] {
+                ctx.conversation_at(Set::Tune, level, 16, main_db)?;
+            }
         }
     }
 
@@ -1138,6 +1216,47 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sine(n: usize, amp: f32, freq: f32) -> Vec<f32> {
+        (0..n)
+            .map(|i| amp * (2.0 * std::f32::consts::PI * freq * i as f32 / SR as f32).sin())
+            .collect()
+    }
+
+    #[test]
+    fn limiter_caps_peak_and_reports_effective_level() {
+        // Peak 2.0: gain reduction 20 log10(0.98 / 2.0) = -6.2 dB, and nothing above 0.98 remains.
+        let mut mix = sine(SR as usize, 2.0, 440.0);
+        let (gr, eff) = apply_limiter(&mut mix, None);
+        assert!(eff.is_none());
+        assert!((gr + 6.2).abs() < 0.2, "max GR {gr}");
+        let peak = mix.iter().fold(0f32, |m, s| m.max(s.abs()));
+        assert!(peak <= 0.98 + 1e-6, "peak {peak}");
+
+        // A -14 dBFS main voice (voiced RMS) with a short loud burst from another source: only
+        // the burst frames are pulled down, the effective level stays within 1.5 dB of -14.
+        let amp = 10f32.powf(-14.0 / 20.0) * 2f32.sqrt();
+        let main = sine(4 * SR as usize, amp, 220.0);
+        let mut mix = main.clone();
+        for s in mix.iter_mut().skip(SR as usize).take(ms(5)) {
+            *s += 1.5;
+        }
+        let (gr, eff) = apply_limiter(&mut mix, Some(&main));
+        assert!(gr < -1.0, "limiter must act: {gr}");
+        let eff = eff.expect("main speech present");
+        assert!((eff + 14.0).abs() <= 1.5, "effective {eff}");
+        let peak = mix.iter().fold(0f32, |m, s| m.max(s.abs()));
+        assert!(peak <= 0.98 + 1e-6, "peak {peak}");
+    }
+
+    #[test]
+    fn limiter_leaves_quiet_scenes_identical() {
+        let mix = sine(2 * SR as usize, 0.5, 300.0);
+        let mut out = mix.clone();
+        let (gr, _) = apply_limiter(&mut out, Some(&mix));
+        assert_eq!(gr, 0.0);
+        assert_eq!(out, mix);
+    }
 
     #[test]
     fn turn_phrase_indices_excludes_enrollment() {
@@ -1256,7 +1375,8 @@ mod tests {
                 seg("bystander", "Rain tapped on the glass.", false),
                 seg("babble", "Some background words.", false),
             ],
-            peak_scale: 1.0,
+            limiter_max_gr_db: 0.0,
+            effective_main_db: Some(-20.0),
             sha256_16k: "a".into(),
             sha256_48k: "b".into(),
         };

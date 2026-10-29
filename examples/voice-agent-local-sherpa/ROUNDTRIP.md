@@ -213,6 +213,14 @@ Unit tests (no models): `npx vitest run examples/voice-agent-local-sherpa/src/ro
 
 CI: `start:roundtrip-counting-echo-lid-multi` in `SHERPA_ROUNDTRIP_E2E_PARALLEL` (`run-sherpa-example-ci.sh`).
 
+### Barge-in with the adaptive VAD
+
+`roundtrip-barge-in.ts` reads `SHERPA_VAD_PROVIDER` (`energy`, the default, or `adaptive`; any other value throws) and logs it once. `scripts/ci/run-sherpa-example-ci.sh` runs `start:roundtrip-barge-in` a second time with `SHERPA_VAD_PROVIDER=adaptive` and the same assertions.
+
+```bash
+SHERPA_VAD_PROVIDER=adaptive npm run start:roundtrip-barge-in --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
+```
+
 ## Counting barge-in recovery roundtrip
 
 [`src/roundtrip-counting-barge-recovery.ts`](./src/roundtrip-counting-barge-recovery.ts) extends the echo harness with a **barge-in** step and a **recovery** round:

@@ -194,11 +194,19 @@ class ListenerSpeechCollector {
   }
 }
 
+/** `SHERPA_VAD_PROVIDER`: `energy` (default) or `adaptive`; anything else is an error. */
+function vadProviderFromEnv(): 'energy' | 'adaptive' {
+  const raw = process.env.SHERPA_VAD_PROVIDER?.trim()
+  if (!raw) return 'energy'
+  if (raw === 'energy' || raw === 'adaptive') return raw
+  throw new Error(`SHERPA_VAD_PROVIDER must be "energy" or "adaptive", got "${raw}"`)
+}
+
 function listenerVadConfig(base: VoiceAgentConfig): NonNullable<VoiceAgentConfig['vad']> {
   return {
     ...VOICE_AGENT_VAD_PRESET,
     ...base.vad,
-    provider: 'energy',
+    provider: vadProviderFromEnv(),
     threshold: 0.05,
     gateStt: true,
     bargeIn: {
@@ -352,6 +360,7 @@ async function main(): Promise<void> {
   console.log(`VOICE_TTS_STREAM_CHUNKS mode: ${ttsStreamMode}`)
   console.log(`Agent phrase: ${agentPhrase.slice(0, 80)}…`)
   console.log(`Barge phrase (TTS): "${bargePhrase}"`)
+  console.log(`SHERPA_VAD_PROVIDER=${vadProviderFromEnv()}`)
   console.log(`SHERPA_STT_MODEL_PATH=${sttModelPath}`)
   console.log(`SHERPA_TTS_MODEL_PATH=${ttsModelPath}`)
   console.log(`bargeDelayMs=${bargeDelayMs} toneInterruptS=${toneInterruptS}`)

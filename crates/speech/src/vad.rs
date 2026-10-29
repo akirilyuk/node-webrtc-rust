@@ -4,7 +4,7 @@
 //! [`VadTransition::SpeechStart`] and [`VadTransition::SpeechEnd`]. The voice agent uses those
 //! transitions for `user_speaking_*` events, STT gating, and barge-in ([`handle_barge_in`]).
 
-use crate::config::{BargeInConfig, VadConfig};
+use crate::config::{AdaptiveVadConfig, BargeInConfig, VadConfig};
 use crate::error::SpeechResult;
 use crate::events::SpeechEvent;
 use crate::pcm::{pcm_rms_i16, stereo_48k_to_mono_16k, WEBRTC_PCM_SAMPLE_RATE};
@@ -39,6 +39,188 @@ impl VoiceActivityDetector for EnergyVad {
 
     fn process_mono_frame(&mut self, mono_i16: &[i16], _sample_rate: u32) -> SpeechResult<bool> {
         Ok(pcm_rms_i16(mono_i16) >= self.threshold)
+    }
+}
+
+/// Read-only snapshot of the adaptive VAD's levels, in dBFS.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AdaptiveVadState {
+    pub threshold_db: f32,
+    pub noise_db: f32,
+    pub speech_db: f32,
+    /// Stuck-guard episodes since the last reset (one per open utterance that outlasted `stuckActiveMs`).
+    pub stuck_episodes: u32,
+}
+
+/// Energy VAD whose threshold follows the noise floor and the caller's level.
+///
+/// Runs per mono 16 kHz frame. See `VOICE-VAD-AND-BARGE-IN.md` ("Adaptive energy VAD").
+pub struct AdaptiveEnergyVad {
+    cfg: AdaptiveVadConfig,
+    warmup_threshold: f32,
+    /// Ring of noise-frame levels (dB).
+    ring: Vec<f32>,
+    ring_pos: usize,
+    scratch: Vec<f32>,
+    elapsed_ms: u32,
+    active: bool,
+    /// Time since the engine's SpeechStart; 0 while no utterance is open.
+    utterance_ms: u32,
+    utterance_open: bool,
+    stuck_logged: bool,
+    stuck_episodes: u32,
+    speech_db: Option<f32>,
+    last_threshold_db: f32,
+    last_noise_db: f32,
+}
+
+impl AdaptiveEnergyVad {
+    pub fn new(warmup_threshold: f32, cfg: AdaptiveVadConfig) -> Self {
+        Self {
+            cfg,
+            warmup_threshold,
+            ring: Vec::new(),
+            ring_pos: 0,
+            scratch: Vec::new(),
+            elapsed_ms: 0,
+            active: false,
+            utterance_ms: 0,
+            utterance_open: false,
+            stuck_logged: false,
+            stuck_episodes: 0,
+            speech_db: None,
+            last_threshold_db: f32::NAN,
+            last_noise_db: f32::NAN,
+        }
+    }
+
+    /// The engine declared SpeechStart: the stuck guard now times the open utterance.
+    pub fn on_speech_start(&mut self) {
+        self.utterance_open = true;
+        self.utterance_ms = 0;
+    }
+
+    /// The engine declared SpeechEnd: the utterance is over, the guard is disarmed.
+    pub fn on_speech_end(&mut self) {
+        self.utterance_open = false;
+        self.utterance_ms = 0;
+        self.stuck_logged = false;
+    }
+
+    pub fn state(&self) -> AdaptiveVadState {
+        AdaptiveVadState {
+            threshold_db: self.last_threshold_db,
+            noise_db: self.last_noise_db,
+            speech_db: self.speech_db.unwrap_or(f32::NAN),
+            stuck_episodes: self.stuck_episodes,
+        }
+    }
+
+    fn push_noise(&mut self, db: f32, cap: usize) {
+        if self.ring.len() < cap {
+            self.ring.push(db);
+        } else {
+            self.ring[self.ring_pos] = db;
+            self.ring_pos = (self.ring_pos + 1) % cap;
+        }
+    }
+
+    /// Nearest-rank percentile of the ring; `None` while the ring is empty.
+    fn noise_level(&mut self) -> Option<f32> {
+        let n = self.ring.len();
+        if n == 0 {
+            return None;
+        }
+        self.scratch.clear();
+        self.scratch.extend_from_slice(&self.ring);
+        let rank = ((self.cfg.noise_percentile as usize * n).div_ceil(100)).clamp(1, n) - 1;
+        let (_, v, _) = self
+            .scratch
+            .select_nth_unstable_by(rank, |a, b| a.total_cmp(b));
+        Some(*v)
+    }
+}
+
+impl VoiceActivityDetector for AdaptiveEnergyVad {
+    fn reset(&mut self) {
+        self.ring.clear();
+        self.ring_pos = 0;
+        self.elapsed_ms = 0;
+        self.active = false;
+        self.utterance_ms = 0;
+        self.utterance_open = false;
+        self.stuck_logged = false;
+        self.stuck_episodes = 0;
+        self.speech_db = None;
+        self.last_threshold_db = f32::NAN;
+        self.last_noise_db = f32::NAN;
+    }
+
+    fn process_mono_frame(&mut self, mono_i16: &[i16], sample_rate: u32) -> SpeechResult<bool> {
+        let frame_ms =
+            ((mono_i16.len() as u64 * 1000) / u64::from(sample_rate.max(1))).max(1) as u32;
+        let cap = (self.cfg.noise_window_ms / frame_ms).max(1) as usize;
+        let rms = pcm_rms_i16(mono_i16);
+        let db = 20.0 * rms.max(1e-5).log10();
+        // Until the noise window has a frame (a caller talking through the whole warm-up) the
+        // plain energy rule keeps deciding.
+        let warming = self.elapsed_ms < self.cfg.warmup_ms || self.ring.is_empty();
+        self.elapsed_ms = self.elapsed_ms.saturating_add(frame_ms);
+
+        let active = if warming {
+            let a = rms >= self.warmup_threshold;
+            if !a {
+                self.push_noise(db, cap);
+            }
+            a
+        } else {
+            let noise = self.noise_level().expect("ring non-empty");
+            let mut t = noise + self.cfg.noise_margin_db;
+            if self.cfg.use_speech_level {
+                if let Some(s) = self.speech_db {
+                    if s > noise + 2.0 * self.cfg.noise_margin_db {
+                        t = t.max((noise + s) / 2.0);
+                    }
+                }
+            }
+            let t = t.clamp(self.cfg.min_threshold_dbfs, self.cfg.max_threshold_dbfs);
+            self.last_threshold_db = t;
+            self.last_noise_db = noise;
+            let a = if self.active {
+                db >= t - self.cfg.hysteresis_db
+            } else {
+                db >= t
+            };
+            if a {
+                self.speech_db = Some(match self.speech_db {
+                    Some(s) => s + 0.05 * (db - s),
+                    None => db,
+                });
+            } else {
+                self.push_noise(db, cap);
+            }
+            a
+        };
+
+        // Stuck guard: an utterance open longer than `stuckActiveMs` feeds every frame into the
+        // noise window (active ones too; inactive ones are already in) until SpeechEnd.
+        if self.utterance_open {
+            self.utterance_ms = self.utterance_ms.saturating_add(frame_ms);
+            if self.utterance_ms > self.cfg.stuck_active_ms {
+                if !self.stuck_logged {
+                    self.stuck_logged = true;
+                    self.stuck_episodes += 1;
+                    crate::agent::voice_debug(
+                        "adaptive vad: utterance open too long, feeding noise window",
+                    );
+                }
+                if active {
+                    self.push_noise(db, cap);
+                }
+            }
+        }
+        self.active = active;
+        Ok(active)
     }
 }
 
@@ -104,6 +286,7 @@ impl VoiceActivityDetector for SileroVad {
 
 enum VadBackend {
     Energy(EnergyVad),
+    Adaptive(AdaptiveEnergyVad),
     #[cfg(feature = "silero-vad")]
     Silero(SileroVad),
 }
@@ -136,11 +319,20 @@ impl VadEngine {
                         .into(),
                 ));
             }
+        } else if config.provider == "adaptive" {
+            config
+                .adaptive
+                .validate()
+                .map_err(crate::error::SpeechError::Config)?;
+            VadBackend::Adaptive(AdaptiveEnergyVad::new(
+                config.threshold,
+                config.adaptive.clone(),
+            ))
         } else if config.provider == "energy" || config.provider.is_empty() {
             VadBackend::Energy(EnergyVad::new(config.threshold))
         } else {
             return Err(crate::error::SpeechError::Config(format!(
-                "unsupported vad.provider \"{}\" (use \"energy\" or \"silero\")",
+                "unsupported vad.provider \"{}\" (use \"energy\", \"adaptive\" or \"silero\")",
                 config.provider
             )));
         };
@@ -157,6 +349,14 @@ impl VadEngine {
 
     pub fn config(&self) -> &VadConfig {
         &self.config
+    }
+
+    /// Levels of the adaptive provider (`None` for other providers). For tests and the bench.
+    pub fn adaptive_state(&self) -> Option<AdaptiveVadState> {
+        match &self.backend {
+            VadBackend::Adaptive(v) => Some(v.state()),
+            _ => None,
+        }
     }
 
     pub fn is_speaking(&self) -> bool {
@@ -184,13 +384,32 @@ impl VadEngine {
             VadBackend::Energy(v) => {
                 v.process_mono_frame(&mono, self.config.sample_rate.as_u32())?
             }
+            VadBackend::Adaptive(v) => v.process_mono_frame(&mono, WEBRTC_PCM_SAMPLE_RATE_16K)?,
             #[cfg(feature = "silero-vad")]
             VadBackend::Silero(v) => {
                 v.process_mono_frame(&mono, self.config.sample_rate.as_u32())?
             }
         };
 
-        Ok((self.update_state(active), active))
+        let transitions = self.update_state(active);
+        if let VadBackend::Adaptive(v) = &mut self.backend {
+            for t in &transitions {
+                match t {
+                    VadTransition::SpeechStart => v.on_speech_start(),
+                    VadTransition::SpeechEnd => v.on_speech_end(),
+                }
+            }
+        }
+        if transitions.contains(&VadTransition::SpeechStart) {
+            if let VadBackend::Adaptive(v) = &self.backend {
+                let st = v.state();
+                crate::agent::voice_debug(format!(
+                    "adaptive vad: speech start T={:.1} N={:.1} S={:.1}",
+                    st.threshold_db, st.noise_db, st.speech_db
+                ));
+            }
+        }
+        Ok((transitions, active))
     }
 
     /// True while the VAD is accumulating speech time but has not yet declared `SpeechStart`.
@@ -228,6 +447,7 @@ impl VadEngine {
         self.silence_ms = 0;
         match &mut self.backend {
             VadBackend::Energy(v) => v.reset(),
+            VadBackend::Adaptive(v) => v.reset(),
             #[cfg(feature = "silero-vad")]
             VadBackend::Silero(v) => v.reset(),
         }
@@ -249,6 +469,9 @@ pub async fn handle_barge_in(
     }
     emit(SpeechEvent::barge_in());
 }
+
+/// `stereo_48k_to_mono_16k` always yields 16 kHz mono.
+const WEBRTC_PCM_SAMPLE_RATE_16K: u32 = 16_000;
 
 pub fn webrtc_frame_sample_rate() -> u32 {
     WEBRTC_PCM_SAMPLE_RATE

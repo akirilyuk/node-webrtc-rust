@@ -266,6 +266,18 @@ export const enum JsVadSampleRate {
   Hz8000 = '8000',
   Hz16000 = '16000'
 }
+/** Parameters of the `"adaptive"` VAD provider. Every field is optional (core defaults apply). */
+export interface JsAdaptiveVadConfig {
+  warmupMs?: number
+  noiseWindowMs?: number
+  noisePercentile?: number
+  noiseMarginDb?: number
+  useSpeechLevel?: boolean
+  hysteresisDb?: number
+  minThresholdDbfs?: number
+  maxThresholdDbfs?: number
+  stuckActiveMs?: number
+}
 export interface JsVadConfig {
   enabled?: boolean
   provider?: string
@@ -284,6 +296,8 @@ export interface JsVadConfig {
   /** Max time a turn keeps waiting while the cluster STT stream open is refused and retried (default 120000 ms; 0 = no extra wait). */
   sttOpenWaitMaxMs?: number
   utteranceFinalizeTimeoutMs?: number
+  /** Parameters of the `"adaptive"` provider. */
+  adaptive?: JsAdaptiveVadConfig
 }
 export const enum JsSttVendor {
   Openai = 'openai',

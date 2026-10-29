@@ -205,10 +205,14 @@ impl VadSampleRate {
 pub struct VadConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// `"energy"` (RMS, shipped in default native build) or `"silero"` (needs `silero-vad` feature).
+    /// `"energy"` (RMS, default), `"adaptive"` (energy that follows the noise floor and the
+    /// caller level, see [`AdaptiveVadConfig`]) or `"silero"` (needs the `silero-vad` feature;
+    /// treats continuous background voices as speech and does not end turns in babble, so it is
+    /// not recommended for noisy calls and is not in the default build).
     #[serde(default = "default_vad_provider")]
     pub provider: String,
     /// Energy: RMS level (~0.05–0.2 typical). Silero: speech probability (~0.5 typical).
+    /// Adaptive: only the warm-up threshold (first `adaptive.warmupMs`).
     #[serde(default = "default_vad_threshold")]
     pub threshold: f32,
     #[serde(default = "default_min_speech_ms")]
@@ -249,6 +253,118 @@ pub struct VadConfig {
     /// Grace after the last partial or VAD `SpeechEnd` before forcing `user_speech_final` (default 1500 ms).
     #[serde(default = "default_utterance_finalize_timeout_ms")]
     pub utterance_finalize_timeout_ms: u32,
+    /// Parameters of the `"adaptive"` provider; ignored by the others.
+    #[serde(default)]
+    pub adaptive: AdaptiveVadConfig,
+}
+
+/// Parameters of the `"adaptive"` VAD provider. Defaults are provisional until the bench picks them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdaptiveVadConfig {
+    /// Start of the call, in ms, where the plain energy rule (`vad.threshold`) decides.
+    #[serde(default = "default_adaptive_warmup_ms")]
+    pub warmup_ms: u32,
+    /// Length of the window of inactive frames the noise level is read from.
+    #[serde(default = "default_adaptive_noise_window_ms")]
+    pub noise_window_ms: u32,
+    /// Percentile (1..=99, nearest rank) of the window that is taken as the noise level.
+    #[serde(default = "default_adaptive_noise_percentile")]
+    pub noise_percentile: u32,
+    /// Speech must be this many dB above the noise level.
+    #[serde(default = "default_adaptive_noise_margin_db")]
+    pub noise_margin_db: f32,
+    /// Also raise the threshold to halfway between noise and the caller's level.
+    #[serde(default = "default_true")]
+    pub use_speech_level: bool,
+    /// Once speaking, stay active while the level is within this many dB below the threshold.
+    #[serde(default = "default_adaptive_hysteresis_db")]
+    pub hysteresis_db: f32,
+    /// Lower clamp of the threshold, dBFS.
+    #[serde(default = "default_adaptive_min_threshold_dbfs")]
+    pub min_threshold_dbfs: f32,
+    /// Upper clamp of the threshold, dBFS.
+    #[serde(default = "default_adaptive_max_threshold_dbfs")]
+    pub max_threshold_dbfs: f32,
+    /// If an utterance stays open longer than `stuckActiveMs`, its active frames also feed the noise window until the utterance ends, so a level step in the background noise cannot hold the VAD open.
+    #[serde(default = "default_adaptive_stuck_active_ms")]
+    pub stuck_active_ms: u32,
+}
+
+fn default_adaptive_warmup_ms() -> u32 {
+    400
+}
+fn default_adaptive_noise_window_ms() -> u32 {
+    3000
+}
+fn default_adaptive_noise_percentile() -> u32 {
+    70
+}
+fn default_adaptive_noise_margin_db() -> f32 {
+    6.0
+}
+fn default_adaptive_hysteresis_db() -> f32 {
+    3.0
+}
+fn default_adaptive_min_threshold_dbfs() -> f32 {
+    -50.0
+}
+fn default_adaptive_max_threshold_dbfs() -> f32 {
+    -10.0
+}
+fn default_adaptive_stuck_active_ms() -> u32 {
+    8000
+}
+
+impl Default for AdaptiveVadConfig {
+    fn default() -> Self {
+        Self {
+            warmup_ms: default_adaptive_warmup_ms(),
+            noise_window_ms: default_adaptive_noise_window_ms(),
+            noise_percentile: default_adaptive_noise_percentile(),
+            noise_margin_db: default_adaptive_noise_margin_db(),
+            use_speech_level: true,
+            hysteresis_db: default_adaptive_hysteresis_db(),
+            min_threshold_dbfs: default_adaptive_min_threshold_dbfs(),
+            max_threshold_dbfs: default_adaptive_max_threshold_dbfs(),
+            stuck_active_ms: default_adaptive_stuck_active_ms(),
+        }
+    }
+}
+
+impl AdaptiveVadConfig {
+    /// Reject out-of-range values; errors name the camelCase field.
+    pub fn validate(&self) -> Result<(), String> {
+        if !(1..=99).contains(&self.noise_percentile) {
+            return Err("vad.adaptive.noisePercentile must be 1..=99".into());
+        }
+        if self.noise_window_ms < 500 {
+            return Err("vad.adaptive.noiseWindowMs must be >= 500".into());
+        }
+        if self.warmup_ms > self.noise_window_ms {
+            return Err("vad.adaptive.warmupMs must be <= noiseWindowMs".into());
+        }
+        if !(0.0..=30.0).contains(&self.noise_margin_db) {
+            return Err("vad.adaptive.noiseMarginDb must be 0..=30".into());
+        }
+        if !(0.0..=30.0).contains(&self.hysteresis_db) {
+            return Err("vad.adaptive.hysteresisDb must be 0..=30".into());
+        }
+        if self
+            .min_threshold_dbfs
+            .partial_cmp(&self.max_threshold_dbfs)
+            != Some(std::cmp::Ordering::Less)
+        {
+            return Err("vad.adaptive.minThresholdDbfs must be < maxThresholdDbfs".into());
+        }
+        if self.max_threshold_dbfs > 0.0 {
+            return Err("vad.adaptive.maxThresholdDbfs must be <= 0".into());
+        }
+        if self.stuck_active_ms < 1000 {
+            return Err("vad.adaptive.stuckActiveMs must be >= 1000".into());
+        }
+        Ok(())
+    }
 }
 
 fn default_vad_provider() -> String {
@@ -320,6 +436,7 @@ impl Default for VadConfig {
             stt_listen_hard_timeout_ms: 0,
             stt_open_wait_max_ms: default_stt_open_wait_max_ms(),
             utterance_finalize_timeout_ms: default_utterance_finalize_timeout_ms(),
+            adaptive: AdaptiveVadConfig::default(),
         }
     }
 }

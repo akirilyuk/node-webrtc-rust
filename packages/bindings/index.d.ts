@@ -361,6 +361,18 @@ export const enum JsNoiseSuppressionProvider {
 export interface JsNoiseSuppressionConfig {
   provider?: JsNoiseSuppressionProvider
 }
+/** Opt-in caller verification (biometric data stays in process memory). */
+export interface JsSpeakerGateConfig {
+  enabled?: boolean
+  modelPath?: string
+  threshold?: number
+  enrollSpeechMs?: number
+  checkSpeechMs?: number
+  minCheckSpeechMs?: number
+  /** `flag` (default) | `drop`. */
+  onMismatch?: string
+  verifyTimeoutMs?: number
+}
 export interface JsVoiceSessionContext {
   sessionId?: string
   traceId?: string
@@ -391,12 +403,14 @@ export interface JsVoiceAgentConfig {
   languageId?: JsLanguageIdConfig
   postUtteranceSilenceMs?: number
   noiseSuppression?: JsNoiseSuppressionConfig
+  speakerGate?: JsSpeakerGateConfig
   replay?: JsReplayConfig
 }
 export const enum JsSpeechEventType {
   UserSpeakingStart = 'user_speaking_start',
   UserSpeakingEnd = 'user_speaking_end',
   UserSpeechPartial = 'user_speech_partial',
+  UserSpeechIgnored = 'user_speech_ignored',
   UserSpeechFinal = 'user_speech_final',
   UserLanguage = 'user_language',
   LanguageIdSkipped = 'language_id_skipped',
@@ -460,6 +474,8 @@ export interface JsSpeechEvent {
   synthesisComplete?: boolean
   /** `agent_reply_end`: true when the reply was cut off before its last frame was written. */
   interrupted?: boolean
+  /** `user_speech_final` with the speaker gate on: `caller` | `other` | `unknown`. */
+  speaker?: string
 }
 export const enum JsSttHoldMode {
   BufferReplay = 'buffer_replay',
@@ -740,6 +756,8 @@ export declare class JsVoiceAgent {
    */
   startNativeInbound(track: JsMediaStreamTrack, mixGraph?: JsMixGraph | undefined | null, participantId?: string | undefined | null): void
   sendTextToTts(text: string, nonBlocking?: boolean | undefined | null, interruptible?: boolean | undefined | null, replyId?: string | undefined | null): Promise<void>
+  /** Forget the enrolled caller voice (speaker gate); the next utterances enroll again. */
+  resetSpeakerEnrollment(): void
   flushTts(): Promise<void>
   /** Wait until outbound TTS playback finishes (synthesis queue drained and agent not speaking). */
   waitTtsPlaybackIdle(): Promise<void>

@@ -3109,15 +3109,16 @@ impl VoiceAgent {
                 inner.agent_speaking,
             )
         };
-        if !known {
-            gate.note_stale_verdict();
-            voice_debug(format!(
-                "speaker gate: verdict for gone utterance key={} dropped",
-                verdict.key
-            ));
-            return;
-        }
+        // A pending barge for this key makes the verdict known even after the record is gone
+        // (the next utterance completed it); only a key with neither is stale.
         if !gate.take_pending_barge(verdict.key) {
+            if !known {
+                gate.note_stale_verdict();
+                voice_debug(format!(
+                    "speaker gate: verdict for gone utterance key={} dropped",
+                    verdict.key
+                ));
+            }
             return;
         }
         if verdict.outcome == Outcome::Other {

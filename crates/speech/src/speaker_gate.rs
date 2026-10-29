@@ -11,7 +11,7 @@
 //! Embeddings, the reference vector and PCM are never logged, emitted or exported. Scores appear
 //! only in `VOICE_DEBUG` output, as a number.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -125,7 +125,10 @@ struct Feed {
     ring: Vec<u8>,
     cur: Option<Cur>,
     ended: VecDeque<(u64, Vec<u8>)>,
-    pending_barge: Option<u64>,
+    /// Barge-ins deferred until their utterance's verdict, one per utterance key. Every check
+    /// yields a verdict within the verifier's own timeout and that verdict removes its key, so
+    /// it holds at most the live and closing utterances; `reset` clears it.
+    pending_barge: BTreeSet<u64>,
 }
 
 /// Per-agent speaker gate (feed side plus the handle to the verifier task).
@@ -223,6 +226,7 @@ impl SpeakerGate {
         {
             let mut feed = lock(&self.feed);
             feed.ended.clear();
+            feed.pending_barge.clear();
         }
         self.send(Msg::Reset);
     }
@@ -391,18 +395,12 @@ impl SpeakerGate {
     }
 
     pub fn set_pending_barge(&self, key: u64) {
-        lock(&self.feed).pending_barge = Some(key);
+        lock(&self.feed).pending_barge.insert(key);
     }
 
     /// True (and cleared) when a barge-in for `key` waits for its verdict.
     pub fn take_pending_barge(&self, key: u64) -> bool {
-        let mut feed = lock(&self.feed);
-        if feed.pending_barge == Some(key) {
-            feed.pending_barge = None;
-            true
-        } else {
-            false
-        }
+        lock(&self.feed).pending_barge.remove(&key)
     }
 
     /// The verdict a final of `key` can carry right now: the stored verdict, or `Unknown` when no

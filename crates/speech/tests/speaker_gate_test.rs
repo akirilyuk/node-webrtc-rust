@@ -488,9 +488,8 @@ async fn verifier_never_settles_fails_open_and_does_not_block_next() {
 }
 
 /// A short enrolled-caller interruption ("stop") whose verdict settles only after the utterance
-/// has ended and its vendor final arrived: the verdict still fires the barge-in while playback
-/// is active. (During playback the record stays `live` after its vendor final; the close waits
-/// for playback, so this path does not reach `closing`.)
+/// has ended (VAD end): the verdict still fires the barge-in while playback is active. During
+/// playback the vendor finalize waits for playback, so the record is still `live` here.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn enrolled_short_caller_utterance_barges_in() {
     let mut cfg = gate_cfg(SpeakerMismatchAction::Flag);
@@ -507,21 +506,7 @@ async fn enrolled_short_caller_utterance_barges_in() {
     rig.script.lock().unwrap().final_on_finalize = Some("stop".into());
     rig.feed(&loud_stereo_frame(), 5).await;
     rig.feed(&silent_stereo_frame(), 30).await;
-    let mut final_arrived = false;
-    for _ in 0..200 {
-        rig.drain();
-        if rig.log.iter().any(|e| {
-            e.kind == SpeechEventKind::SttStreamEnd && e.reason.as_deref() == Some("vendor_final")
-        }) {
-            final_arrived = true;
-            break;
-        }
-        sleep(Duration::from_millis(10)).await;
-    }
-    assert!(
-        final_arrived,
-        "the vendor final of the short utterance must arrive first"
-    );
+    rig.drain();
     assert_eq!(
         rig.count(SpeechEventKind::BargeIn),
         0,
@@ -530,7 +515,7 @@ async fn enrolled_short_caller_utterance_barges_in() {
     release.notify_waiters();
     assert!(
         rig.wait_event(SpeechEventKind::BargeIn, 3000).await,
-        "the verdict for the closing utterance fires the barge-in"
+        "the held verdict fires the barge-in"
     );
     assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
     rig.drain();
@@ -538,6 +523,73 @@ async fn enrolled_short_caller_utterance_barges_in() {
         rig.finals().last().unwrap().speaker.as_deref(),
         Some("caller")
     );
+    rig.agent.stop().await.unwrap();
+}
+
+/// A short enrolled-caller utterance A whose verdict settles only after the next utterance B has
+/// started (so the live record is B's): A's verdict still fires the barge-in while playback is
+/// active, attributed by A's key. B's check returns `other`, so no barge-in can come from B.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn short_caller_verdict_fires_after_next_utterance_started() {
+    let mut cfg = gate_cfg(SpeakerMismatchAction::Flag);
+    // Wall-clock test: A's held verdict must outlast A's vendor final and B's start.
+    cfg.verify_timeout_ms = 3000;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    let base = rig.log.len();
+    // Every check after A's (B's included) says `other`.
+    *rig.default.lock().unwrap() = Behavior::Vector(OTHER.to_vec());
+    rig.start_speaking().await;
+    let release = Arc::new(Notify::new());
+    rig.queue
+        .lock()
+        .unwrap()
+        .push_back(Behavior::WaitFor(Arc::clone(&release), REF.to_vec()));
+    // Utterance A: short, then silence until its vendor final arrives.
+    rig.script.lock().unwrap().final_on_finalize = Some("stop".into());
+    rig.feed(&loud_stereo_frame(), 5).await;
+    rig.feed(&silent_stereo_frame(), 30).await;
+    // Utterance B starts and stays live: the live record is now B's.
+    rig.script.lock().unwrap().final_on_finalize = Some("bravo".into());
+    rig.feed(&loud_stereo_frame(), 15).await;
+    rig.drain();
+    assert_eq!(
+        rig.count(SpeechEventKind::BargeIn),
+        0,
+        "no barge-in before A's verdict"
+    );
+    release.notify_waiters();
+    assert!(
+        rig.wait_event(SpeechEventKind::BargeIn, 3000).await,
+        "A's verdict fires the barge-in after B started"
+    );
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    let finals: Vec<&SpeechEvent> = rig.log[base..]
+        .iter()
+        .filter(|e| e.kind == SpeechEventKind::UserSpeechFinal)
+        .collect();
+    // Production order (the FIFO keeps it): A's final, then B's.
+    assert_eq!(finals.len(), 2, "exactly A's and B's finals");
+    assert_eq!(finals[0].speaker.as_deref(), Some("caller"), "A's final");
+    assert_eq!(
+        finals[1].speaker.as_deref(),
+        Some("other"),
+        "B keeps its own verdict"
+    );
+    assert_eq!(rig.count(SpeechEventKind::BargeIn), 1);
+    // Production order: B's start (fed before the release) precedes the barge-in.
+    let pos = |pred: &dyn Fn(&SpeechEvent) -> bool| rig.log[base..].iter().position(pred);
+    let starts: Vec<usize> = rig.log[base..]
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.kind == SpeechEventKind::UserSpeakingStart)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(starts.len(), 2, "A and B each started once");
+    let barge = pos(&|e| e.kind == SpeechEventKind::BargeIn).unwrap();
+    assert!(starts[1] < barge, "B started before A's verdict fired");
     rig.agent.stop().await.unwrap();
 }
 
@@ -662,10 +714,14 @@ async fn verdict_for_finished_utterance_is_counted_stale() {
     rig.agent.stop().await.unwrap();
 }
 
+/// A's check times out (`unknown`, fail open) while B is live: A's own deferred barge-in fires
+/// once on A's verdict. B's later verdict does not fire a second one, and B's final keeps B's
+/// own speaker.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn late_verdict_of_old_key_is_not_applied_to_next_utterance() {
+async fn late_unknown_verdict_fires_only_its_own_barge() {
     let mut rig = rig_with(agent_config(gate_cfg(SpeakerMismatchAction::Flag))).await;
     rig.enroll().await;
+    let base = rig.log.len();
     rig.start_speaking().await;
     let release = Arc::new(Notify::new());
     {
@@ -673,34 +729,86 @@ async fn late_verdict_of_old_key_is_not_applied_to_next_utterance() {
         q.push_back(Behavior::Pending); // utterance A: times out -> late `unknown` verdict
         q.push_back(Behavior::WaitFor(Arc::clone(&release), REF.to_vec())); // utterance B
     }
+    rig.script.lock().unwrap().final_on_finalize = Some("words".into());
     // A: barge-in deferred for A. Then B starts before A's verdict exists.
-    rig.script.lock().unwrap().final_on_finalize = None;
     rig.feed(&loud_stereo_frame(), 12).await;
     rig.feed(&silent_stereo_frame(), 30).await;
     rig.feed(&loud_stereo_frame(), 12).await;
-    // A's verdict (timeout, unknown) arrives while B is live.
+    assert!(
+        rig.wait_event(SpeechEventKind::BargeIn, 3000).await,
+        "A's own unknown verdict fires A's deferred barge-in"
+    );
+    assert!(rig
+        .agent
+        .speaker_gate_warnings()
+        .iter()
+        .any(|w| w.contains("verify timeout")));
+    release.notify_waiters();
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    assert_eq!(
+        rig.count(SpeechEventKind::BargeIn),
+        1,
+        "B's verdict does not fire a second barge-in"
+    );
+    let finals: Vec<&SpeechEvent> = rig.log[base..]
+        .iter()
+        .filter(|e| e.kind == SpeechEventKind::UserSpeechFinal)
+        .collect();
+    assert_eq!(
+        finals.last().unwrap().speaker.as_deref(),
+        Some("caller"),
+        "B's final keeps B's own verdict"
+    );
+    rig.agent.stop().await.unwrap();
+}
+
+/// Wrong-key guard: an `other` verdict for A neither suppresses nor fires B's pending barge-in;
+/// B's barge-in is decided by B's verdict alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn other_verdict_for_old_key_leaves_next_barge_to_its_own_verdict() {
+    let mut cfg = gate_cfg(SpeakerMismatchAction::Flag);
+    cfg.verify_timeout_ms = 3000;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    rig.start_speaking().await;
+    let release_a = Arc::new(Notify::new());
+    let release_b = Arc::new(Notify::new());
+    {
+        let mut q = rig.queue.lock().unwrap();
+        q.push_back(Behavior::WaitFor(Arc::clone(&release_a), OTHER.to_vec()));
+        q.push_back(Behavior::WaitFor(Arc::clone(&release_b), REF.to_vec()));
+    }
+    rig.script.lock().unwrap().final_on_finalize = Some("words".into());
+    rig.feed(&loud_stereo_frame(), 12).await;
+    rig.feed(&silent_stereo_frame(), 30).await;
+    rig.feed(&loud_stereo_frame(), 12).await;
+    release_a.notify_waiters();
+    // A's `other` verdict has been applied once A's final carries it (B's check is still held).
+    let mut a_applied = false;
     for _ in 0..300 {
+        rig.drain();
         if rig
-            .agent
-            .speaker_gate_warnings()
+            .finals()
             .iter()
-            .any(|w| w.contains("verify timeout"))
+            .any(|e| e.speaker.as_deref() == Some("other"))
         {
+            a_applied = true;
             break;
         }
         sleep(Duration::from_millis(10)).await;
     }
-    sleep(Duration::from_millis(100)).await;
-    rig.drain();
+    assert!(a_applied, "A's final carries A's other verdict");
     assert_eq!(
         rig.count(SpeechEventKind::BargeIn),
         0,
-        "A's late verdict must not fire B's barge-in"
+        "A's other verdict does not fire B's barge-in"
     );
-    release.notify_waiters();
+    release_b.notify_waiters();
     assert!(
         rig.wait_event(SpeechEventKind::BargeIn, 3000).await,
-        "B's own verdict fires the barge-in"
+        "B's own verdict still fires B's barge-in (not suppressed by A's)"
     );
     rig.agent.stop().await.unwrap();
 }

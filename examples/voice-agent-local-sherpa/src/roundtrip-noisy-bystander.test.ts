@@ -56,6 +56,18 @@ describe('evaluateTurns', () => {
     )
   })
 
+  it('fails a barge on an unmatched utterance labelled other', () => {
+    const seen = [
+      ...healthy(),
+      ev('user_speaking_start', 15_000, { utteranceId: 'u3' }),
+      ev('barge_in', 15_200, { utteranceId: 'u3' }),
+      ev('user_speech_final', 16_500, { utteranceId: 'u3', text: 'more noise', speaker: 'other' }),
+    ]
+    expect(evaluateTurns([caller, bystander], seen, 'p').join('\n')).toMatch(
+      /u3 whose final is speaker other/,
+    )
+  })
+
   it('attributes a late barge of the previous caller utterance to that utterance', () => {
     // Inside the bystander's time window, but the id says it is the caller's utterance u1.
     const seen = [...healthy(), ev('barge_in', 14_500, { utteranceId: 'u1' })]

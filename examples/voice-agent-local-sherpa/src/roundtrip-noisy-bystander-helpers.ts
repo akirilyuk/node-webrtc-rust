@@ -118,6 +118,15 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
     }
   }
   const barges = seen.filter((e) => e.type === SPEECH_EVENT_TYPE.bargeIn)
+  // A bystander never barges in: any barge_in whose utterance's final is labelled other fails,
+  // whether or not that utterance matched a scene turn.
+  for (const b of barges) {
+    if (b.utteranceId != null && finals.get(b.utteranceId)?.speaker === 'other') {
+      failures.push(
+        `${label}: barge_in at ${b.atMs} ms for utterance ${b.utteranceId} whose final is speaker other`,
+      )
+    }
+  }
   for (const b of barges) {
     if (b.utteranceId == null)
       failures.push(`${label}: barge_in at ${b.atMs} ms without utteranceId`)

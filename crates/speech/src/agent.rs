@@ -3212,7 +3212,9 @@ impl VoiceAgent {
             voice_debug("STT-gated barge-in suppressed: non-interruptible TTS job active");
             return Ok(());
         }
-        let (should_barge, barge_in) = {
+        // `utterance_id` is read in the same lock as the decision: the gate check below awaits, and
+        // a new utterance may start before the barge fires (`rt.stale-event-by-key`).
+        let (should_barge, barge_in, utterance_id) = {
             let inner = self.inner.lock().await;
             let barge_in_cfg = &inner.config.vad.barge_in;
             if !barge_in_cfg.enabled
@@ -3239,7 +3241,11 @@ impl VoiceAgent {
             if inner.stt_barge_fired_this_agent_playback {
                 return Ok(());
             }
-            (true, barge_in_cfg.clone())
+            (
+                true,
+                barge_in_cfg.clone(),
+                inner.record_ref(key).map(|r| r.id.clone()),
+            )
         };
         if !should_barge {
             return Ok(());
@@ -3265,8 +3271,8 @@ impl VoiceAgent {
                 otel::record_voice_turn_response_abandoned(Self::project_id_label(&guard));
             }
         }
-        let live_id = self.inner.lock().await.live_id();
-        self.barge_in_with_speaking_end(&barge_in, live_id).await;
+        self.barge_in_with_speaking_end(&barge_in, utterance_id)
+            .await;
         self.cancel_pending_tts_synthesis().await;
         Ok(())
     }
@@ -3331,11 +3337,15 @@ impl VoiceAgent {
             self.emit_stt_stream_start_if_needed().await;
         }
 
+        // The utterance this SpeechStart belongs to, read before any await below (the gate check
+        // awaits; a later utterance must not lend its id to this barge, `rt.stale-event-by-key`).
+        let utterance_id;
         {
             let mut inner = self.inner.lock().await;
             let partials_emitted = {
                 let rec = inner.ensure_live();
                 rec.vad_triggered = true;
+                utterance_id = Some(rec.id.clone());
                 rec.partials_emitted
             };
             inner.c1_backlog_deferred_logged = false;
@@ -3375,8 +3385,8 @@ impl VoiceAgent {
                 voice_debug(format!(
                     "immediate barge-in on VAD SpeechStart (require_stt_partial={require_stt_partial}, emits_partials={emits_partials})"
                 ));
-                let live_id = self.inner.lock().await.live_id();
-                self.barge_in_with_speaking_end(&barge_in, live_id).await;
+                self.barge_in_with_speaking_end(&barge_in, utterance_id)
+                    .await;
                 self.cancel_pending_tts_synthesis().await;
             }
         }

@@ -356,7 +356,9 @@ How it works:
 
 Recommended with `vad.provider: 'adaptive'`. With the energy VAD, turns in background noise split into short pieces, which are more often `unknown`.
 
-Limit: the gate separates voices, it does not separate overlapping audio. A bystander who is about as loud as the caller (within about 10 dB) can still merge into or split the caller's turn before the gate sees it. Turns from two people less than about 1.5 s apart end up in one transcript, labelled by the check of its first speaker, because the agent's end of turn waits that long for more speech. Other speech that starts less than about 1 s before the caller (a voice in the background) can fall into the 1.5 s check and make it reject the caller, so the barge-in is suppressed and the final is labelled other. We test and support bystanders at least 15 dB below the caller: in the roundtrip the bystander's voice and the background babble are both 15 dB below the caller, the bystander is ignored, and the caller, also at a quiet -26 dBFS, barges in. `barge_in` carries the `utteranceId` of the utterance that interrupted, so an app can tell which turn it belongs to.
+Limit: a bystander about as loud as the caller can pass the check; the gate is tested with bystanders 15 dB or more below the caller. Turns from two people less than about 1.5 s apart end up in one transcript, labelled by the check of its first speaker, because the agent's end of turn waits that long for more speech. Other speech that starts less than about 1 s before the caller (a voice in the background) can fall into the 1.5 s check and make it reject the caller, so the barge-in is suppressed and the final is labelled other.
+
+`barge_in` carries the `utteranceId` of the utterance that interrupted, so an app can tell which turn it belongs to.
 
 Privacy:
 

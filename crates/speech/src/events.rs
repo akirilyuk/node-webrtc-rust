@@ -539,6 +539,43 @@ impl Default for SpeechEventBus {
 mod user_language_event_tests {
     use super::*;
 
+    /// Step 0 (`contract.event-order`): events emitted through any clone of the bus queue behind
+    /// an open final slot and come out after the final, in production order.
+    #[test]
+    fn bus_emit_from_clone_queues_behind_open_final_slot() {
+        let bus = SpeechEventBus::new();
+        let mut rx = bus.subscribe();
+        let drain = bus.clone();
+        let slot = bus.reserve_slot();
+        drain.emit(SpeechEvent::agent_reply_end("r1", 900, true, 1500, false));
+        drain.emit(SpeechEvent::agent_speaking_end());
+        assert!(
+            rx.try_recv().is_err(),
+            "nothing may overtake the open final slot"
+        );
+        bus.fill_slot(
+            slot,
+            SpeechEvent::user_speech_final("hi", Some("u1".into())),
+        );
+        let kinds: Vec<SpeechEventKind> = std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|e| e.kind)
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                SpeechEventKind::UserSpeechFinal,
+                SpeechEventKind::AgentReplyEnd,
+                SpeechEventKind::AgentSpeakingEnd,
+            ]
+        );
+        drain.emit(SpeechEvent::agent_speaking_start());
+        assert_eq!(
+            rx.try_recv().map(|e| e.kind).ok(),
+            Some(SpeechEventKind::AgentSpeakingStart),
+            "with no open slot an emit is delivered at once"
+        );
+    }
+
     #[test]
     fn user_language_sets_text_and_language() {
         let event = SpeechEvent::user_language("de", Some("utt-1".into()));

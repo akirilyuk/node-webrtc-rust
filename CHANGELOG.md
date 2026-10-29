@@ -8,8 +8,23 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-29
+
+### Added
+
+- **speech / bindings / sdk:** adaptive energy VAD, opt-in with `vad.provider: 'adaptive'`. The energy VAD stays the default. Defaults: `noiseMarginDb` 6, `useSpeechLevel` true, `stuckActiveMs` 8000.
+- **speech / bindings / sdk:** opt-in caller speaker gate (TitaNet-small via sherpa-onnx). The first speech of a caller is enrolled, and later utterances are checked against it. Defaults: `checkSpeechMs` 1500, `threshold` 0.459, `minCheckSpeechMs` 1000.
+  - Barge-in waits for the verdict, so a bystander does not interrupt the agent.
+  - Finals carry `speaker`.
+  - With `onMismatch: 'drop'`, a final from another speaker is dropped and a `user_speech_ignored` event is emitted.
+  - `resetSpeakerEnrollment` clears the enrolled caller.
+  - Each utterance gets one check, and the first verdict is final.
+  - Tested with bystanders 15 dB or more below the caller. A bystander about as loud as the caller can pass the check.
+- **speech / bindings / sdk:** `barge_in` carries the `utteranceId` of the interrupting utterance, so consumers can pair it with its utterance by id. It is unset for a manual flush and for the standalone VAD.
+
 ### Fixed
 
+- **speech:** all agent events (reply, speaking, cache hit, error) go through the ordered event bus. Before, they could overtake events queued behind a final that was waiting for its speaker verdict.
 - **mixer / conference / helpers:** the mix outbound (conference room, native and JS mix pumps) no longer writes a stalled listener's missed slots back to back. After a stall it writes at most 4 frames (the newest slots, which still carry audio) and resumes 20 ms pacing; skipped ticks stay counted in `listenerSkipped`.
 
 ## [0.14.0] - 2026-10-28

@@ -308,7 +308,7 @@ vad: { ...VOICE_AGENT_VAD_PRESET, provider: 'adaptive', adaptive: { noiseMarginD
 | `maxThresholdDbfs` | `-10`   | <= 0               | Upper clamp of the threshold                                            |
 | `stuckActiveMs`    | `8000`  | >= 1000            | An utterance open this long feeds its active frames to the noise window |
 
-The defaults are provisional until the bench picks them. With `adaptive`, `vad.threshold` only matters during warm-up.
+The defaults (`noiseMarginDb` 6, `useSpeechLevel` true) come from bench run 5. With `adaptive`, `vad.threshold` only matters during warm-up.
 
 Bench results (main caller at −20 dBFS, raw audio, one bystander at the given level below the caller):
 

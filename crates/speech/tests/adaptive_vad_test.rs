@@ -513,8 +513,14 @@ fn adaptive_recovers_after_long_turn_cut() {
                 None
             }
         });
-        let s: Vec<u32> = starts(&ev).into_iter().filter(|ms| *ms >= 18_000).collect();
+        let all = starts(&ev);
+        let s: Vec<u32> = all.iter().copied().filter(|ms| *ms >= 18_000).collect();
         assert_eq!(s.len(), 1, "seed {seed}: {ev:?}");
+        // The only starts are the long turn's and the -26 dBFS turn's: none in the noise gap.
+        assert!(
+            all.iter().all(|ms| *ms < 15_000 || *ms >= 18_000),
+            "seed {seed}: spurious start in the noise gap: {ev:?}"
+        );
         assert!(
             s[0] <= 18_400,
             "seed {seed}: start {} ms after onset 18000",
@@ -526,7 +532,7 @@ fn adaptive_recovers_after_long_turn_cut() {
 #[test]
 fn adaptive_twenty_second_monologue_bounded() {
     for seed in 0..50u64 {
-        let (ev, trace, engine) = run_scene(seed, 30_000, |t| {
+        let (ev, trace, engine) = run_scene(seed, 27_000, |t| {
             (3000..23_000).contains(&t).then_some(-20.0)
         });
         let e = ends(&ev);

@@ -464,20 +464,66 @@ impl SpeechEvent {
 #[derive(Clone)]
 pub struct SpeechEventBus {
     tx: broadcast::Sender<SpeechEvent>,
+    order: std::sync::Arc<std::sync::Mutex<EmitOrder>>,
+}
+
+/// Emission order while finals wait for their speaker verdict (`contract.event-order`).
+///
+/// A final whose verdict is still pending takes a slot; every event emitted after it (by any
+/// emitter on this bus) queues behind the slot and is delivered, in order, once the slot is
+/// filled. With no slot open (gate off or no pending final) events are delivered at once.
+/// Nothing here awaits.
+#[derive(Default)]
+struct EmitOrder {
+    next_slot: u64,
+    /// `(slot, event)`: slot 0 = an ordinary event (always `Some`); a reserved slot is `None`
+    /// until its final is filled in.
+    queue: std::collections::VecDeque<(u64, Option<SpeechEvent>)>,
 }
 
 impl SpeechEventBus {
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(256);
-        Self { tx }
+        Self {
+            tx,
+            order: std::sync::Arc::new(std::sync::Mutex::new(EmitOrder::default())),
+        }
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<SpeechEvent> {
         self.tx.subscribe()
     }
 
+    /// Emits in production order: behind any open final slot, else at once.
     pub fn emit(&self, event: SpeechEvent) {
-        let _ = self.tx.send(event);
+        let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
+        if order.queue.is_empty() {
+            let _ = self.tx.send(event);
+        } else {
+            order.queue.push_back((0, Some(event)));
+        }
+    }
+
+    /// Reserves the emission slot of a final that waits for its speaker verdict.
+    pub(crate) fn reserve_slot(&self) -> u64 {
+        let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
+        order.next_slot += 1;
+        let slot = order.next_slot;
+        order.queue.push_back((slot, None));
+        slot
+    }
+
+    /// Fills a reserved slot and delivers everything that is ready, in order.
+    pub(crate) fn fill_slot(&self, slot: u64, event: SpeechEvent) {
+        let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = order.queue.iter_mut().find(|(s, _)| *s == slot) {
+            entry.1 = Some(event);
+        }
+        while order.queue.front().is_some_and(|(_, e)| e.is_some()) {
+            if let Some((_, Some(event))) = order.queue.pop_front() {
+                let _ = self.tx.send(event);
+            }
+        }
     }
 }
 

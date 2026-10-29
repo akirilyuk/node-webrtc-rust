@@ -546,19 +546,6 @@ struct TtsSynthesisJob {
 ///
 /// Holds VAD (optional), STT/TTS providers, TTS outbound buffer, and utterance state
 /// (`stt_gate_hold_ms`, finalize pending, barge-in flags). Thread-safe via internal `Mutex` / `Mutex`es.
-/// Emission order while finals wait for their speaker verdict (`contract.event-order`).
-///
-/// A final whose verdict is still pending takes a slot; events produced after it queue behind
-/// the slot and are delivered, in order, once the slot is filled. With no slot open (gate off or
-/// no pending final) events are delivered at once, as without the gate. Nothing here awaits.
-#[derive(Default)]
-struct EmitOrder {
-    next_slot: u64,
-    /// `(slot, event)`: slot 0 = an ordinary event (always `Some`); a reserved slot is `None`
-    /// until its final is filled in.
-    queue: VecDeque<(u64, Option<SpeechEvent>)>,
-}
-
 pub struct VoiceAgent {
     event_bus: SpeechEventBus,
     tts_buffer: TtsBuffer,
@@ -588,8 +575,6 @@ pub struct VoiceAgent {
     /// Finals waiting for their speaker verdict off the step lock; `wait_stt_idle` waits for them.
     speaker_finals_pending: AtomicU64,
     speaker_finals_done: Notify,
-    /// Keeps event emission in production order while a final waits for its speaker verdict.
-    emit_order: std::sync::Mutex<EmitOrder>,
     tts: Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
     tts_drain_wake: Arc<Notify>,
     tts_drain_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
@@ -775,7 +760,6 @@ impl VoiceAgent {
             speaker_embedder: std::sync::Mutex::new(speaker_embedder),
             speaker_finals_pending: AtomicU64::new(0),
             speaker_finals_done: Notify::new(),
-            emit_order: std::sync::Mutex::new(EmitOrder::default()),
             tts: Arc::new(Mutex::new(tts)),
             tts_drain_wake: Arc::new(Notify::new()),
             tts_drain_worker: Arc::new(Mutex::new(None)),
@@ -3683,7 +3667,7 @@ impl VoiceAgent {
         ));
         self.speaker_finals_pending.fetch_add(1, Ordering::SeqCst);
         // Events produced after this final queue behind its slot (`contract.event-order`).
-        let slot = self.reserve_emit_slot();
+        let slot = self.event_bus.reserve_slot();
         tokio::spawn(async move {
             let outcome = match this.speaker_gate.as_ref() {
                 Some(gate) => gate.await_outcome(key).await,
@@ -3714,7 +3698,7 @@ impl VoiceAgent {
             event.with_speaker(outcome.as_str())
         };
         match slot {
-            Some(slot) => self.fill_emit_slot(slot, event),
+            Some(slot) => self.event_bus.fill_slot(slot, event),
             None => self.emit(event),
         }
         if outcome != Outcome::Other {
@@ -5454,45 +5438,10 @@ impl VoiceAgent {
         }
     }
 
+    /// Emits in production order: behind any final waiting for its speaker verdict
+    /// (`contract.event-order`), else at once. Every emitter on the bus is ordered the same way.
     pub(crate) fn emit(&self, event: SpeechEvent) {
-        let mut order = self.emit_order.lock().unwrap_or_else(|e| e.into_inner());
-        if order.queue.is_empty() {
-            self.deliver(event);
-        } else {
-            order.queue.push_back((0, Some(event)));
-        }
-    }
-
-    /// Reserves the emission slot of a final that waits for its speaker verdict.
-    fn reserve_emit_slot(&self) -> u64 {
-        let mut order = self.emit_order.lock().unwrap_or_else(|e| e.into_inner());
-        order.next_slot += 1;
-        let slot = order.next_slot;
-        order.queue.push_back((slot, None));
-        slot
-    }
-
-    /// Fills a reserved slot and delivers everything that is ready, in order.
-    fn fill_emit_slot(&self, slot: u64, event: SpeechEvent) {
-        let mut order = self.emit_order.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(entry) = order.queue.iter_mut().find(|(s, _)| *s == slot) {
-            entry.1 = Some(event);
-        }
-        while order.queue.front().is_some_and(|(_, e)| e.is_some()) {
-            if let Some((_, Some(event))) = order.queue.pop_front() {
-                self.deliver(event);
-            }
-        }
-    }
-
-    fn deliver(&self, event: SpeechEvent) {
-        let mode = self.events_mode();
-        if matches!(
-            mode,
-            EventDeliveryMode::Callback | EventDeliveryMode::Stream | EventDeliveryMode::Both
-        ) {
-            self.event_bus.emit(event);
-        }
+        self.event_bus.emit(event);
     }
 
     async fn run_tts_drain(

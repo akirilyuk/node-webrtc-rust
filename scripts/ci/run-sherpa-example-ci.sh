@@ -16,6 +16,8 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
 CI_STEP="$ROOT/scripts/ci/ci-step.sh"
+# shellcheck source=scripts/ci/ensure-speaker-fixtures.sh
+source "$ROOT/scripts/ci/ensure-speaker-fixtures.sh"
 # Per roundtrip script — must exceed in-process SHERPA_ROUNDTRIP_WALL_MS (often 70–120s).
 # Long scripts and failure re-runs (VOICE_DEBUG) need headroom — see sherpa_roundtrip_timeout_sec.
 DEFAULT_SHERPA_ROUNDTRIP_TIMEOUT_SEC="${CI_SHERPA_ROUNDTRIP_TIMEOUT_SEC:-180}"

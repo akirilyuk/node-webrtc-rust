@@ -114,6 +114,8 @@ bash -c "ROOT='$ROOT'; source '$FIXTURE_HELPER'; declare -F ensure_speaker_fixtu
 for flag in '--main-levels -26' '--min-turn-gap-ms 2500' '--bystander-db -15' '--only s3_test_m15'; do
   grep -qF -- "$flag" "$FIXTURE_HELPER" || fail "$FIXTURE_HELPER lost the scene arg: $flag"
 done
+grep -qE '^source "\$ROOT/scripts/ci/ensure-speaker-fixtures.sh"' "$CI_SCRIPT" \
+  || fail "$CI_SCRIPT calls ensure_speaker_fixtures but does not source $FIXTURE_HELPER"
 fr="$tmp/fixture-root"
 mkdir -p "$fr/scripts/ci" "$fr/bin"
 cp scripts/ci/run-sherpa-roundtrip-e2e.sh "$fr/scripts/ci/"

@@ -4,7 +4,10 @@
  * One client leg plays a generated "conversation" test scene (`speaker_fixtures`, never committed):
  * two enrollment utterances of the caller, then alternating caller and bystander turns at least
  * 2.5 s apart. The bystander's voice is 15 dB below the caller (`--bystander-db -15`) and the
- * background babble is at the scene level, also 15 dB below the caller. The agent answers every
+ * background babble is at the scene level, also 15 dB below the caller. No babble sentence starts
+ * within 1 s before a caller turn (`--babble-clear-ms 1000`): other speech that starts less than
+ * about 1 s before the caller can fall into the 1.5 s check and make it reject the caller, so the
+ * barge-in is suppressed and the final is labelled other. The agent answers every
  * `user_speech_final` with a long reply, like an app, so every turn starts during playback.
  * `barge_in` is paired with turns by `utteranceId`: each turn takes the first `user_speaking_start`
  * inside its scene slot, everything else goes by id.
@@ -24,8 +27,8 @@
  *   cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
  *     --models .models/speaker --main-tts .models/vits-piper-en_US-amy-low \
  *     --phrases stt-phrase-qualification.json --out .models/speaker-fixtures --main-levels -26 \
- *     --min-turn-gap-ms 2500 --bystander-db -15 --only s3_test_m15
- * (CI does this in `ensure_sherpa_models`.)
+ *     --min-turn-gap-ms 2500 --bystander-db -15 --babble-clear-ms 1000 --only s3_test_m15
+ * (CI does this in `scripts/ci/ensure-speaker-fixtures.sh`.)
  *
  * Run:
  *   npm run start:roundtrip-noisy-bystander --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa

@@ -1108,3 +1108,73 @@ async fn barge_in_carries_utterance_id_on_immediate_and_verdict_paths() {
     assert_eq!(barge, final_id);
     rig.agent.stop().await.unwrap();
 }
+
+/// One verdict per utterance key: a second speech segment that joins the same utterance during
+/// the gate hold (brief gap, same stream) neither starts a new check nor relabels the final.
+/// `queued_other` stays queued when no second check runs.
+async fn second_segment_on_same_key(on_mismatch: SpeakerMismatchAction) -> (Rig, usize, usize) {
+    let mut rig = rig_with(agent_config(gate_cfg(on_mismatch))).await;
+    rig.enroll().await;
+    let finals_before = rig.finals().len();
+    rig.script.lock().unwrap().final_on_finalize = Some("caller then bystander".into());
+    // Caller segment: 300 ms of speech, the 200 ms check scores REF (caller).
+    rig.feed(&loud_stereo_frame(), 15).await;
+    sleep(Duration::from_millis(150)).await;
+    // A mismatching embedding for any further check of this utterance.
+    rig.queue
+        .lock()
+        .unwrap()
+        .push_back(Behavior::Vector(OTHER.to_vec()));
+    // Brief gap (SpeechEnd, then SpeechStart in the first half of the 80 ms hold): same key.
+    rig.feed(&silent_stereo_frame(), 2).await;
+    rig.feed(&loud_stereo_frame(), 15).await;
+    sleep(Duration::from_millis(150)).await;
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    let queued = rig.queue.lock().unwrap().len();
+    (rig, finals_before, queued)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_verdict_is_final_for_a_merged_utterance() {
+    let (mut rig, finals_before, queued) =
+        second_segment_on_same_key(SpeakerMismatchAction::Flag).await;
+    assert_eq!(
+        queued, 1,
+        "the joined segment must not start a second check"
+    );
+    let finals = rig.finals();
+    assert_eq!(
+        finals.len(),
+        finals_before + 1,
+        "one final for the merged utterance"
+    );
+    let last = finals.last().copied().unwrap().clone();
+    assert_eq!(last.text.as_deref(), Some("caller then bystander"));
+    assert_eq!(last.speaker.as_deref(), Some("caller"));
+    assert_eq!(rig.count(SpeechEventKind::UserSpeechIgnored), 0);
+    rig.drain();
+    rig.agent.stop().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_verdict_is_final_with_drop() {
+    let (mut rig, finals_before, queued) =
+        second_segment_on_same_key(SpeakerMismatchAction::Drop).await;
+    assert_eq!(
+        queued, 1,
+        "the joined segment must not start a second check"
+    );
+    let finals = rig.finals();
+    assert_eq!(
+        finals.len(),
+        finals_before + 1,
+        "a caller-labelled final is not dropped"
+    );
+    let last = finals.last().copied().unwrap().clone();
+    assert_eq!(last.speaker.as_deref(), Some("caller"));
+    assert_eq!(rig.count(SpeechEventKind::UserSpeechIgnored), 0);
+    rig.drain();
+    rig.agent.stop().await.unwrap();
+}

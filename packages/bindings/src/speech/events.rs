@@ -15,6 +15,7 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
             SpeechEventKind::UserSpeakingEnd => JsSpeechEventType::UserSpeakingEnd,
             SpeechEventKind::UserSpeechPartial => JsSpeechEventType::UserSpeechPartial,
             SpeechEventKind::UserSpeechFinal => JsSpeechEventType::UserSpeechFinal,
+            SpeechEventKind::UserSpeechIgnored => JsSpeechEventType::UserSpeechIgnored,
             SpeechEventKind::UserLanguage => JsSpeechEventType::UserLanguage,
             SpeechEventKind::LanguageIdSkipped => JsSpeechEventType::LanguageIdSkipped,
             SpeechEventKind::AgentSpeakingStart => JsSpeechEventType::AgentSpeakingStart,
@@ -64,6 +65,7 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
         synthesized_ms: event.synthesized_ms,
         synthesis_complete: event.synthesis_complete,
         interrupted: event.interrupted,
+        speaker: event.speaker,
     }
 }
 
@@ -120,6 +122,18 @@ mod speech_event_to_js_tests {
         assert_eq!(js.event_type, JsSpeechEventType::LanguageIdSkipped);
         assert_eq!(js.reason.as_deref(), Some("deferred_tts"));
         assert_eq!(js.speech_ms, Some(80));
+        assert!(js.text.is_none());
+    }
+
+    #[test]
+    fn speaker_and_ignored_map_fields() {
+        let js = speech_event_to_js(
+            SpeechEvent::user_speech_final("hi", Some("u1".into())).with_speaker("other"),
+        );
+        assert_eq!(js.speaker.as_deref(), Some("other"));
+        let js = speech_event_to_js(SpeechEvent::user_speech_ignored(Some("u2".into())));
+        assert_eq!(js.event_type, JsSpeechEventType::UserSpeechIgnored);
+        assert_eq!(js.reason.as_deref(), Some("speaker_mismatch"));
         assert!(js.text.is_none());
     }
 

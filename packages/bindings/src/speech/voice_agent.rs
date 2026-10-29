@@ -293,6 +293,12 @@ impl JsVoiceAgent {
             .map_err(speech_err)
     }
 
+    /// Forget the enrolled caller voice (speaker gate); the next utterances enroll again.
+    #[napi]
+    pub fn reset_speaker_enrollment(&self) {
+        self.inner.reset_speaker_enrollment();
+    }
+
     #[napi]
     pub async fn flush_tts(&self) -> Result<()> {
         self.inner.flush_tts().await.map_err(speech_err)

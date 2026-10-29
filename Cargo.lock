@@ -4165,6 +4165,7 @@ dependencies = [
  "libc",
  "node-webrtc-rust-denoise",
  "node-webrtc-rust-speech",
+ "serde_json",
  "sherpa-onnx",
  "thiserror 1.0.69",
  "tokio",

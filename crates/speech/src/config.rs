@@ -179,6 +179,76 @@ impl Default for NoiseSuppressionConfig {
     }
 }
 
+/// What the speaker gate does with a final whose speaker is not the enrolled caller.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SpeakerMismatchAction {
+    /// Emit the final with `speaker: "other"`.
+    #[default]
+    Flag,
+    /// Emit `user_speech_ignored` (`reason: "speaker_mismatch"`) instead of the final.
+    Drop,
+}
+
+/// Opt-in caller verification. The caller's voice is learned from their first utterances and every
+/// later utterance is checked against it. Embeddings live in process memory only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SpeakerGateConfig {
+    pub enabled: bool,
+    /// Speaker embedding model (`nemo_en_titanet_small.onnx`). Required when `enabled`.
+    pub model_path: Option<String>,
+    /// Cosine similarity at or above which an utterance is the caller; in (0, 1).
+    pub threshold: f32,
+    /// Voiced speech (ms) collected for enrollment.
+    pub enroll_speech_ms: u32,
+    /// Speech (ms) of an utterance used for one check.
+    pub check_speech_ms: u32,
+    /// Clips shorter than this are `unknown` (the gate fails open).
+    pub min_check_speech_ms: u32,
+    pub on_mismatch: SpeakerMismatchAction,
+    /// Bound (ms) on one embedding call and on a final waiting for its verdict.
+    pub verify_timeout_ms: u32,
+}
+
+impl Default for SpeakerGateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model_path: None,
+            threshold: 0.459,
+            enroll_speech_ms: 3000,
+            check_speech_ms: 1500,
+            min_check_speech_ms: 1000,
+            on_mismatch: SpeakerMismatchAction::Flag,
+            verify_timeout_ms: 500,
+        }
+    }
+}
+
+impl SpeakerGateConfig {
+    /// Config errors for an enabled gate.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self
+            .model_path
+            .as_deref()
+            .is_none_or(|p| p.trim().is_empty())
+        {
+            return Err("speakerGate.modelPath is required when speakerGate.enabled".into());
+        }
+        if !(self.threshold > 0.0 && self.threshold < 1.0) {
+            return Err(format!(
+                "speakerGate.threshold must be in (0, 1), got {}",
+                self.threshold
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Supported VAD sample rates.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1172,6 +1242,9 @@ pub struct VoiceAgentConfig {
     pub vad: VadConfig,
     #[serde(default)]
     pub noise_suppression: NoiseSuppressionConfig,
+    /// Opt-in caller verification (barge-in and finals).
+    #[serde(default)]
+    pub speaker_gate: SpeakerGateConfig,
     #[serde(default)]
     pub events: EventsConfig,
     pub stt: Option<SttConfig>,
@@ -1240,6 +1313,7 @@ impl Default for VoiceAgentConfig {
         Self {
             vad: VadConfig::default(),
             noise_suppression: NoiseSuppressionConfig::default(),
+            speaker_gate: SpeakerGateConfig::default(),
             events: EventsConfig::default(),
             stt: Some(SttConfig {
                 provider: SttVendor::Mock,

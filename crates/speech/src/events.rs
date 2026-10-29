@@ -57,6 +57,8 @@ pub enum SpeechEventKind {
     UserSpeakingEnd,
     UserSpeechPartial,
     UserSpeechFinal,
+    /// A final dropped by the speaker gate (`reason: "speaker_mismatch"`). No transcript text.
+    UserSpeechIgnored,
     UserLanguage,
     /// No language decision for this utterance (`reason`, `speech_ms`). No transcript text.
     LanguageIdSkipped,
@@ -146,6 +148,8 @@ pub struct SpeechEvent {
     /// `agent_reply_end`: true when the reply was cut off (barge-in, flush, stop) before its
     /// last frame was written.
     pub interrupted: Option<bool>,
+    /// `user_speech_final` with the speaker gate on: `caller` | `other` | `unknown`.
+    pub speaker: Option<String>,
 }
 
 impl SpeechEvent {
@@ -179,6 +183,7 @@ impl SpeechEvent {
             synthesized_ms: None,
             synthesis_complete: None,
             interrupted: None,
+            speaker: None,
         }
     }
 
@@ -269,6 +274,20 @@ impl SpeechEvent {
         Self::base(SpeechEventKind::UserSpeechPartial)
             .with_utterance_id(utterance_id)
             .with_text(text)
+    }
+
+    /// Tags a final with the speaker-gate verdict (`caller` | `other` | `unknown`).
+    pub fn with_speaker(mut self, speaker: &str) -> Self {
+        self.speaker = Some(speaker.to_string());
+        self
+    }
+
+    /// The speaker gate dropped this utterance's final (`on_mismatch: drop`).
+    pub fn user_speech_ignored(utterance_id: Option<String>) -> Self {
+        let mut ev = Self::base(SpeechEventKind::UserSpeechIgnored).with_utterance_id(utterance_id);
+        ev.reason = Some("speaker_mismatch".into());
+        ev.speaker = Some("other".into());
+        ev
     }
 
     pub fn user_speech_final(text: impl Into<String>, utterance_id: Option<String>) -> Self {

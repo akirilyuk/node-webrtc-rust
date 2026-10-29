@@ -24,6 +24,8 @@ sherpa-onnx = { version = "1.13.2", default-features = false, features = ["share
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 criterion = { version = "0.5", default-features = false }
+# speaker_gate_fixture_test: reads the fixture manifest.
+serde_json = { workspace = true }
 # speaker_bench (support/enhance.rs): the product RNNoise stage as a bench preprocessor.
 node-webrtc-rust-denoise = { path = "../denoise" }
 

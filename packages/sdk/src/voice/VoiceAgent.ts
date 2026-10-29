@@ -269,6 +269,18 @@ function toJsConfig(config?: VoiceAgentConfig): JsVoiceAgentConfig | undefined {
       : undefined,
     postUtteranceSilenceMs,
     replay: config.replay ? { maxAgeMs: config.replay.maxAgeMs } : undefined,
+    speakerGate: config.speakerGate
+      ? {
+          enabled: config.speakerGate.enabled,
+          modelPath: config.speakerGate.modelPath,
+          threshold: config.speakerGate.threshold,
+          enrollSpeechMs: config.speakerGate.enrollSpeechMs,
+          checkSpeechMs: config.speakerGate.checkSpeechMs,
+          minCheckSpeechMs: config.speakerGate.minCheckSpeechMs,
+          onMismatch: config.speakerGate.onMismatch,
+          verifyTimeoutMs: config.speakerGate.verifyTimeoutMs,
+        }
+      : undefined,
     noiseSuppression: config.noiseSuppression
       ? {
           provider:
@@ -343,6 +355,7 @@ export function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
     synthesizedMs: event.synthesizedMs ?? undefined,
     synthesisComplete: event.synthesisComplete ?? undefined,
     interrupted: event.interrupted ?? undefined,
+    speaker: (event.speaker as SpeechEvent['speaker']) ?? undefined,
   }
 }
 
@@ -396,6 +409,8 @@ function jsEventTypeToString(eventType: JsSpeechEventType): SpeechEventType {
       return 'agent_reply_start'
     case JsSpeechEventType.AgentReplyEnd:
       return 'agent_reply_end'
+    case JsSpeechEventType.UserSpeechIgnored:
+      return 'user_speech_ignored'
     default:
       return 'error'
   }
@@ -480,6 +495,15 @@ export class VoiceAgent {
       options?.interruptible ?? undefined,
       options?.replyId ?? undefined,
     )
+  }
+
+  /**
+   * Forgets the enrolled caller voice (`speakerGate`); the next utterances enroll again.
+   * No-op when the gate is off.
+   */
+  resetSpeakerEnrollment(): void {
+    debugFn(MODULE, 'resetSpeakerEnrollment')
+    this.native.resetSpeakerEnrollment()
   }
 
   /**

@@ -26,10 +26,11 @@ use crate::events::{SpeechEvent, SpeechEventBus};
 use crate::otel::{self, SttMetricAttrs};
 use crate::pcm::i16_samples_to_bytes;
 use crate::pipeline::{
-    tts_stream_chunks_enabled, LanguageIdProvider, SttProvider, SttTranscript, TtsAudioChunk,
-    TtsProgressiveSink, TtsProvider,
+    tts_stream_chunks_enabled, LanguageIdProvider, SpeakerEmbedder, SttProvider, SttTranscript,
+    TtsAudioChunk, TtsProgressiveSink, TtsProvider,
 };
 use crate::registry::VendorRegistry;
+use crate::speaker_gate::{BargeDecision, Outcome, SpeakerGate, Verdict};
 use crate::stt_actor::{
     default_stt_latency_sink, spawn_stt_actor, test_final_delay_ms_from_env, SttActorHandle,
     SttActorOptions, SttCommand, SttResult, STT_ACTOR_START_MS, STT_ACTOR_STOP_MS,
@@ -567,6 +568,10 @@ pub struct VoiceAgent {
     /// Test-only delay (ms, 0 = none) between the barge-in TTS flush and the `barge_in` event.
     barge_in_flush_delay_ms: AtomicU64,
     language_id: Mutex<Option<Arc<dyn LanguageIdProvider>>>,
+    /// Opt-in speaker gate (`None` unless `speakerGate.enabled`).
+    speaker_gate: Option<Arc<SpeakerGate>>,
+    /// The embedder until `start` hands it to the gate's verifier task.
+    speaker_embedder: std::sync::Mutex<Option<Box<dyn SpeakerEmbedder>>>,
     tts: Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
     tts_drain_wake: Arc<Notify>,
     tts_drain_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
@@ -651,6 +656,25 @@ impl VoiceAgent {
             None
         };
 
+        config
+            .speaker_gate
+            .validate()
+            .map_err(SpeechError::Config)?;
+        let (speaker_gate, speaker_embedder) = if config.speaker_gate.enabled {
+            let embedder = registry.create_speaker_embedder(&config.speaker_gate)?;
+            if embedder.is_none() {
+                return Err(SpeechError::Config(
+                    "speakerGate.enabled but the vendor provides no speaker embedder".into(),
+                ));
+            }
+            (
+                Some(SpeakerGate::new(config.speaker_gate.clone())),
+                embedder,
+            )
+        } else {
+            (None, None)
+        };
+
         let vad = if config.vad.enabled {
             Some(VadEngine::new(config.vad.clone())?)
         } else {
@@ -729,6 +753,8 @@ impl VoiceAgent {
             stt_ready_wait_override_ms: AtomicU64::new(0),
             barge_in_flush_delay_ms: AtomicU64::new(0),
             language_id: Mutex::new(language_id),
+            speaker_gate,
+            speaker_embedder: std::sync::Mutex::new(speaker_embedder),
             tts: Arc::new(Mutex::new(tts)),
             tts_drain_wake: Arc::new(Notify::new()),
             tts_drain_worker: Arc::new(Mutex::new(None)),
@@ -1712,6 +1738,7 @@ impl VoiceAgent {
             tts.bind_session_context(&session_ctx);
         }
         self.ensure_tts_drain_worker().await;
+        self.start_speaker_gate();
         if let Some(this) = self.weak_self.upgrade() {
             this.ensure_c2_wall_clock_ticker();
         }
@@ -2977,6 +3004,123 @@ impl VoiceAgent {
         Self::end_agent_speaking_inner(&self.inner, arm_stt_hold_after_playback).await
     }
 
+    /// Starts the speaker gate's verifier task (once). Verdicts are applied on their own task so
+    /// the verifier never waits for the agent's step lock.
+    fn start_speaker_gate(&self) {
+        let Some(gate) = self.speaker_gate.as_ref() else {
+            return;
+        };
+        let Some(embedder) = self
+            .speaker_embedder
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        else {
+            return;
+        };
+        let weak = self.weak_self.clone();
+        gate.spawn(
+            embedder,
+            Box::new(move |verdict| {
+                if let Some(agent) = weak.upgrade() {
+                    tokio::spawn(async move { agent.apply_speaker_verdict(verdict).await });
+                }
+            }),
+        );
+    }
+
+    /// Forget the enrolled caller; the next utterances enroll again. No-op with the gate off.
+    pub fn reset_speaker_enrollment(&self) {
+        if let Some(gate) = self.speaker_gate.as_ref() {
+            gate.reset();
+        }
+    }
+
+    /// Verdicts dropped because their utterance was gone (tests and diagnostics).
+    pub fn speaker_gate_stale_verdicts(&self) -> u64 {
+        self.speaker_gate.as_ref().map_or(0, |g| g.stale_verdicts())
+    }
+
+    /// True once the caller's voice is enrolled (tests and diagnostics).
+    pub fn speaker_gate_enrolled(&self) -> bool {
+        self.speaker_gate.as_ref().is_some_and(|g| g.is_enrolled())
+    }
+
+    /// Warn lines of the speaker gate (tests and diagnostics).
+    pub fn speaker_gate_warnings(&self) -> Vec<String> {
+        self.speaker_gate
+            .as_ref()
+            .map_or_else(Vec::new, |g| g.warnings())
+    }
+
+    /// Applies one verdict to its own utterance only (`rt.stale-event-by-key`).
+    async fn apply_speaker_verdict(&self, verdict: Verdict) {
+        let Some(gate) = self.speaker_gate.as_ref() else {
+            return;
+        };
+        let _step = self.utterance_step.lock().await;
+        let (known, live, barge_in, speaking) = {
+            let inner = self.inner.lock().await;
+            (
+                inner.record_ref(verdict.key).is_some(),
+                inner.live_key() == Some(verdict.key),
+                inner.config.vad.barge_in.clone(),
+                inner.agent_speaking,
+            )
+        };
+        if !known {
+            gate.note_stale_verdict();
+            voice_debug(format!(
+                "speaker gate: verdict for gone utterance key={} dropped",
+                verdict.key
+            ));
+            return;
+        }
+        if !gate.take_pending_barge(verdict.key) {
+            return;
+        }
+        if verdict.outcome == Outcome::Other {
+            eprintln!(
+                "[speaker-gate] info: speaker gate suppressed barge-in key={}",
+                verdict.key
+            );
+            return;
+        }
+        if !live || !speaking || self.protected_tts_active() {
+            return;
+        }
+        {
+            let mut inner = self.inner.lock().await;
+            inner.barge_awaiting_stt_partial = false;
+            inner.stt_barge_fired_this_agent_playback = true;
+        }
+        voice_debug(format!(
+            "speaker gate: barge-in after verdict ({})",
+            verdict.outcome.as_str()
+        ));
+        self.barge_in_with_speaking_end(&barge_in).await;
+        self.cancel_pending_tts_synthesis().await;
+    }
+
+    /// True when a barge-in for the live utterance must wait for (or is vetoed by) the speaker
+    /// verdict. Records the pending barge so the verdict handler fires it.
+    async fn speaker_gate_holds_barge(&self) -> bool {
+        let Some(gate) = self.speaker_gate.as_ref() else {
+            return false;
+        };
+        let Some(key) = self.inner.lock().await.live_key() else {
+            return false;
+        };
+        match gate.barge_decision(key) {
+            BargeDecision::Proceed => false,
+            BargeDecision::Suppress => true,
+            BargeDecision::Defer => {
+                gate.set_pending_barge(key);
+                true
+            }
+        }
+    }
+
     /// Barge-in with a single owner for `agent_speaking_end`: end speaking BEFORE the flush, so the
     /// TTS drain (which observes the flush) finds `agent_speaking == false` and does not emit; then
     /// flush + `agent_reply_end{interrupted}` + `barge_in`; then `agent_speaking_end` if this call
@@ -3062,6 +3206,10 @@ impl VoiceAgent {
             (true, barge_in_cfg.clone())
         };
         if !should_barge {
+            return Ok(());
+        }
+        if self.speaker_gate_holds_barge().await {
+            voice_debug("STT-gated barge-in held by speaker gate");
             return Ok(());
         }
         {
@@ -3183,6 +3331,10 @@ impl VoiceAgent {
                 return Ok(());
             }
             if !require_stt_partial || !has_stt {
+                if self.speaker_gate_holds_barge().await {
+                    voice_debug("barge-in held by speaker gate (VAD SpeechStart)");
+                    return Ok(());
+                }
                 voice_debug(format!(
                     "immediate barge-in on VAD SpeechStart (require_stt_partial={require_stt_partial}, emits_partials={emits_partials})"
                 ));
@@ -3422,6 +3574,14 @@ impl VoiceAgent {
             return;
         }
         self.note_stt_final_for_turn_latency().await;
+        // Speaker gate: the verdict of this utterance, waiting at most `verifyTimeoutMs` for a
+        // check that was sent and has not settled (then `unknown`).
+        let speaker = match self.speaker_gate.as_ref() {
+            Some(gate) => Some(gate.await_outcome(key).await),
+            None => None,
+        };
+        let drop_mismatch = self.inner.lock().await.config.speaker_gate.on_mismatch
+            == crate::config::SpeakerMismatchAction::Drop;
         let event = {
             let mut inner = self.inner.lock().await;
             let Some(rec) = inner.record_mut(key) else {
@@ -3462,9 +3622,20 @@ impl VoiceAgent {
             };
             rec.final_emitted = true;
             rec.mark_terminal();
-            event
+            match speaker {
+                Some(Outcome::Other) if drop_mismatch => {
+                    SpeechEvent::user_speech_ignored(Some(rec.id.clone()))
+                }
+                Some(outcome) => event.with_speaker(outcome.as_str()),
+                None => event,
+            }
         };
         self.emit(event);
+        if let (Some(gate), Some(outcome)) = (self.speaker_gate.as_ref(), speaker) {
+            if outcome != Outcome::Other {
+                gate.enroll_utterance(key);
+            }
+        }
         let mut inner = self.inner.lock().await;
         if let Some(rec) = inner.record_mut(key) {
             rec.fire_terminal_waiter(true);
@@ -4646,6 +4817,11 @@ impl VoiceAgent {
             }
         }
 
+        if !speech_start {
+            if let Some(gate) = self.speaker_gate.as_ref() {
+                gate.push_frame(&mono_bytes);
+            }
+        }
         let mut speech_end_transition = false;
         for transition in &transitions {
             voice_debug(format!("VAD {transition:?}"));
@@ -4661,6 +4837,10 @@ impl VoiceAgent {
                             inner.live = Some(rec);
                         }
                     }
+                    if let Some(gate) = self.speaker_gate.as_ref() {
+                        let key = self.inner.lock().await.ensure_live().key;
+                        gate.begin(key, &mono_bytes);
+                    }
                     self.on_vad_speech_start().await?;
                     // VAD speaking_start is independent of having an STT vendor (tests with
                     // stt: None still expect it). setSttEnabled(false) is gated inside emit.
@@ -4669,6 +4849,9 @@ impl VoiceAgent {
                 }
                 VadTransition::SpeechEnd => {
                     speech_end_transition = true;
+                    if let Some(gate) = self.speaker_gate.as_ref() {
+                        gate.end_utterance();
+                    }
                     self.maybe_start_lid_at_speech_end().await;
                     // Runtime toggle only — VAD-only (`stt: None`) still emits speaking_end.
                     if !stt_enabled {

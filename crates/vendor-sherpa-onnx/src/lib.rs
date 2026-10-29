@@ -8,6 +8,7 @@ mod native_calls;
 mod once_map;
 mod pool;
 mod sentences;
+mod speaker;
 mod stt;
 mod tts;
 mod tts_model_paths;
@@ -22,6 +23,7 @@ pub use loader::{
 pub use pool::SherpaModelPool;
 #[doc(hidden)]
 pub use sentences::engine_pieces;
+pub use speaker::SherpaSpeakerEmbedder;
 pub use stt::{
     reset_sherpa_get_result_count, reset_sherpa_poll_blocking_hops, sherpa_get_result_count,
     sherpa_poll_blocking_hops, FINALIZE_TAIL_PADDING_MS,

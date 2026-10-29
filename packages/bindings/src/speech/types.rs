@@ -5,8 +5,9 @@ use napi_derive::napi;
 use node_webrtc_rust_speech::config::AdaptiveVadConfig;
 use node_webrtc_rust_speech::{
     BargeInConfig, EventDeliveryMode, EventsConfig, NoiseSuppressionConfig,
-    NoiseSuppressionProvider, SentenceCase, SpeechTransport, SttConfig, SttVendor, TtsConfig,
-    TtsVendor, VadConfig, VadSampleRate, VoiceAgentConfig, VoiceSessionContext,
+    NoiseSuppressionProvider, SentenceCase, SpeakerGateConfig, SpeakerMismatchAction,
+    SpeechTransport, SttConfig, SttVendor, TtsConfig, TtsVendor, VadConfig, VadSampleRate,
+    VoiceAgentConfig, VoiceSessionContext,
 };
 
 #[napi(string_enum)]
@@ -440,6 +441,88 @@ impl From<JsNoiseSuppressionConfig> for NoiseSuppressionConfig {
     }
 }
 
+/// Opt-in caller verification (biometric data stays in process memory).
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct JsSpeakerGateConfig {
+    pub enabled: Option<bool>,
+    pub model_path: Option<String>,
+    pub threshold: Option<f64>,
+    pub enroll_speech_ms: Option<u32>,
+    pub check_speech_ms: Option<u32>,
+    pub min_check_speech_ms: Option<u32>,
+    /// `flag` (default) | `drop`.
+    pub on_mismatch: Option<String>,
+    pub verify_timeout_ms: Option<u32>,
+}
+
+impl TryFrom<JsSpeakerGateConfig> for SpeakerGateConfig {
+    type Error = Error;
+
+    fn try_from(value: JsSpeakerGateConfig) -> Result<Self> {
+        let d = SpeakerGateConfig::default();
+        let on_mismatch = match value.on_mismatch.as_deref() {
+            None | Some("flag") => SpeakerMismatchAction::Flag,
+            Some("drop") => SpeakerMismatchAction::Drop,
+            Some(other) => {
+                return Err(Error::new(
+                    Status::InvalidArg,
+                    format!("speakerGate.onMismatch must be 'flag' or 'drop', got {other:?}"),
+                ))
+            }
+        };
+        Ok(Self {
+            enabled: value.enabled.unwrap_or(d.enabled),
+            model_path: value.model_path,
+            threshold: value.threshold.map(|t| t as f32).unwrap_or(d.threshold),
+            enroll_speech_ms: value.enroll_speech_ms.unwrap_or(d.enroll_speech_ms),
+            check_speech_ms: value.check_speech_ms.unwrap_or(d.check_speech_ms),
+            min_check_speech_ms: value.min_check_speech_ms.unwrap_or(d.min_check_speech_ms),
+            on_mismatch,
+            verify_timeout_ms: value.verify_timeout_ms.unwrap_or(d.verify_timeout_ms),
+        })
+    }
+}
+
+#[cfg(test)]
+mod speaker_gate_config_from_tests {
+    use super::*;
+
+    #[test]
+    fn omitted_gate_is_off_with_defaults() {
+        let cfg: SpeakerGateConfig = JsSpeakerGateConfig::default().try_into().unwrap();
+        assert_eq!(cfg, SpeakerGateConfig::default());
+        assert!(!cfg.enabled);
+    }
+
+    #[test]
+    fn fields_map_and_on_mismatch_drop() {
+        let cfg: SpeakerGateConfig = JsSpeakerGateConfig {
+            enabled: Some(true),
+            model_path: Some("m.onnx".into()),
+            threshold: Some(0.5),
+            on_mismatch: Some("drop".into()),
+            ..Default::default()
+        }
+        .try_into()
+        .unwrap();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.on_mismatch, SpeakerMismatchAction::Drop);
+        assert_eq!(cfg.threshold, 0.5);
+        assert_eq!(cfg.check_speech_ms, 1500);
+    }
+
+    #[test]
+    fn unknown_on_mismatch_is_rejected() {
+        let r: Result<SpeakerGateConfig> = JsSpeakerGateConfig {
+            on_mismatch: Some("mute".into()),
+            ..Default::default()
+        }
+        .try_into();
+        assert!(r.is_err());
+    }
+}
+
 #[cfg(test)]
 mod transport_config_from_tests {
     use super::*;
@@ -625,6 +708,7 @@ pub struct JsVoiceAgentConfig {
     pub language_id: Option<JsLanguageIdConfig>,
     pub post_utterance_silence_ms: Option<u32>,
     pub noise_suppression: Option<JsNoiseSuppressionConfig>,
+    pub speaker_gate: Option<JsSpeakerGateConfig>,
     pub replay: Option<JsReplayConfig>,
 }
 
@@ -646,6 +730,11 @@ impl TryFrom<JsVoiceAgentConfig> for VoiceAgentConfig {
             language_id: value.language_id.map(Into::into),
             post_utterance_silence_ms,
             noise_suppression: value.noise_suppression.map(Into::into).unwrap_or_default(),
+            speaker_gate: value
+                .speaker_gate
+                .map(TryInto::try_into)
+                .transpose()?
+                .unwrap_or_default(),
             replay: value
                 .replay
                 .map(|r| node_webrtc_rust_speech::stt_hold::ReplayConfig {
@@ -665,6 +754,8 @@ pub enum JsSpeechEventType {
     UserSpeakingEnd,
     #[napi(value = "user_speech_partial")]
     UserSpeechPartial,
+    #[napi(value = "user_speech_ignored")]
+    UserSpeechIgnored,
     #[napi(value = "user_speech_final")]
     UserSpeechFinal,
     #[napi(value = "user_language")]
@@ -753,6 +844,8 @@ pub struct JsSpeechEvent {
     pub synthesis_complete: Option<bool>,
     /// `agent_reply_end`: true when the reply was cut off before its last frame was written.
     pub interrupted: Option<bool>,
+    /// `user_speech_final` with the speaker gate on: `caller` | `other` | `unknown`.
+    pub speaker: Option<String>,
 }
 
 #[napi(string_enum)]

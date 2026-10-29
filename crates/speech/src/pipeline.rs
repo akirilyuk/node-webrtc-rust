@@ -7,7 +7,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::config::{LanguageIdConfig, SttConfig, TtsConfig, VoiceSessionContext};
+use crate::config::{
+    LanguageIdConfig, SpeakerGateConfig, SttConfig, TtsConfig, VoiceSessionContext,
+};
 use crate::error::SpeechResult;
 
 /// Chunk of synthesized PCM ready for outbound injection.
@@ -309,6 +311,14 @@ pub trait LanguageIdProvider: Send + Sync {
     ) -> SpeechResult<Option<LanguageIdResult>>;
 }
 
+/// Speaker embedding for the speaker gate.
+#[allow(clippy::double_must_use)] // async_trait expansion re-adds must_use on boxed futures
+#[async_trait]
+pub trait SpeakerEmbedder: Send + Sync {
+    /// Mono s16le 16 kHz in. `Ok(None)` when the clip is too short for the model.
+    async fn embed(&self, pcm: Bytes, sample_rate: u32) -> SpeechResult<Option<Vec<f32>>>;
+}
+
 /// Factory for constructing vendor providers from config.
 pub trait VendorFactory: Send + Sync {
     fn create_stt(&self, config: &SttConfig) -> SpeechResult<Box<dyn SttProvider>>;
@@ -317,6 +327,12 @@ pub trait VendorFactory: Send + Sync {
         &self,
         _config: &LanguageIdConfig,
     ) -> SpeechResult<Option<Box<dyn LanguageIdProvider>>> {
+        Ok(None)
+    }
+    fn create_speaker_embedder(
+        &self,
+        _config: &SpeakerGateConfig,
+    ) -> SpeechResult<Option<Box<dyn SpeakerEmbedder>>> {
         Ok(None)
     }
 }

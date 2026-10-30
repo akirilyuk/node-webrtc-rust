@@ -334,6 +334,11 @@ struct AgentInner {
     /// VAD-pending onset frames held back from the closing STT stream during the gate hold.
     /// Counted by exactly one stream (handoff-counting). Mono s16le 16 kHz.
     hold_pending_pcm: Vec<u8>,
+    /// Copy of the last pre-roll capacity of audio sent to the open stream during the gate hold /
+    /// pending close (real-time forwarding is unchanged). At a long-pause `SpeechStart` it seeds
+    /// the new stream's pre-roll so the new stream starts on real audio instead of zero padding.
+    /// Only sub-threshold audio (VAD not speaking, not pending) is copied. Mono s16le 16 kHz.
+    hold_lookback_pcm: Vec<u8>,
     /// Milliseconds of inbound audio still forwarded to STT after VAD speech end.
     stt_gate_hold_ms: u32,
     /// When true, finalize STT once gate hold drains (after trailing speech is relayed).
@@ -707,6 +712,7 @@ impl VoiceAgent {
                 stt_pre_roll,
                 short_burst: ShortBurstRetainer::new(),
                 hold_pending_pcm: Vec::new(),
+                hold_lookback_pcm: Vec::new(),
                 stt_gate_hold_ms: 0,
                 stt_finalize_pending: false,
                 stt_endpoint_closing_started: false,
@@ -1408,6 +1414,7 @@ impl VoiceAgent {
         inner.stt_pre_roll.as_mut().map(SttPreRollBuffer::clear);
         inner.short_burst.clear();
         inner.hold_pending_pcm.clear();
+        inner.hold_lookback_pcm.clear();
         inner.stt_gate_hold_ms = 0;
         inner.stt_finalize_pending = false;
         inner.stt_endpoint_closing_started = false;
@@ -4754,9 +4761,19 @@ impl VoiceAgent {
         if speech_start && stt_active {
             // Onset frames held back during the gate hold belong to the NEW phrase. Take them
             // before the old stream is finalized so its final never contains them.
-            let held_onset = {
+            let (held_onset, held_lookback) = {
                 let mut inner = self.inner.lock().await;
-                std::mem::take(&mut inner.hold_pending_pcm)
+                let lookback = std::mem::take(&mut inner.hold_lookback_pcm);
+                // Only a stream that is still open fed the copy; otherwise it is stale.
+                let old_stream_open = inner.live_flag(|r| r.stream_open && !r.final_emitted);
+                (
+                    std::mem::take(&mut inner.hold_pending_pcm),
+                    if old_stream_open {
+                        lookback
+                    } else {
+                        Vec::new()
+                    },
+                )
             };
             let long_pause_new_phrase = {
                 let inner = self.inner.lock().await;
@@ -4803,6 +4820,21 @@ impl VoiceAgent {
                     // Pad only when opening a new STT stream — not for brief-gap continuations.
                     let new_stream = !inner.live_flag(|r| r.stream_open);
                     let mut held_onset = held_onset;
+                    if new_stream && !held_lookback.is_empty() {
+                        // Real audio before the onset (already sent to the old stream as well):
+                        // lookback, then the held onset, trimmed by the ring from the oldest end.
+                        // Padding is added below only if both together are shorter than capacity.
+                        voice_debug(format!(
+                            "STT pre-roll lookback: {} ms copied from the previous stream's hold",
+                            crate::pcm::duration_ms_from_mono_s16le(
+                                held_lookback.len(),
+                                crate::pcm::STT_PCM_SAMPLE_RATE,
+                            ),
+                        ));
+                        if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
+                            pre_roll.push(&held_lookback);
+                        }
+                    }
                     if !held_onset.is_empty() {
                         voice_debug(format!(
                             "STT hold-back: {} ms onset → {}",
@@ -5031,6 +5063,31 @@ impl VoiceAgent {
                 && !vad_speaking
                 && !speech_start
                 && (inner.stt_gate_hold_ms > 0 || utterance_closing);
+            // Shadow copy for the next stream's lead-in: frames that go straight to the open stream
+            // during the hold / pending close are also kept (last pre-roll capacity only).
+            let lookback_copy = gate_stt
+                && stt_active
+                && !hold_back
+                && inner.live_flag(|r| r.stream_open)
+                && !vad_speaking
+                && !speech_start
+                && (inner.stt_gate_hold_ms > 0 || utterance_closing);
+            if lookback_copy {
+                inner
+                    .hold_lookback_pcm
+                    .extend_from_slice(mono_bytes.as_ref());
+                let cap_bytes = (crate::pcm::STT_PCM_SAMPLE_RATE as usize
+                    * crate::stt_pre_roll::stt_pre_roll_capacity_ms(&inner.config.vad) as usize
+                    / 1000)
+                    * 2;
+                if inner.hold_lookback_pcm.len() > cap_bytes {
+                    let over = (inner.hold_lookback_pcm.len() - cap_bytes) & !1;
+                    inner.hold_lookback_pcm.drain(..over);
+                }
+            } else if !inner.live_flag(|r| r.stream_open) && !inner.hold_lookback_pcm.is_empty() {
+                // The stream closed without a new SpeechStart: the copy is stale.
+                inner.hold_lookback_pcm.clear();
+            }
             let mut held_excess: Option<Bytes> = None;
             let mut held_resolved_to_stream: Option<Bytes> = None;
             if hold_back {
@@ -5670,6 +5727,7 @@ impl VoiceAgent {
                     guard.stt_pre_roll.as_mut().map(SttPreRollBuffer::clear);
                     guard.short_burst.clear();
                     guard.hold_pending_pcm.clear();
+                    guard.hold_lookback_pcm.clear();
                     (
                         first_audio_ms,
                         timing.and_then(|t| t.first_chunk_ms),

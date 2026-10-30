@@ -669,6 +669,15 @@ Exit code `1` if any phrase is empty or below the similarity threshold.
 
 Asserted per pass (each turn takes the first `user_speaking_start` inside its scene slot; `barge_in` and finals are paired by `utteranceId`): no `barge_in` carries a bystander utterance's id and its final has `speaker: 'other'`; every caller turn barges in, its final has `speaker: 'caller'`, and qualified phrases match the manifest text (`wordSimilarity` >= 0.75; long sentences are not judged); the barge-in comes at most 300 ms after the later of `user_speaking_start` + `checkSpeechMs` (the speaker verdict) and the first `user_speech_partial` on that `utteranceId` with at least `minSttPartialTokens` tokens (what `requireSttPartial` waits for, counted as the product counts them), and at most 3 s after `user_speaking_start`. A bystander final `unknown` with `speakerUnknownReason: 'short'` (less speech than `minCheckSpeechMs`, 1500 ms) is accepted together with its barge-in, which is the documented behaviour with `suppressShortBargeIn` off; an unknown with any other reason, or none, fails. At least 1 bystander turn per pass must be `other` without a barge-in, so a pass cannot succeed without the gate scoring a bystander; how many of the -15 dB bystanders open the VAD varies per run, so no higher count is required.
 
+The caller phrases the scene judges are qualified over babble, not only in silence. The clean sweep (`phrase_sweep`, 3000 syntheses after 300 ms of digital silence) never puts a weak onset under background chatter, and the scene does: "excuse me please" was clean in all 3000 clean runs, yet one Piper roll of it over the scene's babble was heard as "X cuse me, please." `phrase_sweep --babble <voices-root>` repeats the scene's condition: per caller level (-20 and -26 dBFS) 1000 fresh syntheses, each over two of the scene's test-set voices reading background sentences 15 dB below the caller, already talking when the window starts, with 750 ms of babble before the onset (what the agent's STT receives) and no babble sentence starting in the last second before the caller. It scores with this test's oracle (`wordSimilarity` >= 0.75). The result is the `babble` entry of a phrase in `stt-phrase-qualification.json`, and `speaker_fixtures` only picks a scene caller phrase that has zero misses in 1000 rolls at both levels.
+
+```bash
+cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example phrase_sweep -- \
+  --stt examples/voice-agent-local-sherpa/.models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06 \
+  --tts examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low \
+  --n 1000 --babble examples/voice-agent-local-sherpa/.models "charlie one two three"
+```
+
 ```bash
 npm run download-speaker --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa
 cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \

@@ -420,6 +420,8 @@ Privacy:
 - The feature is opt-in. Tell your users that their voice is analyzed during the call and obtain the consent your jurisdiction requires.
 - The speaker model is your choice and its license applies. The recommended `nemo_en_titanet_small.onnx` is NVIDIA NeMo TitaNet-small, published under the NeMo Toolkit license (Apache-2.0); check the license of any other model you use.
 
+**Recognizer limit under background chatter.** The bundled Sherpa recognizer can mishear a short phrase with a weak onset when other people talk about 15 dB below the caller: "excuse me" came out as "X cuse" in a noisy-bystander test. The scene tests in this repo therefore only judge phrases that were recognized correctly in 1000 of 1000 syntheses under that condition.
+
 ## Use cases
 
 ### 1. Standard voice agent (one peer, user talks, agent replies)

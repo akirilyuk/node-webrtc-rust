@@ -1718,3 +1718,84 @@ async fn waitfor_release_sent_before_embed_is_not_lost() {
     );
     rig.agent.stop().await.unwrap();
 }
+
+/// The re-check is still running when agent playback ends. Its `caller` result only labels the
+/// final (`caller`, `speaker_rechecked`): the agent is no longer speaking, so there is nothing to
+/// interrupt and no `barge_in`, also not later. Order is fixed by the held re-check: playback
+/// ends and the final is parked before the re-check is released.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recheck_still_running_when_playback_ends_labels_caller_without_barge() {
+    let mut cfg = gate_cfg(SpeakerMismatchAction::Flag);
+    cfg.verify_timeout_ms = 3000;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    let base = rig.log.len();
+    rig.start_speaking().await;
+    let release = Arc::new(Notify::new());
+    queue_checks(
+        &rig,
+        vec![
+            Behavior::Vector(OTHER.to_vec()),
+            Behavior::WaitFor(Arc::clone(&release), REF.to_vec()),
+        ],
+    );
+    rig.script.lock().unwrap().final_on_finalize = Some("caller after playback".into());
+    rig.feed(&loud_stereo_frame(), recheck_bound_frames() - 1)
+        .await;
+    // The re-check goes out only once the first `other` verdict is in, which the verifier task
+    // stores on its own schedule. Keep the utterance going until the fake embedder has taken the
+    // second (held) check from the queue, so the re-check is in flight before playback ends.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !rig.queue.lock().unwrap().is_empty() {
+        assert!(Instant::now() < deadline, "re-check never went out");
+        rig.feed(&loud_stereo_frame(), 1).await;
+        sleep(Duration::from_millis(5)).await;
+    }
+    rig.feed(&silent_stereo_frame(), 30).await;
+    rig.drain();
+    assert!(
+        barges_since(&rig, base).is_empty(),
+        "first check said other and the re-check is held: no barge-in yet"
+    );
+
+    // Playback ends while the re-check is still held.
+    rig.agent.flush_tts().await.unwrap();
+    assert!(
+        rig.wait_event(SpeechEventKind::AgentSpeakingEnd, 2000)
+            .await,
+        "playback ended"
+    );
+    rig.feed(&silent_stereo_frame(), 30).await;
+    sleep(Duration::from_millis(300)).await;
+    rig.drain();
+    let is_final = |e: &SpeechEvent| {
+        e.kind == SpeechEventKind::UserSpeechFinal
+            && e.text.as_deref() == Some("caller after playback")
+    };
+    assert!(
+        !rig.log[base..].iter().any(is_final),
+        "the final waits for the held re-check"
+    );
+
+    release.notify_one();
+    let deadline = Instant::now() + Duration::from_millis(2000);
+    let mut fin = None;
+    while Instant::now() < deadline {
+        rig.drain();
+        fin = rig.log[base..].iter().find(|e| is_final(e)).cloned();
+        if fin.is_some() {
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    let fin = fin.expect("final after the re-check");
+    assert_eq!(fin.speaker.as_deref(), Some("caller"));
+    assert_eq!(fin.speaker_rechecked, Some(true));
+    sleep(Duration::from_millis(300)).await;
+    rig.drain();
+    assert!(
+        barges_since(&rig, base).is_empty(),
+        "nothing left to interrupt: no barge_in, also after a drain"
+    );
+    rig.agent.stop().await.unwrap();
+}

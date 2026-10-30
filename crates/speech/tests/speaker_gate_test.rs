@@ -1510,7 +1510,12 @@ async fn recheck_upgrades_a_merged_utterance_to_caller() {
         barges_since(&rig, base).is_empty(),
         "first window said other: the barge-in is held until the re-check bound"
     );
-    rig.feed(&loud_stereo_frame(), 5).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !rig.queue.lock().unwrap().is_empty() {
+        assert!(Instant::now() < deadline, "re-check never went out");
+        rig.feed(&loud_stereo_frame(), 1).await;
+        sleep(Duration::from_millis(5)).await;
+    }
     assert!(rig.wait_event(SpeechEventKind::BargeIn, 3000).await);
     rig.feed(&silent_stereo_frame(), 30).await;
     assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
@@ -1549,9 +1554,16 @@ async fn recheck_other_then_other_stays_other_without_barge() {
         ],
     );
     rig.script.lock().unwrap().final_on_finalize = Some("long bystander".into());
-    rig.feed(&loud_stereo_frame(), recheck_bound_frames() + 5)
+    rig.feed(&loud_stereo_frame(), recheck_bound_frames() - 1)
         .await;
-    sleep(Duration::from_millis(300)).await;
+    // Keep the utterance going until the second check (the re-check) has been taken; the third
+    // queued behavior stays as the proof that there is no third check.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while rig.queue.lock().unwrap().len() > 1 {
+        assert!(Instant::now() < deadline, "re-check never went out");
+        rig.feed(&loud_stereo_frame(), 1).await;
+        sleep(Duration::from_millis(5)).await;
+    }
     finish_utterance(&mut rig).await;
     assert!(barges_since(&rig, base).is_empty(), "no barge-in");
     let fin = last_final(&rig, base);

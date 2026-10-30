@@ -371,6 +371,7 @@ With `recheckOnOther` on (the default), the gate scores the next `checkSpeechMs`
 - A re-checked barge-in comes no earlier than `2 × checkSpeechMs` of speech (3 s with the defaults). The SDK exports this bound as `speakerRecheckBargeEarliestMs(checkSpeechMs)`.
 - The final reports it: `speakerRechecked: true` whenever a re-check was scored before the final, with `speaker` set to the combined verdict.
 - A final waits for a re-check that is still running, bounded by `verifyTimeoutMs` like the first check. A final that has read its verdict stops any later re-check of its utterance. If the final stopped waiting (`verifyTimeoutMs`), it says `other` and a later re-check result never barges in.
+- The re-check starts only once the first verdict is in. If that verdict arrives after the utterance has ended (a slow or backlogged speaker model), no re-check runs, and the final stays `other` with no barge-in.
 - A re-check that finishes after the agent stopped speaking only labels the final (`speaker: 'caller'`, `speakerRechecked: true`). There is nothing left to interrupt, so there is no `barge_in`.
 - The `2 × checkSpeechMs` bound holds for the defaults, where `minCheckSpeechMs` equals `checkSpeechMs`. With `minCheckSpeechMs` below `checkSpeechMs`, an utterance that ends after a short first check and then resumes on the same utterance (a brief pause inside the gate hold) re-checks the first `checkSpeechMs` of the resumed segment, so its barge-in can come earlier than `2 × checkSpeechMs` after the utterance started.
 

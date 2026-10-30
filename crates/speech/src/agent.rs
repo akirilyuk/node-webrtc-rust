@@ -5193,8 +5193,6 @@ impl VoiceAgent {
         Ok(())
     }
 
-    /// Push held-back onset audio to the open stream in 20 ms chunks, the granularity the same
-    /// frames would have had if they had been pushed live.
     /// Appends to the lookback copy, keeping only the last pre-roll capacity.
     fn push_hold_lookback(inner: &mut AgentInner, mono_bytes: &[u8]) {
         inner.hold_lookback_pcm.extend_from_slice(mono_bytes);
@@ -5208,6 +5206,8 @@ impl VoiceAgent {
         }
     }
 
+    /// Push held-back onset audio to the open stream in 20 ms chunks, the granularity the same
+    /// frames would have had if they had been pushed live.
     async fn push_stt_audio_frames(&self, mono_bytes: Bytes) -> SpeechResult<()> {
         const FRAME_BYTES: usize = 640; // 20 ms mono s16le 16 kHz
         let mut offset = 0;

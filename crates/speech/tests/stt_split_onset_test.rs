@@ -38,6 +38,8 @@ const BRAVO: i16 = 11000;
 const SILENCE: i16 = 0;
 /// Room noise: non-zero, below the VAD threshold (0.05 RMS ~ 1638) and below every marker.
 const LOOKBACK: i16 = 1000;
+/// Above the VAD threshold (goes VAD-pending) but below every marker, so it is no word.
+const BLIP: i16 = 3000;
 /// Mono 16 kHz samples per millisecond.
 const SAMPLES_PER_MS: usize = 16;
 
@@ -81,6 +83,10 @@ struct MarkerStt {
     onset_log: Arc<Mutex<Vec<usize>>>,
     samples: Vec<i16>,
     pcm_log: Arc<Mutex<Vec<Vec<i16>>>>,
+    /// Vendor endpointing: emit a final by itself after this many consecutive 20 ms blocks
+    /// without a marker (like a cloud vendor), while the stream stays open.
+    endpoint_after_quiet_blocks: Option<usize>,
+    quiet_blocks: usize,
 }
 
 #[async_trait::async_trait]
@@ -106,7 +112,24 @@ impl SttProvider for MarkerStt {
             .collect();
         self.samples.extend_from_slice(&samples);
         for block in samples.chunks(320) {
-            if let Some(word) = marker_for(block) {
+            let marker = marker_for(block);
+            if marker.is_some() {
+                self.quiet_blocks = 0;
+            } else if !self.words.is_empty() {
+                self.quiet_blocks += 1;
+                if Some(self.quiet_blocks) == self.endpoint_after_quiet_blocks {
+                    self.queue
+                        .push_back(SttTranscript::Final(self.words.join(" ")));
+                    self.pcm_log
+                        .lock()
+                        .unwrap()
+                        .push(std::mem::take(&mut self.samples));
+                    self.words.clear();
+                    self.onset_blocks = 0;
+                    self.quiet_blocks = 0;
+                }
+            }
+            if let Some(word) = marker {
                 if word == "onset" {
                     self.onset_blocks += 1;
                 }
@@ -152,6 +175,7 @@ impl SttProvider for MarkerStt {
 struct MarkerFactory {
     onset_log: Arc<Mutex<Vec<usize>>>,
     pcm_log: Arc<Mutex<Vec<Vec<i16>>>>,
+    endpoint_after_quiet_blocks: Option<usize>,
 }
 
 impl VendorFactory for MarkerFactory {
@@ -162,6 +186,7 @@ impl VendorFactory for MarkerFactory {
         Ok(Box::new(MarkerStt {
             onset_log: self.onset_log.clone(),
             pcm_log: self.pcm_log.clone(),
+            endpoint_after_quiet_blocks: self.endpoint_after_quiet_blocks,
             ..Default::default()
         }))
     }
@@ -177,11 +202,16 @@ impl VendorFactory for MarkerFactory {
 async fn make_agent(
     onset_log: Arc<Mutex<Vec<usize>>>,
     pcm_log: Arc<Mutex<Vec<Vec<i16>>>>,
+    endpoint_after_quiet_blocks: Option<usize>,
 ) -> Arc<VoiceAgent> {
     let mut registry = VendorRegistry::new();
     registry.register_stt(
         SttVendor::Mock,
-        Arc::new(MarkerFactory { onset_log, pcm_log }),
+        Arc::new(MarkerFactory {
+            onset_log,
+            pcm_log,
+            endpoint_after_quiet_blocks,
+        }),
     );
     registry.register_tts(TtsVendor::Mock, Arc::new(MockFactory));
 
@@ -249,9 +279,22 @@ type Timeline = Vec<(u64, &'static str, String)>;
 
 /// Same as [`run_counting_onset`], plus the raw mono samples each finalized stream received.
 async fn run_full(segments: &[(i16, u64)]) -> (Vec<String>, Timeline, Vec<usize>, Vec<Vec<i16>>) {
+    run_full_with(segments, None).await
+}
+
+/// [`run_full`] with an optional vendor endpoint (see `MarkerStt::endpoint_after_quiet_blocks`).
+async fn run_full_with(
+    segments: &[(i16, u64)],
+    endpoint_after_quiet_blocks: Option<usize>,
+) -> (Vec<String>, Timeline, Vec<usize>, Vec<Vec<i16>>) {
     let onset_log = Arc::new(Mutex::new(Vec::new()));
     let pcm_log = Arc::new(Mutex::new(Vec::new()));
-    let agent = make_agent(onset_log.clone(), pcm_log.clone()).await;
+    let agent = make_agent(
+        onset_log.clone(),
+        pcm_log.clone(),
+        endpoint_after_quiet_blocks,
+    )
+    .await;
     let mut events = agent.subscribe_events();
     let start = std::time::Instant::now();
     let mut timeline = Vec::new();
@@ -558,4 +601,119 @@ async fn brief_gap_lookback_reaches_same_stream_in_order_once() {
         "{msg}"
     );
     assert_eq!(r.last().map(|x| x.0), Some(SILENCE), "{msg}");
+}
+
+/// A blip during the hold (above the VAD threshold, below every marker) goes VAD-pending and is
+/// held back. The energy VAD keeps pending speech time until SpeechStart (`speech_ms` resets only
+/// on SpeechEnd), so blip + lookback + onset become one pending run and go to the new stream
+/// (#411). The new stream's lead-in must be the contiguous audio fed before the onset, blip
+/// included: never [pre-blip][post-blip] and never zeros.
+#[tokio::test]
+async fn lookback_includes_pending_blip_before_onset() {
+    // Pending speech time accumulates without SpeechEnd, so the blip joins the onset run.
+    let pre_ms = MIN_SILENCE_MS + 500;
+    let (finals, timeline, _, streams) = run_full(&[
+        (ALPHA, 1000),
+        (LOOKBACK, pre_ms),
+        (BLIP, 100),
+        (LOOKBACK, 100),
+        (ONSET, 200),
+        (BRAVO, 1000),
+        (SILENCE, 3000),
+    ])
+    .await;
+    let msg = format!(
+        "finals: {finals:?}\n{}\ntimeline: {timeline:?}",
+        describe(&streams)
+    );
+    assert_eq!(
+        finals,
+        vec!["alpha".to_string(), "onset bravo".to_string()],
+        "{msg}"
+    );
+    assert_eq!(streams.len(), 2, "{msg}");
+    let mut fed_before_onset: Vec<i16> = Vec::new();
+    for (level, ms) in [(LOOKBACK, pre_ms), (BLIP, 100), (LOOKBACK, 100)] {
+        fed_before_onset.extend(std::iter::repeat_n(level, ms as usize * SAMPLES_PER_MS));
+    }
+    let onset_at = streams[1]
+        .iter()
+        .position(|&x| x == ONSET)
+        .expect("onset in stream 2");
+    let lead_in = &streams[1][..onset_at];
+    assert!(
+        fed_before_onset.ends_with(lead_in),
+        "lead-in must be the contiguous fed audio before the onset: {:?}\n{msg}",
+        runs(lead_in)
+    );
+    assert!(lead_in.contains(&BLIP), "{:?}\n{msg}", runs(lead_in));
+    // Speech-level audio (blip) is counted by exactly one stream.
+    let blips: usize = streams.iter().map(|s| count_level(s, BLIP)).sum();
+    assert_eq!(blips, 100 * SAMPLES_PER_MS, "{msg}");
+}
+
+/// A copy made during a hold whose stream then closed (no SpeechStart) is stale: a later stream
+/// must not start with it (`rt.stale-event-by-key`).
+#[tokio::test]
+async fn stale_lookback_after_closed_stream_never_seeds_next_stream() {
+    let (finals, timeline, _, streams) = run_full(&[
+        (ALPHA, 1000),
+        (LOOKBACK, MIN_SILENCE_MS + HOLD_MS + 1200),
+        (SILENCE, 1000),
+        (ONSET, 200),
+        (BRAVO, 1000),
+        (SILENCE, 3000),
+    ])
+    .await;
+    let msg = format!(
+        "finals: {finals:?}\n{}\ntimeline: {timeline:?}",
+        describe(&streams)
+    );
+    assert_eq!(
+        finals,
+        vec!["alpha".to_string(), "onset bravo".to_string()],
+        "{msg}"
+    );
+    assert_eq!(streams.len(), 2, "{msg}");
+    assert_eq!(count_level(&streams[1], LOOKBACK), 0, "{msg}");
+}
+
+/// Cloud vendors endpoint by themselves: the old stream's final arrives during the hold while the
+/// stream stays open. The next stream must still start on the real lookback, not zero padding.
+#[tokio::test]
+async fn vendor_final_during_hold_still_seeds_real_lookback() {
+    // 25 quiet blocks = 500 ms after alpha: SpeechEnd at 300 ms, so the final lands 200 ms into
+    // the 1000 ms hold.
+    let (finals, timeline, _, streams) = run_full_with(
+        &[
+            (ALPHA, 1000),
+            (LOOKBACK, MIN_SILENCE_MS + 700),
+            (ONSET, 200),
+            (BRAVO, 1000),
+            (SILENCE, 3000),
+        ],
+        Some(25),
+    )
+    .await;
+    let msg = format!(
+        "finals: {finals:?}\n{}\ntimeline: {timeline:?}",
+        describe(&streams)
+    );
+    assert_eq!(
+        finals,
+        vec!["alpha".to_string(), "onset bravo".to_string()],
+        "{msg}"
+    );
+    let all: Vec<i16> = streams.concat();
+    let onset_at = all.iter().position(|&x| x == ONSET).expect("onset");
+    // Lead-in = capacity 400 ms - held onset 180 ms = 220 ms right before the onset.
+    let lead = 220 * SAMPLES_PER_MS;
+    assert!(onset_at >= lead, "{msg}");
+    assert!(
+        all[onset_at - lead..onset_at]
+            .iter()
+            .all(|&x| x == LOOKBACK),
+        "lead-in before onset must be real lookback, not zeros: {:?}\n{msg}",
+        runs(&all[onset_at - lead..onset_at])
+    );
 }

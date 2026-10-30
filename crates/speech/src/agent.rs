@@ -4763,16 +4763,14 @@ impl VoiceAgent {
             // before the old stream is finalized so its final never contains them.
             let (held_onset, held_lookback) = {
                 let mut inner = self.inner.lock().await;
-                let lookback = std::mem::take(&mut inner.hold_lookback_pcm);
-                // Only a stream that is still open fed the copy; otherwise it is stale.
-                let old_stream_open = inner.live_flag(|r| r.stream_open && !r.final_emitted);
+                // No open-stream / final check is needed: the copy is cleared on the first frame
+                // that is neither copied nor held (stream closed, gate shut, speaking), so a
+                // non-empty copy is always the contiguous audio right before the held onset. A
+                // vendor final during the hold (cloud vendors endpoint by themselves) does not
+                // make it stale.
                 (
                     std::mem::take(&mut inner.hold_pending_pcm),
-                    if old_stream_open {
-                        lookback
-                    } else {
-                        Vec::new()
-                    },
+                    std::mem::take(&mut inner.hold_lookback_pcm),
                 )
             };
             let long_pause_new_phrase = {
@@ -5063,31 +5061,6 @@ impl VoiceAgent {
                 && !vad_speaking
                 && !speech_start
                 && (inner.stt_gate_hold_ms > 0 || utterance_closing);
-            // Shadow copy for the next stream's lead-in: frames that go straight to the open stream
-            // during the hold / pending close are also kept (last pre-roll capacity only).
-            let lookback_copy = gate_stt
-                && stt_active
-                && !hold_back
-                && inner.live_flag(|r| r.stream_open)
-                && !vad_speaking
-                && !speech_start
-                && (inner.stt_gate_hold_ms > 0 || utterance_closing);
-            if lookback_copy {
-                inner
-                    .hold_lookback_pcm
-                    .extend_from_slice(mono_bytes.as_ref());
-                let cap_bytes = (crate::pcm::STT_PCM_SAMPLE_RATE as usize
-                    * crate::stt_pre_roll::stt_pre_roll_capacity_ms(&inner.config.vad) as usize
-                    / 1000)
-                    * 2;
-                if inner.hold_lookback_pcm.len() > cap_bytes {
-                    let over = (inner.hold_lookback_pcm.len() - cap_bytes) & !1;
-                    inner.hold_lookback_pcm.drain(..over);
-                }
-            } else if !inner.live_flag(|r| r.stream_open) && !inner.hold_lookback_pcm.is_empty() {
-                // The stream closed without a new SpeechStart: the copy is stale.
-                inner.hold_lookback_pcm.clear();
-            }
             let mut held_excess: Option<Bytes> = None;
             let mut held_resolved_to_stream: Option<Bytes> = None;
             if hold_back {
@@ -5103,16 +5076,37 @@ impl VoiceAgent {
                     // Never drop a frame: the oldest excess goes to the (open, old) stream.
                     let excess_len = (inner.hold_pending_pcm.len() - cap_bytes) & !1;
                     let excess: Vec<u8> = inner.hold_pending_pcm.drain(..excess_len).collect();
+                    // It reaches the old stream before the still-held bytes: copy it too, so the
+                    // copy plus `hold_pending_pcm` stays contiguous.
+                    Self::push_hold_lookback(&mut inner, &excess);
                     held_excess = Some(Bytes::from(excess));
                 }
             } else if !inner.hold_pending_pcm.is_empty() {
                 // Hold ended without a SpeechStart (finalize, C1/C2, toggle, swap): resolve it.
                 let held = std::mem::take(&mut inner.hold_pending_pcm);
                 if inner.live_flag(|r| r.stream_open) {
+                    Self::push_hold_lookback(&mut inner, &held);
                     held_resolved_to_stream = Some(Bytes::from(held));
                 } else if let Some(pre_roll) = inner.stt_pre_roll.as_mut() {
                     pre_roll.push(&held);
                 }
+            }
+            // Shadow copy for the next stream's lead-in: frames that go straight to the open
+            // stream during the hold / pending close are also kept (last pre-roll capacity only).
+            // Real-time forwarding is unchanged. Every frame is either copied, held in
+            // `hold_pending_pcm`, or clears the copy, so the copy followed by the held bytes is
+            // always the contiguous audio up to this frame (never a stale or gapped head).
+            let lookback_copy = gate_stt
+                && stt_active
+                && !hold_back
+                && inner.live_flag(|r| r.stream_open)
+                && !vad_speaking
+                && !speech_start
+                && (inner.stt_gate_hold_ms > 0 || utterance_closing);
+            if lookback_copy {
+                Self::push_hold_lookback(&mut inner, mono_bytes.as_ref());
+            } else if !hold_back {
+                inner.hold_lookback_pcm.clear();
             }
             (
                 stt_audio_open,
@@ -5201,6 +5195,19 @@ impl VoiceAgent {
 
     /// Push held-back onset audio to the open stream in 20 ms chunks, the granularity the same
     /// frames would have had if they had been pushed live.
+    /// Appends to the lookback copy, keeping only the last pre-roll capacity.
+    fn push_hold_lookback(inner: &mut AgentInner, mono_bytes: &[u8]) {
+        inner.hold_lookback_pcm.extend_from_slice(mono_bytes);
+        let cap_bytes = (crate::pcm::STT_PCM_SAMPLE_RATE as usize
+            * crate::stt_pre_roll::stt_pre_roll_capacity_ms(&inner.config.vad) as usize
+            / 1000)
+            * 2;
+        if inner.hold_lookback_pcm.len() > cap_bytes {
+            let over = (inner.hold_lookback_pcm.len() - cap_bytes) & !1;
+            inner.hold_lookback_pcm.drain(..over);
+        }
+    }
+
     async fn push_stt_audio_frames(&self, mono_bytes: Bytes) -> SpeechResult<()> {
         const FRAME_BYTES: usize = 640; // 20 ms mono s16le 16 kHz
         let mut offset = 0;

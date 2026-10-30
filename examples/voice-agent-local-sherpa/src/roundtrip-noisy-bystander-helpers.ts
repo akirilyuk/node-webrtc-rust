@@ -175,7 +175,12 @@ export function utteranceEndMs(utteranceId: string, seen: Seen[]): number | unde
  * - the next caller turn has no utterance of its own;
  * - its span covers that caller turn's scene start: speech start strictly before, and speech end
  *   (`user_speaking_end`, else the final) strictly after. An utterance that ends exactly at the
- *   caller's scene start holds no caller speech and stays with the bystander (zero gap).
+ *   caller's scene start holds no caller speech and stays with the bystander (zero gap);
+ * - the re-check window reaches the caller's scene start: caller start strictly before speech
+ *   start + `speakerRecheckBargeEarliestMs(checkSpeechMs)`. The product scores the re-check on
+ *   speech [start + checkSpeechMs, start + 2 × checkSpeechMs], so a window that ends before the
+ *   caller starts held only bystander or babble audio, and its `caller` verdict is a bystander
+ *   false upgrade, not the caller's turn.
  *
  * The bystander turn then has no utterance; the caller turn index goes into `merged`. Anything
  * else keeps its slot pairing, so a re-checked `caller` that never reaches a caller turn still
@@ -214,6 +219,7 @@ export function pairTurnUtterances(
     const callerStartMs = turns[j]!.startMs
     const endMs = utteranceEndMs(start.utteranceId, seen)
     if (endMs == null || !(start.atMs < callerStartMs && endMs > callerStartMs)) return
+    if (callerStartMs >= start.atMs + speakerRecheckBargeEarliestMs(CHECK_SPEECH_MS)) return
     starts[j] = start
     starts[i] = undefined
     merged.add(j)

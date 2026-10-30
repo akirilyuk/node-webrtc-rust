@@ -437,10 +437,11 @@ describe('merged caller utterance (VAD opened in the bystander slot)', () => {
   })
 
   it('(b) fails a merged utterance whose barge-in came before the caller scene start', () => {
-    // Start 64 000 -> bound 67 000; barge 67 100 is in time but before the caller spoke (67 352).
-    const { failures } = run(u7({ startAt: 64_000, partialAt: 65_000, bargeAt: 67_100 }))
+    // Start 65 000: re-check window ends 68 000, after the caller start (67 352), so it is merged;
+    // a barge at 67 300 was released before the caller spoke.
+    const { failures } = run(u7({ startAt: 65_000, partialAt: 65_500, bargeAt: 67_300 }))
     expect(failures).toMatch(
-      /turn 2 .*barge-in at 67100 ms on merged utterance u7, not after the caller's scene start 67352 ms/,
+      /turn 2 .*barge-in at 67300 ms on merged utterance u7, not after the caller's scene start 67352 ms/,
     )
   })
 
@@ -492,15 +493,48 @@ describe('merged caller utterance (VAD opened in the bystander slot)', () => {
   })
 
   it('(e) zero gap: speech ending exactly at the caller scene start is not merged; 1 ms later is', () => {
-    // Start 64 300 -> bound 67 300; barge 67 360 is +60 and after the caller start.
-    const shape = { startAt: 64_300, partialAt: 65_000, bargeAt: 67_360, finalAt: 68_000 }
-    const atStart = run(
-      u7({ ...shape, endAt: 67_352, text: 'suitcase room charlie one two three' }),
-    )
+    // Start 65 000: re-check window ends 68 000, after the caller start; bound 68 000, barge +50.
+    const shape = { startAt: 65_000, partialAt: 65_500, bargeAt: 68_050, finalAt: 68_400 }
+    const text = 'suitcase room charlie one two three'
+    const atStart = run(u7({ ...shape, endAt: 67_352, text }))
     expect(atStart.failures).toMatch(/turn 1 .*barge_in for the bystander utterance u7/)
     expect(atStart.failures).toMatch(/turn 2 .*caller speech start not detected/)
-    const after = run(u7({ ...shape, endAt: 67_353, text: 'suitcase room charlie one two three' }))
+    const after = run(u7({ ...shape, endAt: 67_353, text }))
     expect(after.failures).toBe('')
+  })
+
+  it('(f) re-check window ends before the caller starts: not merged', () => {
+    // Start 64 300: re-check window ends 67 300, 52 ms before the caller (67 352) began.
+    const { failures, seen } = run(
+      u7({
+        startAt: 64_300,
+        partialAt: 65_000,
+        bargeAt: 67_360,
+        endAt: 68_500,
+        finalAt: 68_800,
+        text: 'suitcase room charlie one two three',
+      }),
+    )
+    expect(failures).toMatch(/turn 1 .*barge_in for the bystander utterance u7/)
+    expect([...pairTurnUtterances(SCENE, seen).merged]).toEqual([])
+  })
+
+  it('(g) boundary: caller start == start + 3000 is not merged; start + 2999 is', () => {
+    const shape = (startAt: number) =>
+      u7({
+        startAt,
+        partialAt: 65_000,
+        bargeAt: 67_400,
+        endAt: 68_500,
+        finalAt: 68_800,
+        text: 'suitcase room charlie one two three',
+      })
+    const atBound = run(shape(64_352))
+    expect(atBound.failures).toMatch(/turn 1 .*barge_in for the bystander utterance u7/)
+    expect([...pairTurnUtterances(SCENE, atBound.seen).merged]).toEqual([])
+    const inside = run(shape(64_353))
+    expect(inside.failures).toBe('')
+    expect([...pairTurnUtterances(SCENE, inside.seen).merged]).toEqual([2])
   })
 
   it('judges only a contiguous caller-length window of a merged transcript', () => {

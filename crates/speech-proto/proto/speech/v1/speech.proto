@@ -52,5 +52,12 @@ message SynthesizeRequest {
   string speed = 4;                                            // TtsConfig.model (Piper speed overload, "0.2".."2.0")
   SessionContext ctx = 5;
   string sentence_case = 6;                                    // "auto" | "off"; empty = auto (older clients)
+  // Cloud vendor synthesis (mirrors nwr TtsConfig). All empty = Sherpa, unchanged.
+  string vendor = 7;                                           // TtsConfig.provider wire name, e.g. "openai"; empty = Sherpa
+  string vendor_model = 8;                                     // TtsConfig.model for a cloud vendor
+  string voice = 9;                                            // TtsConfig.voice for a cloud vendor
+  string api_key = 10;                                         // TtsConfig.api_key (per request, never logged)
+  string endpoint = 11;                                        // TtsConfig.endpoint
+  string transport = 12;                                       // TtsConfig.transport: "auto" | "websocket" | "http"; empty = auto
 }
 message SynthesizeResponse { bytes pcm_s16le = 1; uint32 duration_ms = 2; bool last = 3; }  // == TtsAudioChunk

@@ -65,7 +65,7 @@ import {
   QUIET_CALLER_DBFS,
   WARMUP_S,
   evaluateTurns,
-  matchTurnUtterances,
+  pairTurnUtterances,
   MIN_STT_PARTIAL_TOKENS,
   readWavPcm,
   type Seen,
@@ -245,10 +245,13 @@ async function runPass(params: {
   await listener.stop().catch(() => undefined)
   await cleanup().catch(() => undefined)
   // Diagnostics: scene clock vs the agent's first user_speaking_start per turn.
-  matchTurnUtterances(turns, seen).forEach((start, i) => {
+  // A merged turn's utterance started in the previous bystander slot (negative lag), see
+  // pairTurnUtterances.
+  const { starts, merged } = pairTurnUtterances(turns, seen)
+  starts.forEach((start, i) => {
     const firstStart = start?.atMs
     console.log(
-      `${label}: lag turn=${i} sceneStart=${turns[i]!.startMs} firstStart=${firstStart ?? 'none'} lagMs=${firstStart != null ? firstStart - turns[i]!.startMs : 'none'}`,
+      `${label}: lag turn=${i} sceneStart=${turns[i]!.startMs} firstStart=${firstStart ?? 'none'} lagMs=${firstStart != null ? firstStart - turns[i]!.startMs : 'none'}${merged.has(i) ? ' merged' : ''}`,
     )
   })
   return evaluateTurns(turns, seen, label)

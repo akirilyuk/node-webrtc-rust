@@ -8,7 +8,7 @@ import { readFileSync } from 'fs'
 import { SPEECH_EVENT_TYPE, speakerRecheckBargeEarliestMs } from '@node-webrtc-rust/sdk/voice'
 
 import { DEFAULT_BARGE_PHRASE_MIN_SIMILARITY } from './roundtrip-barge-in-helpers.js'
-import { wordSimilarity } from './roundtrip-counting.js'
+import { normalizeForCompare, wordSimilarity } from './roundtrip-counting.js'
 
 /** Product default of `speakerGate.checkSpeechMs` (G1): the verdict needs this much speech. */
 export const CHECK_SPEECH_MS = 1500
@@ -143,10 +143,49 @@ export const FIRST_SLOT_LEAD_MS = 300
  * `user_speaking_start` inside the turn's slot. Slots split each gap between two turns in the
  * middle, because the VAD can open in the babble shortly before a voice starts. A turn whose
  * audio merged into the previous utterance gets none. Everything after this step pairs events by
- * `utteranceId`, never by time.
+ * `utteranceId`, never by time. Merged caller utterances are re-paired by
+ * {@link pairTurnUtterances}.
  */
 export function matchTurnUtterances(turns: Turn[], seen: Seen[]): (Seen | undefined)[] {
-  const starts = seen.filter(
+  return pairTurnUtterances(turns, seen).starts
+}
+
+/**
+ * End of an utterance's speech: its `user_speaking_end`, else its `user_speech_final` (the product
+ * emits both on the same `utteranceId`). `undefined` when neither arrived.
+ */
+export function utteranceEndMs(utteranceId: string, seen: Seen[]): number | undefined {
+  const end = seen.find(
+    (e) => e.type === SPEECH_EVENT_TYPE.userSpeakingEnd && e.utteranceId === utteranceId,
+  )
+  if (end != null) return end.atMs
+  return seen.find(
+    (e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal && e.utteranceId === utteranceId,
+  )?.atMs
+}
+
+/**
+ * Slot matching ({@link matchTurnUtterances}) plus one re-pairing that keys off product facts
+ * (`oracle-relies-only-on-promised-order`): when the VAD opens in a bystander slot and the
+ * utterance runs on into the next caller turn, the product re-checks it and its final says
+ * `speakerRechecked: true`, `speaker: 'caller'`. Such an utterance is the caller's turn, not the
+ * bystander's, when all of these hold:
+ *
+ * - it was matched to a bystander turn and its final is re-checked `caller`;
+ * - the next caller turn has no utterance of its own;
+ * - its span covers that caller turn's scene start: speech start strictly before, and speech end
+ *   (`user_speaking_end`, else the final) strictly after. An utterance that ends exactly at the
+ *   caller's scene start holds no caller speech and stays with the bystander (zero gap).
+ *
+ * The bystander turn then has no utterance; the caller turn index goes into `merged`. Anything
+ * else keeps its slot pairing, so a re-checked `caller` that never reaches a caller turn still
+ * fails as a bystander barge-in.
+ */
+export function pairTurnUtterances(
+  turns: Turn[],
+  seen: Seen[],
+): { starts: (Seen | undefined)[]; merged: Set<number> } {
+  const allStarts = seen.filter(
     (e) => e.type === SPEECH_EVENT_TYPE.userSpeakingStart && e.utteranceId != null,
   )
   const used = new Set<string>()
@@ -155,13 +194,52 @@ export function matchTurnUtterances(turns: Turn[], seen: Seen[]): (Seen | undefi
     if (i >= turns.length) return Number.POSITIVE_INFINITY
     return (turns[i - 1]!.endMs + turns[i]!.startMs) / 2
   }
-  return turns.map((_turn, i) => {
+  const starts = turns.map((_turn, i) => {
     const from = boundary(i)
     const to = boundary(i + 1)
-    const start = starts.find((e) => !used.has(e.utteranceId!) && e.atMs >= from && e.atMs < to)
+    const start = allStarts.find((e) => !used.has(e.utteranceId!) && e.atMs >= from && e.atMs < to)
     if (start != null) used.add(start.utteranceId!)
     return start
   })
+  const merged = new Set<number>()
+  turns.forEach((turn, i) => {
+    const start = starts[i]
+    if (turn.role !== 'bystander' || start?.utteranceId == null) return
+    const final = seen.find(
+      (e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal && e.utteranceId === start.utteranceId,
+    )
+    if (final?.speaker !== 'caller' || final.speakerRechecked !== true) return
+    const j = turns.findIndex((t, k) => k > i && t.role === 'main')
+    if (j < 0 || starts[j] != null) return
+    const callerStartMs = turns[j]!.startMs
+    const endMs = utteranceEndMs(start.utteranceId, seen)
+    if (endMs == null || !(start.atMs < callerStartMs && endMs > callerStartMs)) return
+    starts[j] = start
+    starts[i] = undefined
+    merged.add(j)
+  })
+  return { starts, merged }
+}
+
+/**
+ * The scene's similarity oracle ({@link wordSimilarity}) on the best contiguous window of the
+ * recognized words, as long as the caller phrase. A merged utterance's transcript also holds the
+ * babble or bystander words heard before the caller; only the caller's words are judged, and
+ * they must appear together, not scattered. Same threshold, no aliases.
+ */
+export function callerWindowSimilarity(callerText: string, recognized: string): number {
+  const n = normalizeForCompare(callerText)
+    .split(' ')
+    .filter((w) => w.length > 0).length
+  const words = normalizeForCompare(recognized)
+    .split(' ')
+    .filter((w) => w.length > 0)
+  if (n === 0 || words.length <= n) return wordSimilarity(callerText, recognized)
+  let best = 0
+  for (let k = 0; k + n <= words.length; k += 1) {
+    best = Math.max(best, wordSimilarity(callerText, words.slice(k, k + n).join(' ')))
+  }
+  return best
 }
 
 /** Pure evaluation of one pass; exported for the evaluator unit test. */
@@ -188,7 +266,7 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
       failures.push(`${label}: barge_in at ${b.atMs} ms without utteranceId`)
   }
   const bargesOf = (id: string): Seen[] => barges.filter((b) => b.utteranceId === id)
-  const starts = matchTurnUtterances(turns, seen)
+  const { starts, merged } = pairTurnUtterances(turns, seen)
   let bystandersHeard = 0
   turns.forEach((turn, i) => {
     const tag = `${label} turn ${i} (${turn.role} ${turn.kind} "${turn.text.slice(0, 30)}")`
@@ -220,6 +298,12 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
       failures.push(`${tag}: caller speech start not detected`)
       return
     }
+    const isMerged = merged.has(i)
+    if (isMerged) {
+      console.log(
+        `${tag}: merged utterance ${id} (started ${start.atMs} ms, before the caller at ${turn.startMs} ms; final re-checked caller)`,
+      )
+    }
     const barge = bargesOf(id)[0]
     if (barge == null) {
       // Still a failure, never a skip: a harness miss is named so a real miss cannot hide behind it.
@@ -244,6 +328,13 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
           `${tag}: barge-in ${barge.atMs - expected} ms after expected (max of verdict and qualifying partial) > ${BARGE_SLACK_MS}`,
         )
       }
+      // A merged utterance started before the caller spoke: a barge-in before the caller's scene
+      // start was released on the bystander or babble alone.
+      if (isMerged && barge.atMs <= turn.startMs) {
+        failures.push(
+          `${tag}: barge-in at ${barge.atMs} ms on merged utterance ${id}, not after the caller's scene start ${turn.startMs} ms`,
+        )
+      }
       if (delay > BARGE_ABS_CAP_MS && !isRechecked(start, seen)) {
         failures.push(`${tag}: barge-in ${delay} ms after speech start > cap ${BARGE_ABS_CAP_MS}`)
       }
@@ -256,8 +347,12 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
       failures.push(`${tag}: final speaker ${String(final.speaker)}, expected caller`)
     }
     if (turn.kind === 'qualified') {
-      const sim = wordSimilarity(turn.text, final.text ?? '')
-      console.log(`${tag}: recognized "${final.text ?? ''}" similarity ${sim.toFixed(2)}`)
+      const sim = isMerged
+        ? callerWindowSimilarity(turn.text, final.text ?? '')
+        : wordSimilarity(turn.text, final.text ?? '')
+      console.log(
+        `${tag}: recognized "${final.text ?? ''}" similarity ${sim.toFixed(2)}${isMerged ? ' (best caller-length window)' : ''}`,
+      )
       if (sim < DEFAULT_BARGE_PHRASE_MIN_SIMILARITY) {
         failures.push(`${tag}: recognized "${final.text ?? ''}" similarity ${sim.toFixed(2)}`)
       }

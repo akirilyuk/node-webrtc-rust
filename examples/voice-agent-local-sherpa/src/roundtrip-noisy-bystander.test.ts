@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  callerWindowSimilarity,
   evaluateTurns,
   expectedBargeAtMs,
   matchTurnUtterances,
+  pairTurnUtterances,
   sttPartialTokenCount,
   type Seen,
   type Turn,
@@ -340,5 +342,178 @@ describe('evaluateTurns', () => {
         : e,
     )
     expect(evaluateTurns(TURNS, seen, 'p').join('\n')).toMatch(/vacuous/)
+  })
+})
+
+/**
+ * Stress run 41089340452, iteration 4 (both passes): the VAD opened in bystander turn 7's slot
+ * (65 810, 1.54 s before the caller), the utterance ran into caller turn 8 (67 352), the re-check
+ * heard the caller and released the barge-in at 69 104. Scene times as the harness records them.
+ */
+describe('merged caller utterance (VAD opened in the bystander slot)', () => {
+  const t6: Turn = {
+    role: 'main',
+    startMs: 53_702,
+    endMs: 58_500,
+    text: 'I booked a table for four people',
+    kind: 'long',
+  }
+  const t7: Turn = {
+    role: 'bystander',
+    startMs: 62_003,
+    endMs: 64_500,
+    text: 'Her garden is full of tomatoes',
+    kind: 'background',
+  }
+  const t8: Turn = {
+    role: 'main',
+    startMs: 67_352,
+    endMs: 69_200,
+    text: 'charlie one two three',
+    kind: 'qualified',
+  }
+  const t9: Turn = {
+    role: 'bystander',
+    startMs: 71_468,
+    endMs: 74_000,
+    text: 'A tall ladder stood beside the orchard wall',
+    kind: 'background',
+  }
+  const SCENE = [t6, t7, t8, t9]
+
+  /** Turn 6 healthy caller, turn 9 bystander tagged other (anti-vacuous). */
+  const frame = (): Seen[] => [
+    ev('user_speaking_start', 53_811, { utteranceId: 'u6' }),
+    ev('user_speech_partial', 55_200, { utteranceId: 'u6', text: 'I booked' }),
+    ev('barge_in', 55_343, { utteranceId: 'u6' }),
+    ev('user_speech_final', 61_630, {
+      utteranceId: 'u6',
+      text: 'I booked a table for four people',
+      speaker: 'caller',
+    }),
+    ev('user_speaking_start', 72_410, { utteranceId: 'u9' }),
+    ev('user_speech_final', 75_000, { utteranceId: 'u9', text: 'a tall ladder', speaker: 'other' }),
+  ]
+
+  /** The utterance u7: start, partials, barge, speaking end, final (re-checked caller). */
+  const u7 = (o: {
+    startAt?: number
+    partialAt?: number
+    bargeAt?: number
+    endAt?: number
+    finalAt?: number
+    rechecked?: boolean
+    text?: string
+  }): Seen[] => [
+    ev('user_speaking_start', o.startAt ?? 65_810, { utteranceId: 'u7' }),
+    ev('user_speech_partial', (o.partialAt ?? 67_648) - 1_000, {
+      utteranceId: 'u7',
+      text: 'suitcase',
+    }),
+    ev('user_speech_partial', o.partialAt ?? 67_648, { utteranceId: 'u7', text: 'suitcase room' }),
+    ev('barge_in', o.bargeAt ?? 69_104, { utteranceId: 'u7' }),
+    ev('user_speaking_end', o.endAt ?? 70_900, { utteranceId: 'u7' }),
+    ev('user_speech_final', o.finalAt ?? 71_164, {
+      utteranceId: 'u7',
+      text: o.text ?? 'suitcase room. Charlie one two three passify',
+      speaker: 'caller',
+      ...(o.rechecked === false ? {} : { speakerRechecked: true }),
+    }),
+  ]
+
+  const run = (extra: Seen[]): { failures: string; seen: Seen[] } => {
+    const seen = [...frame(), ...extra].sort((a, b) => a.atMs - b.atMs)
+    return { failures: evaluateTurns(SCENE, seen, 'p').join('\n'), seen }
+  }
+
+  it('(a) pairs the iteration-4 utterance with caller turn 8 and passes', () => {
+    const { failures, seen } = run(u7({}))
+    expect(failures).toBe('')
+    const { starts, merged } = pairTurnUtterances(SCENE, seen)
+    expect(starts.map((s) => s?.utteranceId)).toEqual(['u6', undefined, 'u7', 'u9'])
+    expect([...merged]).toEqual([2])
+    // Bound: start 65 810 + 2 x 1 500 = 68 810 (partial 67 648 earlier); barge 69 104 is +294.
+    expect(expectedBargeAtMs(starts[2]!, seen)).toBe(68_810)
+  })
+
+  it('(b) fails a merged utterance whose barge-in came before the caller scene start', () => {
+    // Start 64 000 -> bound 67 000; barge 67 100 is in time but before the caller spoke (67 352).
+    const { failures } = run(u7({ startAt: 64_000, partialAt: 65_000, bargeAt: 67_100 }))
+    expect(failures).toMatch(
+      /turn 2 .*barge-in at 67100 ms on merged utterance u7, not after the caller's scene start 67352 ms/,
+    )
+  })
+
+  it('(c) fails a re-checked caller utterance that ends inside the bystander slot', () => {
+    const { failures, seen } = run([
+      ...u7({
+        startAt: 62_100,
+        partialAt: 63_000,
+        bargeAt: 65_100,
+        endAt: 65_000,
+        finalAt: 65_300,
+      }),
+      ev('user_speaking_start', 67_450, { utteranceId: 'u8' }),
+      ev('user_speech_partial', 68_300, { utteranceId: 'u8', text: 'charlie one' }),
+      ev('barge_in', 68_960, { utteranceId: 'u8' }),
+      ev('user_speech_final', 69_900, {
+        utteranceId: 'u8',
+        text: 'charlie one two three',
+        speaker: 'caller',
+      }),
+    ])
+    expect(failures).toMatch(/turn 1 .*barge_in for the bystander utterance u7/)
+    expect(failures).toMatch(/turn 1 .*final speaker caller, expected other/)
+    expect(failures).not.toMatch(/turn 2/)
+    expect([...pairTurnUtterances(SCENE, seen).merged]).toEqual([])
+  })
+
+  it('(c2) keeps the bystander pairing when the caller turn has its own utterance', () => {
+    // Spans the caller start, but the caller turn already has u8: no re-pairing, no steal.
+    const { failures } = run([
+      ...u7({}),
+      ev('user_speaking_start', 67_500, { utteranceId: 'u8' }),
+      ev('user_speech_final', 69_000, { utteranceId: 'u8', text: 'one', speaker: 'caller' }),
+    ])
+    expect(failures).toMatch(/turn 1 .*barge_in for the bystander utterance u7/)
+  })
+
+  it('(d) leaves a merged utterance that was not re-checked with its bystander slot', () => {
+    const { failures, seen } = run(u7({ rechecked: false }))
+    expect(failures).toMatch(/turn 1 .*barge_in for the bystander utterance u7/)
+    expect(failures).toMatch(/turn 1 .*final speaker caller, expected other/)
+    expect(failures).toMatch(/turn 2 .*caller speech start not detected/)
+    expect(pairTurnUtterances(SCENE, seen).starts.map((s) => s?.utteranceId)).toEqual([
+      'u6',
+      'u7',
+      undefined,
+      'u9',
+    ])
+  })
+
+  it('(e) zero gap: speech ending exactly at the caller scene start is not merged; 1 ms later is', () => {
+    // Start 64 300 -> bound 67 300; barge 67 360 is +60 and after the caller start.
+    const shape = { startAt: 64_300, partialAt: 65_000, bargeAt: 67_360, finalAt: 68_000 }
+    const atStart = run(
+      u7({ ...shape, endAt: 67_352, text: 'suitcase room charlie one two three' }),
+    )
+    expect(atStart.failures).toMatch(/turn 1 .*barge_in for the bystander utterance u7/)
+    expect(atStart.failures).toMatch(/turn 2 .*caller speech start not detected/)
+    const after = run(u7({ ...shape, endAt: 67_353, text: 'suitcase room charlie one two three' }))
+    expect(after.failures).toBe('')
+  })
+
+  it('judges only a contiguous caller-length window of a merged transcript', () => {
+    expect(
+      callerWindowSimilarity(
+        'charlie one two three',
+        'suitcase room. Charlie one two three passify',
+      ),
+    ).toBe(1)
+    // Same words scattered through babble: the plain oracle says 1.00, the window says 0.50.
+    const scattered = 'suitcase charlie room one hat two cat three'
+    expect(callerWindowSimilarity('charlie one two three', scattered)).toBe(0.5)
+    const { failures } = run(u7({ text: scattered }))
+    expect(failures).toMatch(/turn 2 .*similarity 0\.50/)
   })
 })

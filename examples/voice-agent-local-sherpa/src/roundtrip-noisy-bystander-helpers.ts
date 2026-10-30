@@ -5,7 +5,7 @@
 
 import { readFileSync } from 'fs'
 
-import { SPEECH_EVENT_TYPE } from '@node-webrtc-rust/sdk/voice'
+import { SPEECH_EVENT_TYPE, speakerRecheckBargeEarliestMs } from '@node-webrtc-rust/sdk/voice'
 
 import { DEFAULT_BARGE_PHRASE_MIN_SIMILARITY } from './roundtrip-barge-in-helpers.js'
 import { wordSimilarity } from './roundtrip-counting.js'
@@ -19,7 +19,11 @@ export const CHECK_SPEECH_MS = 1500
 export const MIN_STT_PARTIAL_TOKENS = 2
 /** A barge-in may come at most this long after the later of the verdict and the qualifying partial. */
 export const BARGE_SLACK_MS = 300
-/** Absolute cap on barge-in delay after the caller's `user_speaking_start`. */
+/**
+ * Absolute cap on barge-in delay after the caller's `user_speaking_start`, for turns decided by
+ * the first check. A turn whose final carries `speakerRechecked: true` is bounded by
+ * {@link expectedBargeAtMs} alone (verdict at start + 2 × checkSpeechMs).
+ */
 export const BARGE_ABS_CAP_MS = 3000
 export const BYSTANDER_RELATIVE_DB = -15
 export const QUIET_CALLER_DBFS = -26
@@ -48,6 +52,8 @@ export interface Seen {
   speaker?: string
   /** `user_speech_final` with `speaker: 'unknown'`: why (product field `speakerUnknownReason`). */
   speakerUnknownReason?: string
+  /** `user_speech_final`: a re-check after a first `other` verdict decided it (product field). */
+  speakerRechecked?: boolean
 }
 
 /**
@@ -60,14 +66,30 @@ export function sttPartialTokenCount(text: string): number {
 
 /**
  * When a caller's barge-in is due, from events the product emits for that utterance: the later of
- * speech start + checkSpeechMs (speaker verdict) and the first `user_speech_partial` on the same
- * `utteranceId` with at least {@link MIN_STT_PARTIAL_TOKENS} tokens (`requireSttPartial`).
+ * the speaker verdict and the first `user_speech_partial` on the same `utteranceId` with at least
+ * {@link MIN_STT_PARTIAL_TOKENS} tokens (`requireSttPartial`). The verdict is speech start +
+ * checkSpeechMs, or, when the utterance's final says `speakerRechecked: true`, speech start +
+ * `speakerRecheckBargeEarliestMs(checkSpeechMs)` (the product's re-check bound).
  * `undefined` when the utterance never had a qualifying partial.
  */
 export function expectedBargeAtMs(start: Seen, seen: Seen[]): number | undefined {
   const partial = qualifyingPartial(start, seen)
   if (partial == null) return undefined
-  return Math.max(start.atMs + CHECK_SPEECH_MS, partial.atMs)
+  return Math.max(start.atMs + verdictAfterMs(start, seen), partial.atMs)
+}
+
+/** True when the start's utterance final reports a re-check (product field `speakerRechecked`). */
+export function isRechecked(start: Seen, seen: Seen[]): boolean {
+  return seen.some(
+    (e) =>
+      e.type === SPEECH_EVENT_TYPE.userSpeechFinal &&
+      e.utteranceId === start.utteranceId &&
+      e.speakerRechecked === true,
+  )
+}
+
+function verdictAfterMs(start: Seen, seen: Seen[]): number {
+  return isRechecked(start, seen) ? speakerRecheckBargeEarliestMs(CHECK_SPEECH_MS) : CHECK_SPEECH_MS
 }
 
 /** First `user_speech_partial` on the start's `utteranceId` with enough tokens for a barge-in. */
@@ -222,7 +244,7 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
           `${tag}: barge-in ${barge.atMs - expected} ms after expected (max of verdict and qualifying partial) > ${BARGE_SLACK_MS}`,
         )
       }
-      if (delay > BARGE_ABS_CAP_MS) {
+      if (delay > BARGE_ABS_CAP_MS && !isRechecked(start, seen)) {
         failures.push(`${tag}: barge-in ${delay} ms after speech start > cap ${BARGE_ABS_CAP_MS}`)
       }
     }

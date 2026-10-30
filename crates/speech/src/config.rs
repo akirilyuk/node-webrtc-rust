@@ -230,6 +230,13 @@ pub struct SpeakerGateConfig {
     /// stop interrupting too (they are still transcribed). Every other `unknown` (not enrolled,
     /// embed timeout or error) still proceeds. Default false.
     pub suppress_short_barge_in: bool,
+    /// When the first check of an utterance says `other` and the utterance keeps going, score the
+    /// next `check_speech_ms` of speech once more. A `caller` re-check releases the held barge-in
+    /// and labels the final `caller` (`speakerRechecked: true`); any other result keeps `other`.
+    /// It never runs after a `caller` or `unknown` verdict. Covers a bystander who opens the VAD
+    /// shortly before the caller and runs into the caller's words. Default true; false is the
+    /// one-check behaviour of 0.14.
+    pub recheck_on_other: bool,
     pub on_mismatch: SpeakerMismatchAction,
     /// Bound (ms) on one embedding call and on a final waiting for its verdict.
     pub verify_timeout_ms: u32,
@@ -245,6 +252,7 @@ impl Default for SpeakerGateConfig {
             check_speech_ms: 1500,
             min_check_speech_ms: 1500,
             suppress_short_barge_in: false,
+            recheck_on_other: true,
             on_mismatch: SpeakerMismatchAction::Flag,
             verify_timeout_ms: 500,
         }

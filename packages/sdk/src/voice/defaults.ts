@@ -48,3 +48,19 @@ export const VOICE_AGENT_VAD_PRESET: VadConfig = {
   gateStt: true,
   speechPadMs: 500,
 }
+
+/**
+ * Check windows a speaker-gate utterance can be scored on: the first check plus one re-check after
+ * an `other` verdict (`speakerGate.recheckOnOther`). Mirrors `RECHECK_WINDOWS` in the speech crate
+ * (`crates/speech/src/speaker_gate.rs`); both are asserted to be 2 in their own tests.
+ */
+export const SPEAKER_GATE_RECHECK_WINDOWS = 2
+
+/**
+ * Earliest speech time (ms after the utterance's speech start) at which a barge-in released by a
+ * re-check can come: the end of the second check window, `2 × checkSpeechMs`. Mirrors
+ * `recheck_barge_earliest_ms` in `crates/speech/src/speaker_gate.rs`.
+ */
+export function speakerRecheckBargeEarliestMs(checkSpeechMs: number): number {
+  return checkSpeechMs * SPEAKER_GATE_RECHECK_WINDOWS
+}

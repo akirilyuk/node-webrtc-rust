@@ -7,11 +7,14 @@
 //!   --fixtures <speaker_fixtures out dir> --models <speaker dir> --stt-model <zipformer dir> \
 //!   --out <dir> [--vad-min-silence-ms <n>] \
 //!   [--enhance <denoiser models dir> [--pre raw,rnnoise,gtcrn,...] [--cost-seconds <n>] [--streams-seconds <n>]]
-//!   [--checks 0.5,1.0,1.5] [--fixed-threshold <t>]
+//!   [--checks 0.5,1.0,1.5] [--fixed-threshold <t> [--recheck]]
 //!
 //! `--checks` replaces the Part 1 check lengths (seconds). `--fixed-threshold` runs Part 1 only and
 //! also scores every check length at that one threshold (FRR/FAR per set and level), written to
-//! `<out>/part1_fixed.md`; Parts 2 and 3 are skipped.
+//! `<out>/part1_fixed.md`; Parts 2 and 3 are skipped. `--recheck` adds, per check length, the
+//! FAR of the speaker gate's re-check (`recheckOnOther`) on impostor segments long enough for two
+//! windows: accepted when the first window scores at or above the threshold, or when it scores
+//! below and the second window `[check, 2 x check)` does (one row per set, levels pooled).
 //! ```
 //!
 //! Every Sherpa object is single-threaded (`num_threads: 1`); pin the process to one core
@@ -358,7 +361,7 @@ struct Item {
     level: Option<i32>,
     genuine: bool,
     ref_scene: usize,
-    /// Up to 1.5 s from the start of the segment.
+    /// Up to 3 s from the start of the segment (two 1.5 s windows for `--recheck`).
     clip: Vec<f32>,
 }
 
@@ -481,7 +484,9 @@ fn collect_items(fx: &mut Fixtures) -> Result<Vec<Item>, String> {
             }
             let audio = fx.audio16(scene)?;
             let from = (start_ms * 16).min(audio.len());
-            let to = (end_ms * 16).min(audio.len()).min(from + MAX_CHECK_SAMPLES);
+            let to = (end_ms * 16)
+                .min(audio.len())
+                .min(from + 2 * MAX_CHECK_SAMPLES);
             items.push(Item {
                 set,
                 level,
@@ -568,6 +573,47 @@ fn part1_fixed_table(
                 pct(far)
             ));
         }
+    }
+    md.push('\n');
+    md
+}
+
+/// Re-check FAR at a fixed threshold, on impostor segments with two full windows: one-window FAR
+/// (first window accepted) next to the two-window FAR (first or, after a reject, second window
+/// accepted), per set with levels pooled. Accept = score >= threshold, as in the product.
+fn recheck_far_table(
+    model: &str,
+    check_s: f32,
+    threshold: f32,
+    items: &[Item],
+    first_scores: &[Option<f32>],
+    second_scores: &[Option<f32>],
+) -> String {
+    let mut md = format!(
+        "### re-check FAR: {model} / {check_s} s windows at threshold {threshold}\n\n| set | n imp (>= 2 windows) | FAR 1 window | FAR 2 windows |\n|---|---|---|---|\n"
+    );
+    for (set, name) in [(Set::Tune, "tune"), (Set::Test, "test")] {
+        let (mut n, mut one, mut two) = (0_usize, 0_usize, 0_usize);
+        for ((it, a), b) in items.iter().zip(first_scores).zip(second_scores) {
+            let (Some(a), Some(b)) = (a, b) else {
+                continue;
+            };
+            if it.set != set || it.genuine {
+                continue;
+            }
+            n += 1;
+            let first_ok = *a >= threshold;
+            one += usize::from(first_ok);
+            two += usize::from(first_ok || *b >= threshold);
+        }
+        let pct = |k: usize| {
+            if n == 0 {
+                "-".to_string()
+            } else {
+                format!("{:.1} % ({k}/{n})", k as f64 * 100.0 / n as f64)
+            }
+        };
+        md.push_str(&format!("| {name} | {n} | {} | {} |\n", pct(one), pct(two)));
     }
     md.push('\n');
     md
@@ -2388,6 +2434,8 @@ struct Args {
     checks: Vec<f32>,
     /// Part 1 only: also score every check length at this threshold, then stop.
     fixed_threshold: Option<f32>,
+    /// With `fixed_threshold`: also the two-window (re-check) FAR on long impostor segments.
+    recheck: bool,
 }
 
 /// `precomputed:<name>=<dir>` -> `Some((name, dir))`; any other item -> `None`.
@@ -2415,6 +2463,7 @@ fn parse_args() -> Result<Args, String> {
     let (mut cost_seconds, mut streams_seconds) = (60usize, 10usize);
     let mut checks: Vec<f32> = CHECKS_S.to_vec();
     let mut fixed_threshold: Option<f32> = None;
+    let mut recheck = false;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
@@ -2497,6 +2546,7 @@ fn parse_args() -> Result<Args, String> {
                         .map_err(|e| format!("--fixed-threshold: {e}"))?,
                 )
             }
+            "--recheck" => recheck = true,
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -2515,6 +2565,7 @@ fn parse_args() -> Result<Args, String> {
         streams_seconds,
         checks,
         fixed_threshold,
+        recheck,
     })
 }
 
@@ -2584,6 +2635,21 @@ fn run() -> Result<(), String> {
             }
             if let Some(t) = args.fixed_threshold {
                 fixed_md.push_str(&part1_fixed_table(&emb.id, *check_s, t, &items, &scores));
+                if args.recheck {
+                    let n = check_samples(*check_s);
+                    let mut second = Vec::with_capacity(items.len());
+                    for item in &items {
+                        second.push(if item.genuine || item.clip.len() < 2 * n {
+                            None
+                        } else {
+                            emb.embed(&item.clip[n..2 * n])
+                                .map(|(e, _)| cosine(&ref_cache[&(m, item.ref_scene)], &e))
+                        });
+                    }
+                    fixed_md.push_str(&recheck_far_table(
+                        &emb.id, *check_s, t, &items, &scores, &second,
+                    ));
+                }
             }
             p1_rows.extend(part1_rows(&emb.id, *check_s, &items, &scores));
             if let Some(row) = real_voice_row(&emb, &args.models, *check_s)? {

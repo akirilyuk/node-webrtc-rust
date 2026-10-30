@@ -229,6 +229,7 @@ async function runPass(params: {
           utteranceId: event.utteranceId,
           speaker: event.speaker,
           speakerUnknownReason: event.speakerUnknownReason,
+          speakerRechecked: event.speakerRechecked,
         })
       }
     } catch (error) {

@@ -321,6 +321,15 @@ export interface VoiceAgentConfig {
      * VOICE-VAD-AND-BARGE-IN.md.
      */
     suppressShortBargeIn?: boolean
+    /**
+     * Default `true`. When an utterance's first check says `other` and the utterance keeps going,
+     * the next `checkSpeechMs` of speech is checked once more. A `caller` re-check releases the
+     * held barge-in (no earlier than `2 × checkSpeechMs` of speech, see
+     * `speakerRecheckBargeEarliestMs`) and labels the final `caller` with `speakerRechecked: true`;
+     * any other result keeps `other`. Never runs after a `caller` or `unknown` verdict. `false`
+     * keeps one check per utterance. See "Re-check after other" in VOICE-VAD-AND-BARGE-IN.md.
+     */
+    recheckOnOther?: boolean
     /** `'flag'` (default) keeps the final with `speaker: 'other'`; `'drop'` emits `user_speech_ignored`. */
     onMismatch?: 'flag' | 'drop'
     /** Bound (ms) on one check and on a final waiting for its verdict. Default 500. */
@@ -553,6 +562,12 @@ export interface SpeechEvent {
     | 'not_enrolled'
     | 'no_embedding'
     | 'no_check'
+  /**
+   * `user_speech_final` with `speakerGate` on: `true` when the first check said `other` and a
+   * re-check (`recheckOnOther`) was scored before the final; `speaker` is then `caller` if the
+   * re-check heard the caller, else `other`. Absent otherwise.
+   */
+  speakerRechecked?: boolean
 }
 
 /** `languageId.timing` values. */

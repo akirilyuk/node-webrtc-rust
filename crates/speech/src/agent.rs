@@ -3114,7 +3114,22 @@ impl VoiceAgent {
             return;
         }
         if gate.vetoes_barge(&verdict) {
-            if verdict.outcome == Outcome::Other {
+            if verdict.outcome == Outcome::Other
+                && !verdict.recheck
+                && gate.hold_for_recheck(verdict.key)
+            {
+                eprintln!(
+                    "[speaker-gate] info: speaker gate holds barge-in for re-check key={}",
+                    verdict.key
+                );
+                return;
+            }
+            if verdict.recheck {
+                eprintln!(
+                    "[speaker-gate] info: speaker gate suppressed barge-in key={} after re-check",
+                    verdict.key
+                );
+            } else if verdict.outcome == Outcome::Other {
                 eprintln!(
                     "[speaker-gate] info: speaker gate suppressed barge-in key={}",
                     verdict.key
@@ -3136,8 +3151,9 @@ impl VoiceAgent {
             inner.stt_barge_fired_this_agent_playback = true;
         }
         voice_debug(format!(
-            "speaker gate: barge-in after verdict ({})",
-            verdict.outcome.as_str()
+            "speaker gate: barge-in after verdict ({}{})",
+            verdict.outcome.as_str(),
+            if verdict.recheck { ", re-check" } else { "" }
         ));
         self.barge_in_with_speaking_end(&barge_in, record_id).await;
         self.cancel_pending_tts_synthesis().await;
@@ -3694,6 +3710,8 @@ impl VoiceAgent {
         // its verdict waits for it (at most `verifyTimeoutMs`, then `unknown`) on its own task:
         // this runs under the step lock, which every inbound frame takes, so waiting here would
         // stall the frame path (`rt.serial-queue-head-of-line`).
+        // From here no re-check starts for this key; one already in flight is awaited.
+        gate.close_recheck(key);
         if let Some(outcome) = gate.settled_outcome(key) {
             self.emit_final_with_speaker(key, event, record_id, outcome, None)
                 .await;
@@ -3735,7 +3753,10 @@ impl VoiceAgent {
         let event = if outcome == Outcome::Other && drop_mismatch {
             SpeechEvent::user_speech_ignored(Some(record_id))
         } else {
-            let event = event.with_speaker(outcome.as_str());
+            let mut event = event.with_speaker(outcome.as_str());
+            if self.speaker_gate.as_ref().is_some_and(|g| g.rechecked(key)) {
+                event = event.with_speaker_rechecked();
+            }
             match (outcome, self.speaker_gate.as_ref()) {
                 (Outcome::Unknown, Some(gate)) => {
                     event.with_speaker_unknown_reason(gate.unknown_reason(key))
@@ -3747,8 +3768,12 @@ impl VoiceAgent {
             Some(slot) => self.event_bus.fill_slot(slot, event),
             None => self.emit(event),
         }
-        if outcome != Outcome::Other {
-            if let Some(gate) = self.speaker_gate.as_ref() {
+        if let Some(gate) = self.speaker_gate.as_ref() {
+            if outcome == Outcome::Other {
+                // The final says `other`: a re-check result that lands later (the final stopped
+                // waiting) must not fire a barge-in for it (`rt.stale-event-by-key`).
+                gate.take_pending_barge(key);
+            } else {
                 gate.enroll_utterance(key);
             }
         }

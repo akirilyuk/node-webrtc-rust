@@ -18,10 +18,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Finals carry `speaker`.
   - With `onMismatch: 'drop'`, a final from another speaker is dropped and a `user_speech_ignored` event is emitted.
   - `resetSpeakerEnrollment` clears the enrolled caller.
-  - Each utterance gets one check, and the first verdict is final.
+  - Each utterance gets one check; only an `other` verdict can be re-checked once (`recheckOnOther`).
   - Tested with bystanders 15 dB or more below the caller. A bystander about as loud as the caller can pass the check.
 - **speech / bindings / sdk:** `speakerGate.suppressShortBargeIn` (opt-in, default `false`): an utterance with less speech than `minCheckSpeechMs` suppresses its barge-in like `other`. Other `unknown` verdicts still fail open.
 - **speech / bindings / sdk:** `user_speech_final` carries `speakerUnknownReason` (`short`, `timeout`, `error`, `no_embedding`, `not_enrolled`, `no_check`) when `speaker` is `unknown`, so an app can tell "too short to check" from a failed check.
+- **speech / bindings / sdk:** `speakerGate.recheckOnOther` (default `true`): when an utterance's first check says `other` and the utterance keeps going, the next `checkSpeechMs` of speech is checked once more. A `caller` re-check releases the held barge-in (no earlier than `2 × checkSpeechMs` of speech, exported as `speakerRecheckBargeEarliestMs`) and labels the final `caller`; anything else keeps `other`. It never runs after a `caller` or `unknown` verdict. Finals carry `speakerRechecked: true` when a re-check was scored. This covers a TV or a colleague who talks right before the caller and runs into the caller's words.
+- **bench:** `speaker_bench --fixed-threshold <t> --recheck` adds the two-window (re-check) FAR on impostor segments long enough for two windows.
 - **bench:** `speaker_bench --checks <seconds,...>` sets the Part 1 check lengths, and `--fixed-threshold <t>` scores every length at one threshold (`part1_fixed.md`).
 - **speech / bindings / sdk:** `barge_in` carries the `utteranceId` of the interrupting utterance, so consumers can pair it with its utterance by id. It is unset for a manual flush and for the standalone VAD.
 

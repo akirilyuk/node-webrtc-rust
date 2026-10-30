@@ -160,6 +160,70 @@ describe('evaluateTurns', () => {
     expect(evaluateTurns(TURNS, seen, 'p')).toEqual([])
   })
 
+  it('accepts a re-checked caller barge after the 3 s cap, bounded by start + 2 x checkSpeechMs', () => {
+    // Start 10 100, re-checked: verdict 10 100 + 3 000 = 13 100; barge 13 300 (+200 ms, 3 200 ms delay).
+    const base = healthy().filter(
+      (e) => e.type !== 'user_speech_partial' && e.type !== 'barge_in' && e.utteranceId !== 'u1',
+    )
+    const seen = [
+      ...base,
+      ev('user_speaking_start', 10_100, { utteranceId: 'u1' }),
+      ev('user_speech_partial', 10_600, { utteranceId: 'u1', text: 'please check' }),
+      ev('barge_in', 13_300, { utteranceId: 'u1' }),
+      ev('user_speech_final', 13_500, {
+        utteranceId: 'u1',
+        text: 'please check my order',
+        speaker: 'caller',
+        speakerRechecked: true,
+      }),
+    ].sort((a, b) => a.atMs - b.atMs)
+    expect(evaluateTurns(TURNS, seen, 'p')).toEqual([])
+    expect(expectedBargeAtMs(seen.find((e) => e.utteranceId === 'u1')!, seen)).toBe(13_100)
+  })
+
+  it('fails a re-checked caller barge more than 300 ms after start + 2 x checkSpeechMs', () => {
+    const base = healthy().filter(
+      (e) => e.type !== 'user_speech_partial' && e.type !== 'barge_in' && e.utteranceId !== 'u1',
+    )
+    const seen = [
+      ...base,
+      ev('user_speaking_start', 10_100, { utteranceId: 'u1' }),
+      ev('user_speech_partial', 10_600, { utteranceId: 'u1', text: 'please check' }),
+      ev('barge_in', 13_500, { utteranceId: 'u1' }),
+      ev('user_speech_final', 13_600, {
+        utteranceId: 'u1',
+        text: 'please check my order',
+        speaker: 'caller',
+        speakerRechecked: true,
+      }),
+    ].sort((a, b) => a.atMs - b.atMs)
+    expect(evaluateTurns(TURNS, seen, 'p').join('\n')).toMatch(/400 ms after expected .* > 300/)
+  })
+
+  it('keeps the 3 s cap for a caller turn that was not re-checked', () => {
+    const base = healthy().filter((e) => e.type !== 'user_speech_partial' && e.type !== 'barge_in')
+    const seen = [
+      ...base,
+      ev('user_speech_partial', 13_000, { utteranceId: 'u1', text: 'please check' }),
+      ev('barge_in', 13_200, { utteranceId: 'u1' }),
+    ].sort((a, b) => a.atMs - b.atMs)
+    expect(evaluateTurns(TURNS, seen, 'p').join('\n')).toMatch(/> cap 3000/)
+  })
+
+  it('fails a bystander upgraded to caller by a re-check, with its barge-in', () => {
+    const seen = [
+      ...healthy().map((e) =>
+        e.utteranceId === 'u2' && e.speaker
+          ? { ...e, speaker: 'caller', speakerRechecked: true }
+          : e,
+      ),
+      ev('barge_in', 17_200, { utteranceId: 'u2' }),
+    ].sort((a, b) => a.atMs - b.atMs)
+    const failures = evaluateTurns(TURNS, seen, 'p').join('\n')
+    expect(failures).toMatch(/barge_in for the bystander utterance u2/)
+    expect(failures).toMatch(/expected other/)
+  })
+
   it('fails a barge 400 ms after expected', () => {
     const base = healthy().filter((e) => e.type !== 'user_speech_partial' && e.type !== 'barge_in')
     const seen = [

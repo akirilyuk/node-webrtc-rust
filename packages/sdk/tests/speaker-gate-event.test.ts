@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest'
 import { JsSpeechEventType } from '@node-webrtc-rust/bindings'
 
 import { fromJsSpeechEvent } from '../src/voice/VoiceAgent'
+import { SPEAKER_GATE_RECHECK_WINDOWS, speakerRecheckBargeEarliestMs } from '../src/voice/index'
 
 describe('speaker gate speech events', () => {
   test('user_speech_ignored carries reason and utterance id, no text', () => {
@@ -46,5 +47,26 @@ describe('speaker gate speech events', () => {
     })
     expect(ev.speaker).toBe('unknown')
     expect(ev.speakerUnknownReason).toBe('short')
+  })
+
+  test('user_speech_final passes speakerRechecked through, absent when unset', () => {
+    const ev = fromJsSpeechEvent({
+      eventType: JsSpeechEventType.UserSpeechFinal,
+      text: 'hi',
+      speaker: 'caller',
+      speakerRechecked: true,
+    })
+    expect(ev.speakerRechecked).toBe(true)
+    const plain = fromJsSpeechEvent({
+      eventType: JsSpeechEventType.UserSpeechFinal,
+      text: 'hi',
+      speaker: 'other',
+    })
+    expect(plain.speakerRechecked).toBeUndefined()
+  })
+
+  test('re-check bound mirrors the speech crate (RECHECK_WINDOWS = 2)', () => {
+    expect(SPEAKER_GATE_RECHECK_WINDOWS).toBe(2)
+    expect(speakerRecheckBargeEarliestMs(1500)).toBe(3000)
   })
 })

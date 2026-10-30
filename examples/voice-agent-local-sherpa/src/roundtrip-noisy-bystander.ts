@@ -18,6 +18,9 @@
  *
  * Per pass the script asserts:
  *   - no `barge_in` carries a bystander utterance's id, and its final (when detected) has `speaker: 'other'`;
+ *   - a bystander final `unknown` with `speakerUnknownReason: 'short'` (less speech than
+ *     minCheckSpeechMs) is accepted with its barge-in; any other unknown fails; at least 2
+ *     bystander turns per pass must be `other` without a barge-in (anti-vacuous);
  *   - every caller turn barges in, its final has `speaker: 'caller'`, and qualified phrases match
  *     the manifest text by the roundtrip oracle (`wordSimilarity`; long sentences are not judged);
  *   - the barge-in comes at most 300 ms after the later of speech start + checkSpeechMs and the
@@ -221,6 +224,7 @@ async function runPass(params: {
           text: event.text,
           utteranceId: event.utteranceId,
           speaker: event.speaker,
+          speakerUnknownReason: event.speakerUnknownReason,
         })
       }
     } catch (error) {

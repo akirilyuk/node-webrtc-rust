@@ -24,6 +24,11 @@ export const BARGE_ABS_CAP_MS = 3000
 export const BYSTANDER_RELATIVE_DB = -15
 export const QUIET_CALLER_DBFS = -26
 export const WARMUP_S = 0.6
+/**
+ * Anti-vacuous rule: a pass needs at least this many bystander turns whose final is `other` (and
+ * that did not barge in), so the gate demonstrably scored bystanders.
+ */
+export const MIN_OTHER_BYSTANDERS = 2
 
 export interface Turn {
   role: 'main' | 'bystander'
@@ -39,6 +44,8 @@ export interface Seen {
   text?: string
   utteranceId?: string
   speaker?: string
+  /** `user_speech_final` with `speaker: 'unknown'`: why (product field `speakerUnknownReason`). */
+  speakerUnknownReason?: string
 }
 
 /**
@@ -165,14 +172,22 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
     const id = start?.utteranceId
     const final = id != null ? finals.get(id) : undefined
     if (turn.role === 'bystander') {
-      if (id != null && bargesOf(id).length > 0) {
+      // Documented behaviour of minCheckSpeechMs (1500) with suppressShortBargeIn off: an utterance
+      // with less speech is not scored (`unknown`, reason `short`) and its barge-in is released at
+      // its end. Any other unknown, or an unknown without a reason, is a failure.
+      const shortUnknown = final?.speaker === 'unknown' && final.speakerUnknownReason === 'short'
+      if (id != null && bargesOf(id).length > 0 && !shortUnknown) {
         failures.push(`${tag}: barge_in for the bystander utterance ${id}`)
       }
       if (final != null) {
-        if (final.speaker !== 'other') {
-          failures.push(`${tag}: final speaker ${String(final.speaker)}, expected other`)
+        if (final.speaker === 'other') {
+          if (id == null || bargesOf(id).length === 0) bystandersHeard += 1
+        } else if (shortUnknown) {
+          console.log(`${tag}: too short to check (unknown, reason short)`)
         } else {
-          bystandersHeard += 1
+          failures.push(
+            `${tag}: final speaker ${String(final.speaker)}${final.speakerUnknownReason != null ? ` (reason ${final.speakerUnknownReason})` : ''}, expected other`,
+          )
         }
       }
       return
@@ -225,8 +240,10 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
     }
   })
   console.log(`${label}: bystander finals tagged other: ${bystandersHeard}`)
-  if (bystandersHeard === 0) {
-    failures.push(`${label}: no bystander utterance was detected and tagged other (vacuous pass)`)
+  if (bystandersHeard < MIN_OTHER_BYSTANDERS) {
+    failures.push(
+      `${label}: only ${bystandersHeard} bystander utterance(s) tagged other without a barge-in, need at least ${MIN_OTHER_BYSTANDERS} (vacuous pass)`,
+    )
   }
   return failures
 }

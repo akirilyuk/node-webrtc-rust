@@ -75,6 +75,14 @@
 //! of inactive frames, so a stretch of about 2.1 s or more lowers the noise level to silence, and
 //! the babble returning after a short caller turn then holds the VAD open into the next turn
 //! (measured: turns merged in 12 of 22 rolled scenes with push, see ROUNDTRIP.md).
+//! `--long-bystanders N` (default 0): the first N S3 bystander turns read a sentence from
+//! `examples/support/long_background_sentences.txt` (12 sentences of 17-19 words, about 4-6 s of
+//! Piper speech, no content word shared with a main phrase or a long sentence) instead of the short
+//! background pool. The short pool's 7-10 word sentences give the speaker gate's 1500 ms minimum
+//! check only one or two checkable bystander turns per scene once the adaptive VAD has trimmed them
+//! (−15 dB bystander, 5 dB above the babble); a long sentence keeps the VAD open past 1500 ms. The
+//! text index reuses the turn's draw (index modulo the long pool), so the seed stream, gaps and
+//! babble draws are unchanged and N = 0 writes byte-identical scenes. Babble keeps the short pool.
 //! `--only` (repeatable): generate only scenes whose id starts with one of the prefixes; the
 //! manifest lists only those. Without it every scene is generated (the bench default).
 //!
@@ -112,6 +120,7 @@ const S3_GAP_MAX_MS: usize = 2000;
 const MAIN_BUNDLE: &str = "vits-piper-en_US-amy-low";
 const BACKGROUND: &str = include_str!("support/background_sentences.txt");
 const LONG: &str = include_str!("support/long_sentences.txt");
+const LONG_BACKGROUND: &str = include_str!("support/long_background_sentences.txt");
 const S2_PER_SET: usize = 60;
 /// `level_db` of a `main_clean` scene: no babble at all (stands in for minus infinity).
 const CLEAN_LEVEL_DB: i32 = -99;
@@ -622,6 +631,26 @@ struct Ctx {
     babble_clear_ms: usize,
     /// `--babble-clear-pull`: a start in that window moves to just before it, not to the turn end.
     babble_clear_pull: bool,
+    /// `--long-bystanders`: the first this many S3 bystander turns use `long_background`.
+    long_bystanders: usize,
+    long_background: Vec<String>,
+}
+
+/// Text of the `index`-th S3 bystander turn (0-based) for the turn's `drawn` index into the short
+/// pool: the first `long_bystanders` turns read the long pool at `drawn % long.len()`, the rest the
+/// short pool at `drawn`. The draw happens either way, so the seed stream does not change.
+fn bystander_text(
+    index: usize,
+    drawn: usize,
+    long_bystanders: usize,
+    short: &[String],
+    long: &[String],
+) -> String {
+    if index < long_bystanders && !long.is_empty() {
+        long[drawn % long.len()].clone()
+    } else {
+        short[drawn].clone()
+    }
 }
 
 impl Ctx {
@@ -886,6 +915,7 @@ impl Ctx {
             });
         }
         let enroll_end = pos;
+        let mut bystander_index = 0usize;
         for turn in 0..turns {
             if turn % 2 == 0 {
                 let text = texts.main_turns[turn / 2].clone();
@@ -899,7 +929,15 @@ impl Ctx {
                     segment: seg,
                 });
             } else {
-                let text = self.sentences[rng.below(self.sentences.len())].clone();
+                let drawn = rng.below(self.sentences.len());
+                let text = bystander_text(
+                    bystander_index,
+                    drawn,
+                    self.long_bystanders,
+                    &self.sentences,
+                    &self.long_background,
+                );
+                bystander_index += 1;
                 let clip = normalize_to(
                     &self.synth.clip(&bystander, &text)?,
                     bystander_level_db(main_db, self.bystander_db),
@@ -1182,6 +1220,7 @@ struct Args {
     bystander_db: i32,
     babble_clear_ms: usize,
     babble_clear_pull: bool,
+    long_bystanders: usize,
 }
 
 fn parse_main_levels(text: &str) -> Result<Vec<i32>, String> {
@@ -1215,6 +1254,7 @@ fn parse_args() -> Result<Args, String> {
     let mut bystander_db = 0i32;
     let mut babble_clear_ms = 0usize;
     let mut babble_clear_pull = false;
+    let mut long_bystanders = 0usize;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = |name: &str| -> Result<PathBuf, String> {
@@ -1257,6 +1297,12 @@ fn parse_args() -> Result<Args, String> {
                     .map_err(|e| format!("--babble-clear-ms {text:?}: {e}"))?;
             }
             "--babble-clear-pull" => babble_clear_pull = true,
+            "--long-bystanders" => {
+                let text = value("--long-bystanders")?.to_string_lossy().into_owned();
+                long_bystanders = text
+                    .parse()
+                    .map_err(|e| format!("--long-bystanders {text:?}: {e}"))?;
+            }
             "--only" => only.push(value("--only")?.to_string_lossy().into_owned()),
             other => return Err(format!("unknown argument {other}")),
         }
@@ -1275,6 +1321,7 @@ fn parse_args() -> Result<Args, String> {
         bystander_db,
         babble_clear_ms,
         babble_clear_pull,
+        long_bystanders,
     })
 }
 
@@ -1325,6 +1372,8 @@ fn run() -> Result<(), String> {
         bystander_db: args.bystander_db,
         babble_clear_ms: args.babble_clear_ms,
         babble_clear_pull: args.babble_clear_pull,
+        long_bystanders: args.long_bystanders,
+        long_background: lines_of(LONG_BACKGROUND),
     };
 
     let sets = [Set::Tune, Set::Test];
@@ -1721,6 +1770,59 @@ mod tests {
                 "a background sentence and a long sentence share {word:?}"
             );
         }
+    }
+
+    #[test]
+    fn long_background_sentences_are_long_and_share_no_content_word_with_main_text() {
+        let longs_bg = lines_of(LONG_BACKGROUND);
+        assert_eq!(longs_bg.len(), 12);
+        let json = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../examples/voice-agent-local-sherpa/stt-phrase-qualification.json"),
+        )
+        .unwrap();
+        let words = |text: &str| -> Vec<String> {
+            text.to_lowercase()
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .filter(|w| !w.is_empty())
+                .map(str::to_string)
+                .collect()
+        };
+        let mut main: Vec<String> = qualified_phrases(&json)
+            .unwrap()
+            .iter()
+            .flat_map(|p| words(p))
+            .collect();
+        main.extend(lines_of(LONG).iter().flat_map(|l| words(l)));
+        for sentence in &longs_bg {
+            let n = words(sentence).len();
+            assert!(
+                (12..=20).contains(&n),
+                "{sentence:?} has {n} words, want 12-20"
+            );
+            for word in words(sentence).into_iter().filter(|w| w.len() >= 4) {
+                assert!(
+                    !main.contains(&word),
+                    "{sentence:?} shares {word:?} with a main phrase or a long sentence"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bystander_text_uses_the_long_pool_for_the_first_n_turns_only() {
+        let short: Vec<String> = (0..40).map(|i| format!("s{i}")).collect();
+        let long: Vec<String> = (0..12).map(|i| format!("l{i}")).collect();
+        // N = 0: always the drawn short sentence (byte-identical scenes).
+        for index in 0..8 {
+            assert_eq!(bystander_text(index, 25, 0, &short, &long), "s25");
+        }
+        // N = 2: turns 0 and 1 read the long pool at drawn % 12, later turns the short pool.
+        assert_eq!(bystander_text(0, 25, 2, &short, &long), "l1");
+        assert_eq!(bystander_text(1, 7, 2, &short, &long), "l7");
+        assert_eq!(bystander_text(2, 25, 2, &short, &long), "s25");
+        // An empty long pool falls back to the short one.
+        assert_eq!(bystander_text(0, 3, 2, &short, &[]), "s3");
     }
 
     #[test]

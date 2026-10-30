@@ -28,11 +28,37 @@ use std::path::PathBuf;
 #[path = "support/mod.rs"]
 mod support;
 
+// `audio.rs` is private to the crate; included by path as `benches/resample.rs` does, so the sweep
+// upsamples a TTS clip with the same resampler nwr's TTS output uses (no product-code change).
+#[path = "../src/audio.rs"]
+#[allow(dead_code, unused_imports)]
+mod audio;
+
 use support::{create_recognizer, create_tts, recognize, synthesize, write_wav};
 
 const LEAD_SILENCE_MS: usize = 300;
 const TAIL_SILENCE_MS: usize = 2500;
 const SAMPLE_RATE: i32 = 16_000;
+
+/// Bring a mono TTS clip at `rate` to the recognizer's 16 kHz the way the product does: nwr TTS
+/// output resampler to 48 kHz stereo s16le (`audio::f32_mono_to_stereo_48k_s16le_raw`), then the
+/// server STT input conversion (`stereo_48k_to_mono_16k`, `mono_s16le_bytes_to_f32`). A 16 kHz
+/// clip is returned unchanged. The bool is `true` when the clip was resampled.
+fn to_recognizer_rate(clip: Vec<f32>, rate: i32) -> Result<(Vec<f32>, bool), String> {
+    if rate == SAMPLE_RATE {
+        return Ok((clip, false));
+    }
+    if rate <= 0 {
+        return Err(format!("TTS sample rate is {rate} Hz"));
+    }
+    let stereo_48k = audio::f32_mono_to_stereo_48k_s16le_raw(&clip, rate as u32);
+    let mono_16k = node_webrtc_rust_speech::pcm::stereo_48k_to_mono_16k(&stereo_48k);
+    let bytes: Vec<u8> = mono_16k.iter().flat_map(|s| s.to_le_bytes()).collect();
+    Ok((
+        node_webrtc_rust_speech::pcm::mono_s16le_bytes_to_f32(&bytes),
+        true,
+    ))
+}
 
 /// `normalizeForCompare`: lowercase, every char outside `[a-z0-9\s]` becomes a space, whitespace
 /// runs collapse to one space, trimmed.
@@ -174,14 +200,21 @@ fn run(args: &Args) -> Result<String, String> {
     let mut below_060 = 0usize;
     let mut keyword_missing = 0usize;
     let mut texts: HashMap<String, usize> = HashMap::new();
+    let mut tts_rate: Option<i32> = None;
+    let mut resampled = false;
 
     for i in 0..args.n {
-        let (clip, rate) = synthesize(&tts, &args.phrase)?;
-        if rate != SAMPLE_RATE {
-            return Err(format!(
-                "TTS sample rate is {rate} Hz, expected {SAMPLE_RATE} Hz (amy-low)"
-            ));
+        let (raw, rate) = synthesize(&tts, &args.phrase)?;
+        match tts_rate {
+            Some(first) if first != rate => {
+                return Err(format!(
+                    "TTS sample rate changed from {first} Hz to {rate} Hz"
+                ));
+            }
+            _ => tts_rate = Some(rate),
         }
+        let (clip, was_resampled) = to_recognizer_rate(raw, rate)?;
+        resampled = was_resampled;
         let mut input = Vec::with_capacity(lead.len() + clip.len() + tail.len());
         input.extend_from_slice(&lead);
         input.extend_from_slice(&clip);
@@ -229,10 +262,11 @@ fn run(args: &Args) -> Result<String, String> {
         )
     };
     Ok(format!(
-        "{{\"phrase\":{},\"n\":{},\"minObserved\":{},\"below075\":{below_075},\"below060\":{below_060},\"keyword\":{keyword_json},\"keywordMissing\":{missing_json},\"topTexts\":[{top_json}]}}",
+        "{{\"phrase\":{},\"n\":{},\"minObserved\":{},\"below075\":{below_075},\"below060\":{below_060},\"keyword\":{keyword_json},\"keywordMissing\":{missing_json},\"ttsSampleRate\":{},\"resampled\":{resampled},\"topTexts\":[{top_json}]}}",
         json_string(&args.phrase),
         args.n,
         min_observed,
+        tts_rate.unwrap_or(SAMPLE_RATE),
     ))
 }
 
@@ -258,6 +292,45 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Dominant frequency of `samples` at `rate` by zero crossings.
+    fn zero_crossing_hz(samples: &[f32], rate: i32) -> f64 {
+        let crossings = samples
+            .windows(2)
+            .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+            .count();
+        crossings as f64 / 2.0 / (samples.len() as f64 / f64::from(rate))
+    }
+
+    #[test]
+    fn clip_at_22050_hz_is_resampled_to_16_khz() {
+        let src_rate = 22_050;
+        let len = src_rate as usize; // 1 s
+        let sine: Vec<f32> = (0..len)
+            .map(|i| 0.5 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / src_rate as f32).sin())
+            .collect();
+        let (out, resampled) = to_recognizer_rate(sine, src_rate).expect("resample");
+        assert!(resampled);
+        let expected = len * SAMPLE_RATE as usize / src_rate as usize;
+        assert!(
+            out.len().abs_diff(expected) <= 1,
+            "len {} expected {expected}",
+            out.len()
+        );
+        let hz = zero_crossing_hz(&out, SAMPLE_RATE);
+        assert!((hz - 440.0).abs() < 5.0, "frequency {hz}");
+    }
+
+    #[test]
+    fn clip_at_16_khz_is_unchanged() {
+        let clip: Vec<f32> = (0..1600).map(|i| (i as f32 * 0.01).sin()).collect();
+        let (out, resampled) = to_recognizer_rate(clip.clone(), SAMPLE_RATE).expect("passthrough");
+        assert!(!resampled);
+        assert_eq!(
+            out.iter().map(|s| s.to_bits()).collect::<Vec<_>>(),
+            clip.iter().map(|s| s.to_bits()).collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn identical_text_scores_one() {

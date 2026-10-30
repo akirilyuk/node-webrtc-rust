@@ -487,7 +487,7 @@ fn place_babble(
         .enumerate()
         .map(|(i, (&pos, &clip_len))| {
             let start = babble_clear_start(pos, turns, clear, pull);
-            if start == pos || start < pos {
+            if start <= pos {
                 // Unmoved, or pulled earlier: it still ends before the next drawn start.
                 return Some(start);
             }

@@ -65,6 +65,7 @@ fn synthesize_request(cfg: &TtsConfig, text: &str, ctx: SessionContext) -> Synth
         speed: cfg.model.clone().unwrap_or_default(),
         ctx: Some(ctx),
         sentence_case: cfg.sentence_case.as_wire().to_string(),
+        ..Default::default()
     }
 }
 

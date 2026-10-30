@@ -66,4 +66,38 @@ mod tests {
         assert_eq!(decoded, req);
         assert!(!encoded.is_empty());
     }
+
+    #[test]
+    fn synthesize_request_vendor_fields_round_trip() {
+        let req = crate::v1::SynthesizeRequest {
+            text: "hello".to_string(),
+            vendor: "openai".to_string(),
+            vendor_model: "tts-1".to_string(),
+            voice: "alloy".to_string(),
+            api_key: "k".to_string(),
+            endpoint: "https://example.invalid".to_string(),
+            transport: "http".to_string(),
+            ..Default::default()
+        };
+        let decoded =
+            crate::v1::SynthesizeRequest::decode(req.encode_to_vec().as_slice()).expect("decode");
+        assert_eq!(decoded, req);
+    }
+
+    #[test]
+    fn synthesize_request_without_vendor_fields_decodes_as_sherpa() {
+        // Bytes from a client that predates the vendor fields: text (field 2) only.
+        let old = crate::v1::SynthesizeRequest {
+            text: "hi".to_string(),
+            ..Default::default()
+        };
+        let decoded =
+            crate::v1::SynthesizeRequest::decode(old.encode_to_vec().as_slice()).expect("decode");
+        assert!(decoded.vendor.is_empty());
+        assert!(decoded.vendor_model.is_empty());
+        assert!(decoded.voice.is_empty());
+        assert!(decoded.api_key.is_empty());
+        assert!(decoded.endpoint.is_empty());
+        assert!(decoded.transport.is_empty());
+    }
 }

@@ -141,6 +141,26 @@ pub struct SynthesizeRequest {
     /// "auto" | "off"; empty = auto (older clients)
     #[prost(string, tag = "6")]
     pub sentence_case: ::prost::alloc::string::String,
+    /// Cloud vendor synthesis (mirrors nwr TtsConfig). All empty = Sherpa, unchanged.
+    ///
+    /// TtsConfig.provider wire name, e.g. "openai"; empty = Sherpa
+    #[prost(string, tag = "7")]
+    pub vendor: ::prost::alloc::string::String,
+    /// TtsConfig.model for a cloud vendor
+    #[prost(string, tag = "8")]
+    pub vendor_model: ::prost::alloc::string::String,
+    /// TtsConfig.voice for a cloud vendor
+    #[prost(string, tag = "9")]
+    pub voice: ::prost::alloc::string::String,
+    /// TtsConfig.api_key (per request, never logged)
+    #[prost(string, tag = "10")]
+    pub api_key: ::prost::alloc::string::String,
+    /// TtsConfig.endpoint
+    #[prost(string, tag = "11")]
+    pub endpoint: ::prost::alloc::string::String,
+    /// TtsConfig.transport: "auto" | "websocket" | "http"; empty = auto
+    #[prost(string, tag = "12")]
+    pub transport: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SynthesizeResponse {

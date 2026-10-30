@@ -15,7 +15,10 @@
 # next bystander turn then held the VAD open into the next caller turn. --long-bystanders 2 gives
 # two bystander turns per scene a 17-19 word sentence (4-6 s), so at least one bystander per pass
 # stays VAD-open past the speaker gate's 1500 ms minimum check (short 7-10 word sentences often
-# ended as unknown/short in both passes: vacuous pass). Scenes are never committed.
+# ended as unknown/short in both passes: vacuous pass). --long-bystander-db -6 plays those two long
+# turns at -6 dB re the caller (the other bystander turns stay at -15 dB): at -15 dB over the babble
+# the adaptive VAD treated the long bystanders as noise and never opened, so the gate never scored
+# them; at -6 dB the VAD opens and the gate has to reject them. Scenes are never committed.
 #
 # Idempotent: skips when manifest.json exists and .speaker-fixtures-args (written after a successful
 # generation) matches the generator args. The speaker model is downloaded only when missing (the CI
@@ -41,7 +44,7 @@ ensure_speaker_fixtures() {
   local args=(
     --models "$ex/.models/speaker" --main-tts "$ex/.models/vits-piper-en_US-amy-low"
     --phrases "$ex/stt-phrase-qualification.json" --out "$out"
-    --main-levels -26 --min-turn-gap-ms 2500 --bystander-db -15 --babble-clear-ms 1000 --babble-clear-pull --long-bystanders 2
+    --main-levels -26 --min-turn-gap-ms 2500 --bystander-db -15 --babble-clear-ms 1000 --babble-clear-pull --long-bystanders 2 --long-bystander-db -6
     --only s3_test_m15
   )
   local want="${args[*]}"

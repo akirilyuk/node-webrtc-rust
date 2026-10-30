@@ -7,7 +7,7 @@
 //! cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
 //!   --models <speaker dir> --main-tts <amy-low dir> --phrases <stt-phrase-qualification.json> \
 //!   --out <dir> [--quick] [--voices-root <dir>] [--cache <dir>] [--main-levels <dBFS,...>]
-//!   [--min-turn-gap-ms <ms>] [--bystander-db <dB>] [--only <scene-id-prefix>]
+//!   [--min-turn-gap-ms <ms>] [--bystander-db <dB>] [--long-bystander-db <dB>] [--only <scene-id-prefix>]
 //! ```
 //!
 //! - Main voice: `vits-piper-en_US-amy-low` (`--main-tts`), sid 0. Main text = the phrases of
@@ -83,6 +83,11 @@
 //! (−15 dB bystander, 5 dB above the babble); a long sentence keeps the VAD open past 1500 ms. The
 //! text index reuses the turn's draw (index modulo the long pool), so the seed stream, gaps and
 //! babble draws are unchanged and N = 0 writes byte-identical scenes. Babble keeps the short pool.
+//! `--long-bystander-db` (default: the `--bystander-db` value): level of the long-pool bystander
+//! turns (the first `--long-bystanders` turns) re the main voice; the other bystander turns keep
+//! `--bystander-db`. At −15 dB over the babble the adaptive VAD can treat a long bystander as noise
+//! and never open, so the speaker gate never scores it; CI plays the long turns at −6 dB so the VAD
+//! opens and the gate has to reject them. Without the flag the scenes are byte-identical.
 //! `--only` (repeatable): generate only scenes whose id starts with one of the prefixes; the
 //! manifest lists only those. Without it every scene is generated (the bench default).
 //!
@@ -633,7 +638,25 @@ struct Ctx {
     babble_clear_pull: bool,
     /// `--long-bystanders`: the first this many S3 bystander turns use `long_background`.
     long_bystanders: usize,
+    /// `--long-bystander-db`: level of the long-pool bystander turns re the main voice.
+    long_bystander_db: i32,
     long_background: Vec<String>,
+}
+
+/// Level (dB re the main voice) of the `index`-th S3 bystander turn: `long_db` for the turns that
+/// read the long pool (same condition as [`bystander_text`]), `short_db` for the rest.
+fn bystander_rel_db(
+    index: usize,
+    long_bystanders: usize,
+    long_pool_len: usize,
+    short_db: i32,
+    long_db: i32,
+) -> i32 {
+    if index < long_bystanders && long_pool_len > 0 {
+        long_db
+    } else {
+        short_db
+    }
 }
 
 /// Text of the `index`-th S3 bystander turn (0-based) for the turn's `drawn` index into the short
@@ -937,10 +960,17 @@ impl Ctx {
                     &self.sentences,
                     &self.long_background,
                 );
+                let rel_db = bystander_rel_db(
+                    bystander_index,
+                    self.long_bystanders,
+                    self.long_background.len(),
+                    self.bystander_db,
+                    self.long_bystander_db,
+                );
                 bystander_index += 1;
                 let clip = normalize_to(
                     &self.synth.clip(&bystander, &text)?,
-                    bystander_level_db(main_db, self.bystander_db),
+                    bystander_level_db(main_db, rel_db),
                 );
                 let seg = segment("bystander", &bystander, &text, pos, clip.len(), false);
                 let start = pos;
@@ -1221,6 +1251,17 @@ struct Args {
     babble_clear_ms: usize,
     babble_clear_pull: bool,
     long_bystanders: usize,
+    /// `--long-bystander-db`; `None` uses `bystander_db`.
+    long_bystander_db: Option<i32>,
+}
+
+/// Parses a bystander level flag value: an integer dB between -40 and 0.
+fn parse_bystander_db(name: &str, text: &str) -> Result<i32, String> {
+    let db: i32 = text.parse().map_err(|e| format!("{name} {text:?}: {e}"))?;
+    if !(-40..=0).contains(&db) {
+        return Err(format!("{name} {db}: must be between -40 and 0"));
+    }
+    Ok(db)
 }
 
 fn parse_main_levels(text: &str) -> Result<Vec<i32>, String> {
@@ -1255,6 +1296,7 @@ fn parse_args() -> Result<Args, String> {
     let mut babble_clear_ms = 0usize;
     let mut babble_clear_pull = false;
     let mut long_bystanders = 0usize;
+    let mut long_bystander_db = None;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = |name: &str| -> Result<PathBuf, String> {
@@ -1281,14 +1323,11 @@ fn parse_args() -> Result<Args, String> {
             }
             "--bystander-db" => {
                 let text = value("--bystander-db")?.to_string_lossy().into_owned();
-                bystander_db = text
-                    .parse()
-                    .map_err(|e| format!("--bystander-db {text:?}: {e}"))?;
-                if !(-40..=0).contains(&bystander_db) {
-                    return Err(format!(
-                        "--bystander-db {bystander_db}: must be between -40 and 0"
-                    ));
-                }
+                bystander_db = parse_bystander_db("--bystander-db", &text)?;
+            }
+            "--long-bystander-db" => {
+                let text = value("--long-bystander-db")?.to_string_lossy().into_owned();
+                long_bystander_db = Some(parse_bystander_db("--long-bystander-db", &text)?);
             }
             "--babble-clear-ms" => {
                 let text = value("--babble-clear-ms")?.to_string_lossy().into_owned();
@@ -1322,6 +1361,7 @@ fn parse_args() -> Result<Args, String> {
         babble_clear_ms,
         babble_clear_pull,
         long_bystanders,
+        long_bystander_db,
     })
 }
 
@@ -1373,6 +1413,7 @@ fn run() -> Result<(), String> {
         babble_clear_ms: args.babble_clear_ms,
         babble_clear_pull: args.babble_clear_pull,
         long_bystanders: args.long_bystanders,
+        long_bystander_db: args.long_bystander_db.unwrap_or(args.bystander_db),
         long_background: lines_of(LONG_BACKGROUND),
     };
 
@@ -1823,6 +1864,40 @@ mod tests {
         assert_eq!(bystander_text(2, 25, 2, &short, &long), "s25");
         // An empty long pool falls back to the short one.
         assert_eq!(bystander_text(0, 3, 2, &short, &[]), "s3");
+    }
+
+    #[test]
+    fn long_bystander_db_sets_the_level_of_the_long_pool_turns_only() {
+        // Without the flag the long level equals --bystander-db: every turn -15 (byte-identical).
+        for index in 0..8 {
+            assert_eq!(bystander_rel_db(index, 2, 12, -15, -15), -15);
+        }
+        // --long-bystander-db -6 with --long-bystanders 2: turns 0 and 1 at -6, the rest -15.
+        assert_eq!(bystander_rel_db(0, 2, 12, -15, -6), -6);
+        assert_eq!(bystander_rel_db(1, 2, 12, -15, -6), -6);
+        assert_eq!(bystander_rel_db(2, 2, 12, -15, -6), -15);
+        assert_eq!(bystander_rel_db(7, 2, 12, -15, -6), -15);
+        // No long turns, or an empty long pool (short text): the short level.
+        assert_eq!(bystander_rel_db(0, 0, 12, -15, -6), -15);
+        assert_eq!(bystander_rel_db(0, 2, 0, -15, -6), -15);
+        // Absolute level at the CI main level -26: -32 dBFS long, -41 dBFS short.
+        assert_eq!(
+            bystander_level_db(-26, bystander_rel_db(0, 2, 12, -15, -6)),
+            -32.0
+        );
+        assert_eq!(
+            bystander_level_db(-26, bystander_rel_db(2, 2, 12, -15, -6)),
+            -41.0
+        );
+    }
+
+    #[test]
+    fn bystander_db_flags_parse_and_reject_out_of_range() {
+        assert_eq!(parse_bystander_db("--long-bystander-db", "-6"), Ok(-6));
+        assert_eq!(parse_bystander_db("--bystander-db", "0"), Ok(0));
+        assert!(parse_bystander_db("--long-bystander-db", "3").is_err());
+        assert!(parse_bystander_db("--long-bystander-db", "-41").is_err());
+        assert!(parse_bystander_db("--long-bystander-db", "x").is_err());
     }
 
     #[test]

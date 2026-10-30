@@ -111,7 +111,7 @@ FIXTURE_HELPER="scripts/ci/ensure-speaker-fixtures.sh"
 [[ -f "$FIXTURE_HELPER" ]] || fail "missing $FIXTURE_HELPER"
 bash -c "ROOT='$ROOT'; source '$FIXTURE_HELPER'; declare -F ensure_speaker_fixtures >/dev/null" \
   || fail "$FIXTURE_HELPER must define ensure_speaker_fixtures"
-for flag in '--main-levels -26' '--min-turn-gap-ms 2500' '--bystander-db -15' '--babble-clear-ms 1000' '--babble-clear-pull' '--long-bystanders 2' '--only s3_test_m15'; do
+for flag in '--main-levels -26' '--min-turn-gap-ms 2500' '--bystander-db -15' '--babble-clear-ms 1000' '--babble-clear-pull' '--long-bystanders 2' '--long-bystander-db -6' '--only s3_test_m15'; do
   # Code lines only: the helper's header comment names the flags too.
   grep -v '^[[:space:]]*#' "$FIXTURE_HELPER" | grep -qF -- "$flag" || fail "$FIXTURE_HELPER lost the scene arg: $flag"
 done

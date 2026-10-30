@@ -66,7 +66,7 @@
 //! the scene level. Only the gain changes, so the draws stay the same.
 //! `--babble-clear-ms` (default 0): S3 babble sentences that would start within this many ms before
 //! a main turn's start are pushed to start after that turn's end, or dropped when they then no
-//! longer fit before the same voice's next sentence (each logged as `babble-clear: pushed|dropped`).
+//! longer fit before the same voice's next sentence (each logged as `babble-clear: pushed|pulled|dropped`).
 //! The draws stay the same, only placements move, so VAD opens on the caller, not on babble.
 //! `--babble-clear-pull` (with `--babble-clear-ms`): such a sentence is pulled back to start just
 //! before the window instead (it then talks through the window, with no onset in it), and nothing
@@ -552,7 +552,8 @@ fn babble(
             };
             if pos != *drawn_at {
                 eprintln!(
-                    "babble-clear: pushed {} {:?} from {} ms to {} ms",
+                    "babble-clear: {} {} {:?} from {} ms to {} ms",
+                    if pos < *drawn_at { "pulled" } else { "pushed" },
                     voice.name,
                     text,
                     to_ms(*drawn_at),
@@ -1608,7 +1609,7 @@ mod tests {
             moved > 0,
             "the fixture must exercise at least one pulled start"
         );
-        // Push (the default) is unchanged by the new parameter.
+        // With clear = 0 there is no window, so pull moves nothing.
         assert_eq!(
             place_babble(&starts, &lens, len, &turns, 0, true),
             starts.iter().map(|&s| Some(s)).collect::<Vec<_>>()

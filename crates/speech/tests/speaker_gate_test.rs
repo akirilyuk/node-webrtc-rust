@@ -1274,6 +1274,23 @@ fn config_errors() {
         assert!(cfg.validate().unwrap_err().contains("threshold"), "{bad}");
     }
     assert!(SpeakerGateConfig::default().validate().is_ok());
+    for (check, min, ok) in [(1000, 1500, false), (1500, 1500, true), (3000, 1500, true)] {
+        let cfg = SpeakerGateConfig {
+            enabled: true,
+            model_path: Some("m.onnx".into()),
+            check_speech_ms: check,
+            min_check_speech_ms: min,
+            ..SpeakerGateConfig::default()
+        };
+        match (cfg.validate(), ok) {
+            (Ok(()), true) => {}
+            (Err(e), false) => assert!(
+                e.contains("checkSpeechMs (1000)") && e.contains("minCheckSpeechMs (1500)"),
+                "{e}"
+            ),
+            (r, _) => panic!("check {check} / min {min}: unexpected {r:?}"),
+        }
+    }
     let d = SpeakerGateConfig::default();
     assert_eq!(
         (

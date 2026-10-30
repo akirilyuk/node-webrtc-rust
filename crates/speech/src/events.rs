@@ -283,12 +283,13 @@ impl SpeechEvent {
             .with_text(text)
     }
 
-    /// Tags a final with the speaker-gate verdict (`caller` | `other` | `unknown`).
+    /// Sets `speaker_unknown_reason` on a final whose speaker is `unknown` (see `speaker_gate::UNKNOWN_*`).
     pub fn with_speaker_unknown_reason(mut self, reason: &str) -> Self {
         self.speaker_unknown_reason = Some(reason.to_string());
         self
     }
 
+    /// Tags a final with the speaker-gate verdict (`caller` | `other` | `unknown`).
     pub fn with_speaker(mut self, speaker: &str) -> Self {
         self.speaker = Some(speaker.to_string());
         self

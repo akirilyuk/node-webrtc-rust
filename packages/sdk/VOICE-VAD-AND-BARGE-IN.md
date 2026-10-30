@@ -393,7 +393,7 @@ At 1.25 s, FRR per bystander level, test (tune): -6 dB 9.4 % (21.9 %), -10 dB 3.
 
 **`suppressShortBargeIn` (opt-in, default `false`).** When `true`, an utterance whose verdict is `unknown` with reason `short` suppresses its barge-in like `other` does, including the deferred one released at its end. Use it where background voices are loud and you would rather ignore a short phrase than let a bystander interrupt, for example an open-plan office. The cost: short caller phrases such as "stop" no longer interrupt the agent. They are still transcribed, and their final still arrives with `speaker: 'unknown'`.
 
-**Tuning per project.** Lower `minCheckSpeechMs` (towards 1250) only if your callers say many short interruptions and a bystander rarely talks over them. Keep 1500 or raise it where bystanders are loud and you want fewer false accepts. Pair it with `suppressShortBargeIn: true` when short bystander phrases must never interrupt. Keep `checkSpeechMs` at or above `minCheckSpeechMs`.
+**Tuning per project.** Lower `minCheckSpeechMs` (towards 1250) only if your callers say many short interruptions and a bystander rarely talks over them. Keep 1500 or raise it where bystanders are loud and you want fewer false accepts. Pair it with `suppressShortBargeIn: true` when short bystander phrases must never interrupt. `checkSpeechMs` below `minCheckSpeechMs` is rejected at config time.
 
 **Reproduce the table.** Generate the scenes once, then run Part 1 at the fixed threshold (Parts 2 and 3 are skipped). Paths are examples; the speaker model comes from `npm run download-speaker --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa`.
 

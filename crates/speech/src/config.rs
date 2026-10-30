@@ -205,7 +205,8 @@ pub struct SpeakerGateConfig {
     /// Speech (ms) of an utterance used for one check.
     pub check_speech_ms: u32,
     /// Clips with less speech than this (ms) are not scored: the verdict is `unknown` and the gate
-    /// fails open (unless `suppress_short_barge_in`). Default 1500.
+    /// fails open (unless `suppress_short_barge_in`). Default 1500. Must not exceed
+    /// `check_speech_ms` (`validate` rejects it).
     ///
     /// Measured 2026-10-30 (TitaNet-small, threshold 0.459, `speaker_bench` Part 1 at a fixed
     /// threshold, 128 genuine / 92 impostor clips per set, bystander at -6/-10/-15/-20 dB pooled):
@@ -267,6 +268,13 @@ impl SpeakerGateConfig {
             return Err(format!(
                 "speakerGate.threshold must be in (0, 1), got {}",
                 self.threshold
+            ));
+        }
+        if self.check_speech_ms < self.min_check_speech_ms {
+            return Err(format!(
+                "speakerGate.checkSpeechMs ({}) must be at least speakerGate.minCheckSpeechMs ({}): \
+                 otherwise every utterance is shorter than the minimum and is never checked",
+                self.check_speech_ms, self.min_check_speech_ms
             ));
         }
         Ok(())

@@ -310,7 +310,7 @@ export interface VoiceAgentConfig {
     /**
      * Clips with less speech than this (ms) are not scored: `speaker: 'unknown'`, fail open.
      * Default 1500: genuine-caller false rejects were 11.7 % at 1.0 s, 3.1 % at 1.25 s and
-     * 0.8 % at 1.5 s (test set). See "Minimum check length" in VOICE-VAD-AND-BARGE-IN.md.
+     * 0.8 % at 1.5 s (test set). Must not exceed `checkSpeechMs` (rejected at config time). See "Minimum check length" in VOICE-VAD-AND-BARGE-IN.md.
      */
     minCheckSpeechMs?: number
     /**

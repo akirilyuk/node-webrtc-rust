@@ -114,6 +114,14 @@ bash -c "ROOT='$ROOT'; source '$FIXTURE_HELPER'; declare -F ensure_speaker_fixtu
 for flag in '--main-levels -26' '--min-turn-gap-ms 2500' '--bystander-db -15' '--babble-clear-ms 1000' '--only s3_test_m15'; do
   grep -qF -- "$flag" "$FIXTURE_HELPER" || fail "$FIXTURE_HELPER lost the scene arg: $flag"
 done
+# Re-roll mode: the stress workflow input reaches the helper, which then ignores the stamp and
+# generates from an empty cache (fresh Piper roll per iteration, as on fresh CI containers).
+grep -q 'SPEAKER_FIXTURES_REROLL' "$FIXTURE_HELPER" \
+  || fail "$FIXTURE_HELPER must honour SPEAKER_FIXTURES_REROLL"
+grep -q 'args+=(--cache "$cache_dir")' "$FIXTURE_HELPER" \
+  || fail "$FIXTURE_HELPER re-roll must pass a fresh --cache dir"
+grep -qE "SPEAKER_FIXTURES_REROLL: \\$\\{\\{ inputs.reroll_fixtures" .github/workflows/sherpa-e2e-stress.yml \
+  || fail "sherpa-e2e-stress.yml must map input reroll_fixtures to SPEAKER_FIXTURES_REROLL"
 grep -qE '^source "\$ROOT/scripts/ci/ensure-speaker-fixtures.sh"' "$CI_SCRIPT" \
   || fail "$CI_SCRIPT calls ensure_speaker_fixtures but does not source $FIXTURE_HELPER"
 fr="$tmp/fixture-root"

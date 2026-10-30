@@ -15,6 +15,13 @@
 # generation) matches the generator args. The speaker model is downloaded only when missing (the CI
 # test image ships it under /opt/sherpa-models/speaker, linked by ensure-sherpa-models.sh).
 #
+# SPEAKER_FIXTURES_REROLL=1 (sherpa-e2e-stress.yml input reroll_fixtures): ignore the stamp and
+# generate with a fresh, empty clip cache, so every run (every stress iteration) plays a new Piper
+# roll, as fresh CI containers do. Once per process tree: the call exports
+# SPEAKER_FIXTURES_REROLLED=1, so the second call in the same iteration (run-sherpa-example-ci.sh,
+# then run-sherpa-roundtrip-e2e.sh) reuses that roll. The stamp is removed, not written, so the next
+# normal run regenerates.
+#
 # Requires ROOT (repo root). Optional: CI_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC (default 900).
 
 ensure_speaker_fixtures() {
@@ -32,7 +39,12 @@ ensure_speaker_fixtures() {
   )
   local want="${args[*]}"
 
-  if [[ -s "$out/manifest.json" && -f "$stamp" && "$(cat "$stamp")" == "$want" ]]; then
+  local reroll="${SPEAKER_FIXTURES_REROLL:-0}"
+  if [[ "$reroll" == "1" && "${SPEAKER_FIXTURES_REROLLED:-0}" == "1" && -s "$out/manifest.json" ]]; then
+    echo "==> noisy-bystander scenes already re-rolled in this run ($out)"
+    return 0
+  fi
+  if [[ "$reroll" != "1" && -s "$out/manifest.json" && -f "$stamp" && "$(cat "$stamp")" == "$want" ]]; then
     echo "==> noisy-bystander scenes up to date ($out)"
     return 0
   fi
@@ -43,10 +55,22 @@ ensure_speaker_fixtures() {
       "sherpa download-speaker" -- npm run download-speaker --workspace="$workspace" || return 1
   fi
   rm -f "$stamp"
+  local cache_dir="" rc=0
+  if [[ "$reroll" == "1" ]]; then
+    cache_dir="$(mktemp -d)"
+    args+=(--cache "$cache_dir")
+    echo "==> SPEAKER_FIXTURES_REROLL=1: fresh Piper roll (empty cache $cache_dir)"
+  fi
   bash "$ci_step" --timeout "$timeout" \
     "sherpa speaker_fixtures" -- \
     cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- "${args[@]}" \
-    || return 1
+    || rc=1
+  [[ -n "$cache_dir" ]] && rm -rf "$cache_dir"
+  [[ "$rc" -eq 0 ]] || return 1
   [[ -s "$out/manifest.json" ]] || { echo "speaker_fixtures wrote no $out/manifest.json" >&2; return 1; }
-  printf '%s' "$want" >"$stamp"
+  if [[ "$reroll" == "1" ]]; then
+    export SPEAKER_FIXTURES_REROLLED=1
+  else
+    printf '%s' "$want" >"$stamp"
+  fi
 }

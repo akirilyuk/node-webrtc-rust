@@ -45,6 +45,10 @@ on:
         options:
           - 'false'
           - 'true'
+      reroll_fixtures:
+        description: 'true = every iteration generates the noisy-bystander scenes from a fresh Piper roll (SPEAKER_FIXTURES_REROLL=1), as fresh CI containers do; false = one roll reused by all iterations'
+        type: boolean
+        default: false
       native_trace:
         description: 'true = native DTLS/ICE/SCTP trace per process (WNR_LOG_FILE), kept only for the failing iteration'
         type: choice
@@ -118,6 +122,7 @@ jobs:
           CPU_BURN: ${{ inputs.cpu_burn }}
           CARGO_ARGS: ${{ inputs.cargo_args }}
           NATIVE_TRACE: ${{ inputs.native_trace }}
+          SPEAKER_FIXTURES_REROLL: ${{ inputs.reroll_fixtures && '1' || '0' }}
           FIRST_PASS_VOICE_DEBUG: ${{ inputs.voice_debug }}
         run: |
           set -uo pipefail

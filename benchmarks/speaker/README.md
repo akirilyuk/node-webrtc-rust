@@ -153,6 +153,8 @@ $H --label speaker-bench -- cargo run --release -p node-webrtc-rust-vendor-sherp
 
 The other voices' bundles are read from the parent of `--models` (`--voices-root` overrides it).
 
+`--model-filter <text>` keeps only the embedding models whose file stem contains the text. `--fixed-threshold <t> --long-other` skips Parts 1 to 3 and writes `long_other.md` / `long_other.json`: per-window FAR of non-caller speech, FAR over long other-speech streams (4 bystander speech unions, about 16 s), caller recall after k s of other speech, and embed cost, for the `consecutive` re-check scheme (windows end at 1x, 2x, 3x the check) and a `sliding-500` scheme (hop 500 ms), with window caps N. Use it with `--checks 1.5`.
+
 ## Run it on the EU runner
 
 The workflow `.github/workflows/speaker-bench.yml` is dispatch-only. Load work always goes to the EU self-hosted runners, never to the ARC scale sets:

@@ -2436,6 +2436,10 @@ struct Args {
     fixed_threshold: Option<f32>,
     /// With `fixed_threshold`: also the two-window (re-check) FAR on long impostor segments.
     recheck: bool,
+    /// With `fixed_threshold`: long other-speech FAR, caller recall and cost per re-check scheme.
+    long_other: bool,
+    /// Only embedding models whose file stem contains this text.
+    model_filter: Option<String>,
 }
 
 /// `precomputed:<name>=<dir>` -> `Some((name, dir))`; any other item -> `None`.
@@ -2464,6 +2468,8 @@ fn parse_args() -> Result<Args, String> {
     let mut checks: Vec<f32> = CHECKS_S.to_vec();
     let mut fixed_threshold: Option<f32> = None;
     let mut recheck = false;
+    let mut long_other = false;
+    let mut model_filter: Option<String> = None;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
@@ -2547,8 +2553,13 @@ fn parse_args() -> Result<Args, String> {
                 )
             }
             "--recheck" => recheck = true,
+            "--long-other" => long_other = true,
+            "--model-filter" => model_filter = Some(value("--model-filter")?),
             other => return Err(format!("unknown argument {other}")),
         }
+    }
+    if long_other && fixed_threshold.is_none() {
+        return Err("--long-other requires --fixed-threshold".to_string());
     }
     Ok(Args {
         fixtures: fixtures.ok_or("--fixtures is required")?,
@@ -2566,6 +2577,8 @@ fn parse_args() -> Result<Args, String> {
         checks,
         fixed_threshold,
         recheck,
+        long_other,
+        model_filter,
     })
 }
 
@@ -2592,11 +2605,22 @@ fn run() -> Result<(), String> {
         .filter(|p| p.extension().is_some_and(|x| x == "onnx"))
         .collect();
     model_files.sort();
+    if let Some(filter) = &args.model_filter {
+        model_files.retain(|p| {
+            p.file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|stem| stem.contains(filter.as_str()))
+        });
+    }
     if model_files.is_empty() {
         return Err(format!(
             "no .onnx embedding model in {}",
             args.models.display()
         ));
+    }
+
+    if args.long_other {
+        return long_other_run(&mut fx, &args, &model_files, &manifest_sha);
     }
 
     // ---- Part 1 ----
@@ -3128,6 +3152,749 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------------------------
+// --long-other: re-check schemes on long other-speech streams
+// ---------------------------------------------------------------------------------------------
+
+/// Product pre-roll in front of a scored window (300 ms at 16 kHz).
+const PRE_ROLL_SAMPLES: usize = 4_800;
+/// Hop of the sliding scheme (500 ms).
+const SLIDING_HOP: usize = 8_000;
+/// Bystander unions stitched into one long other-speech stream.
+const STREAM_UNIONS: usize = 4;
+/// Exposure times of table B, seconds.
+const EXPOSURES_S: [f32; 8] = [1.5, 3.0, 4.5, 6.0, 7.5, 9.0, 12.0, 15.0];
+/// Seconds of other speech before the caller starts (table C).
+const RECALL_K_S: [f32; 6] = [1.0, 2.0, 3.0, 4.0, 6.0, 9.0];
+/// Milliseconds the other speech runs over the start of the caller (table C).
+const RECALL_OVERLAP_MS: [usize; 2] = [0, 1000];
+/// Window caps of table C; `None` is unlimited.
+const RECALL_CAPS: [Option<usize>; 6] = [Some(2), Some(3), Some(4), Some(6), Some(8), None];
+/// Window caps of table D.
+const COST_CAPS: [Option<usize>; 4] = [Some(2), Some(4), Some(8), None];
+/// Utterance length priced in table D, seconds.
+const COST_UTTERANCE_S: usize = 17;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Scheme {
+    /// Windows end at check, 2 check, 3 check, ... (the product's first check and re-checks).
+    Consecutive,
+    /// Windows end at check, check + 0.5 s, check + 1 s, ...
+    Sliding500,
+}
+
+const SCHEMES: [Scheme; 2] = [Scheme::Consecutive, Scheme::Sliding500];
+
+impl Scheme {
+    fn name(self) -> &'static str {
+        match self {
+            Scheme::Consecutive => "consecutive",
+            Scheme::Sliding500 => "sliding-500",
+        }
+    }
+
+    fn step(self, check: usize) -> usize {
+        match self {
+            Scheme::Consecutive => check,
+            Scheme::Sliding500 => SLIDING_HOP,
+        }
+    }
+}
+
+/// Sample positions where windows end for audio of `len` samples.
+fn window_ends(scheme: Scheme, len: usize, check: usize) -> Vec<usize> {
+    let step = scheme.step(check).max(1);
+    let mut ends = Vec::new();
+    let mut end = check;
+    while end > 0 && end <= len {
+        ends.push(end);
+        end += step;
+    }
+    ends
+}
+
+/// The first `cap` windows (all when `cap` is `None`).
+fn capped(ends: &[usize], cap: Option<usize>) -> &[usize] {
+    &ends[..cap.map_or(ends.len(), |n| n.min(ends.len()))]
+}
+
+/// Sample range scored for a window ending at `end`: `check` plus the pre-roll, clamped at 0.
+fn window_range(end: usize, check: usize) -> (usize, usize) {
+    (end.saturating_sub(check + PRE_ROLL_SAMPLES), end)
+}
+
+/// Union of millisecond spans, sorted, overlapping and touching spans merged.
+fn merge_spans(spans: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut sorted: Vec<(usize, usize)> = spans.iter().copied().filter(|(a, b)| b > a).collect();
+    sorted.sort_unstable();
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    for (a, b) in sorted {
+        match out.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    out
+}
+
+/// The speech of a scene: the union of its spans cut out of `audio` (16 kHz) and concatenated in
+/// time order, gaps removed.
+fn speech_union(audio: &[f32], spans_ms: &[(usize, usize)]) -> Vec<f32> {
+    let mut out = Vec::new();
+    for (a, b) in merge_spans(spans_ms) {
+        let from = (a * 16).min(audio.len());
+        let to = (b * 16).min(audio.len()).max(from);
+        out.extend_from_slice(&audio[from..to]);
+    }
+    out
+}
+
+/// `count` unions starting at `start`, indices modulo the number of unions.
+fn stitch(unions: &[Vec<f32>], start: usize, count: usize) -> Vec<f32> {
+    (0..count)
+        .flat_map(|d| unions[(start + d) % unions.len()].iter().copied())
+        .collect()
+}
+
+/// End of the first accepting window.
+fn first_accept_end(ends: &[usize], accepts: &[bool]) -> Option<usize> {
+    ends.iter()
+        .zip(accepts)
+        .find(|(_, accepted)| **accepted)
+        .map(|(end, _)| *end)
+}
+
+#[derive(Clone, Copy)]
+struct StreamTrial {
+    /// Stream length, samples.
+    len: usize,
+    /// End of the first accepting window over the whole stream.
+    first_accept: Option<usize>,
+}
+
+/// `(trials, accepted)` at exposure `t` samples: only trials whose stream is at least `t` long
+/// count, and a trial is accepted when a window ending at or before `t` accepted.
+fn far_at(trials: &[StreamTrial], t: usize) -> (usize, usize) {
+    let (mut n, mut hit) = (0, 0);
+    for trial in trials.iter().filter(|tr| tr.len >= t) {
+        n += 1;
+        hit += usize::from(trial.first_accept.is_some_and(|end| end <= t));
+    }
+    (n, hit)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Outcome {
+    /// A window that ended at or before the caller's onset accepted first.
+    EarlyFa,
+    /// The first accepting window ended after the onset; payload = end - onset, samples.
+    Caller(usize),
+    /// No window within the cap accepted.
+    Miss,
+}
+
+/// Outcome of a trial when only the first `cap` windows are scored.
+fn classify(ends: &[usize], accepts: &[bool], onset: usize, cap: Option<usize>) -> Outcome {
+    let ends = capped(ends, cap);
+    match first_accept_end(ends, &accepts[..ends.len().min(accepts.len())]) {
+        Some(end) if end <= onset => Outcome::EarlyFa,
+        Some(end) => Outcome::Caller(end - onset),
+        None => Outcome::Miss,
+    }
+}
+
+/// Windows scored for an utterance of `len` samples under `cap`.
+fn windows_scored(scheme: Scheme, len: usize, check: usize, cap: Option<usize>) -> usize {
+    capped(&window_ends(scheme, len, check), cap).len()
+}
+
+struct TrialScores {
+    onset: usize,
+    ends: Vec<usize>,
+    accepts: Vec<bool>,
+}
+
+struct RecallRun {
+    scheme: Scheme,
+    overlap_ms: usize,
+    k_s: f32,
+    trials: Vec<TrialScores>,
+}
+
+struct RecallCell {
+    n: usize,
+    caller: usize,
+    early: usize,
+    miss: usize,
+    lat_p50_ms: Option<f64>,
+    lat_p90_ms: Option<f64>,
+}
+
+fn recall_cell(trials: &[TrialScores], cap: Option<usize>) -> RecallCell {
+    let mut cell = RecallCell {
+        n: trials.len(),
+        caller: 0,
+        early: 0,
+        miss: 0,
+        lat_p50_ms: None,
+        lat_p90_ms: None,
+    };
+    let mut latencies = Vec::new();
+    for t in trials {
+        match classify(&t.ends, &t.accepts, t.onset, cap) {
+            Outcome::EarlyFa => cell.early += 1,
+            Outcome::Miss => cell.miss += 1,
+            Outcome::Caller(samples) => {
+                cell.caller += 1;
+                latencies.push(samples as f64 / 16.0);
+            }
+        }
+    }
+    latencies.sort_by(|a, b| a.total_cmp(b));
+    if !latencies.is_empty() {
+        cell.lat_p50_ms = Some(percentile(&latencies, 0.5));
+        cell.lat_p90_ms = Some(percentile(&latencies, 0.9));
+    }
+    cell
+}
+
+struct SetData {
+    name: &'static str,
+    /// `(level_db of the conversation scene, reference embedding)`.
+    refs: Vec<(i32, Vec<f32>)>,
+    /// Speech union of every `bystander_alone` scene, manifest order.
+    unions: Vec<Vec<f32>>,
+    /// Stitched streams, one per union.
+    streams: Vec<Vec<f32>>,
+}
+
+type EmbedMemo = HashMap<usize, Option<Vec<f32>>>;
+
+fn embed_window(
+    emb: &Embedder,
+    audio: &[f32],
+    end: usize,
+    check: usize,
+    timings: &mut Vec<f64>,
+) -> Option<Vec<f32>> {
+    let (from, to) = window_range(end, check);
+    let (e, secs) = emb.embed(&audio[from..to])?;
+    timings.push(secs);
+    Some(e)
+}
+
+fn cached_window(
+    memo: &mut EmbedMemo,
+    emb: &Embedder,
+    audio: &[f32],
+    end: usize,
+    check: usize,
+    timings: &mut Vec<f64>,
+) -> Option<Vec<f32>> {
+    memo.entry(end)
+        .or_insert_with(|| embed_window(emb, audio, end, check, timings))
+        .clone()
+}
+
+fn load_set_data(
+    fx: &mut Fixtures,
+    emb: &Embedder,
+    set: Set,
+    name: &'static str,
+) -> Result<SetData, String> {
+    let ref_scenes: Vec<usize> = (0..fx.scenes.len())
+        .filter(|&i| {
+            let s = &fx.scenes[i];
+            s.kind == "conversation" && s.main_db == -20 && s.set == set
+        })
+        .collect();
+    let mut refs = Vec::new();
+    for scene in ref_scenes {
+        let enroll = enrollment(fx, scene)?;
+        let (e, _) = emb.embed(&enroll).ok_or("enrollment too short to embed")?;
+        refs.push((fx.scenes[scene].level_db, e));
+    }
+    let bystander_scenes: Vec<usize> = (0..fx.scenes.len())
+        .filter(|&i| fx.scenes[i].kind == "bystander_alone" && fx.scenes[i].set == set)
+        .collect();
+    let mut unions = Vec::new();
+    for scene in bystander_scenes {
+        let spans: Vec<(usize, usize)> = fx.scenes[scene]
+            .segments
+            .iter()
+            .map(|s| (s.start_ms, s.end_ms))
+            .collect();
+        let audio = fx.audio16(scene)?.clone();
+        unions.push(speech_union(&audio, &spans));
+    }
+    if refs.is_empty() || unions.is_empty() {
+        return Err(format!(
+            "--long-other: set {name} needs conversation scenes at -20 dB and bystander_alone scenes"
+        ));
+    }
+    let streams = (0..unions.len())
+        .map(|i| stitch(&unions, i, STREAM_UNIONS))
+        .collect();
+    Ok(SetData {
+        name,
+        refs,
+        unions,
+        streams,
+    })
+}
+
+struct CallerClip {
+    audio: Vec<f32>,
+    level_db: i32,
+}
+
+/// `main` segments of the test set's default-level `main_over_babble` scenes, filtered like
+/// `collect_items`.
+fn caller_clips(fx: &mut Fixtures) -> Result<Vec<CallerClip>, String> {
+    let mut out = Vec::new();
+    for scene in 0..fx.scenes.len() {
+        let s = &fx.scenes[scene];
+        if s.kind != "main_over_babble"
+            || s.set != Set::Test
+            || !default_level_scene(&s.kind, s.main_db)
+        {
+            continue;
+        }
+        let level_db = s.level_db;
+        let ref_scene = fx
+            .reference_scene(Set::Test, Some(level_db))
+            .ok_or("fixtures have no conversation scene (needed for the enrollment reference)")?;
+        let enroll_texts: Vec<String> = fx.scenes[ref_scene]
+            .segments
+            .iter()
+            .filter(|s| s.enroll)
+            .map(|s| s.text.clone())
+            .collect();
+        let spans: Vec<(usize, usize)> = fx.scenes[scene]
+            .segments
+            .iter()
+            .filter(|s| s.role == "main" && !shares_enrollment_text(&s.text, &enroll_texts))
+            .map(|s| (s.start_ms, s.end_ms))
+            .collect();
+        if spans.is_empty() {
+            continue;
+        }
+        let audio = fx.audio16(scene)?;
+        for (start_ms, end_ms) in spans {
+            let from = (start_ms * 16).min(audio.len());
+            let to = (end_ms * 16).min(audio.len()).max(from);
+            out.push(CallerClip {
+                audio: audio[from..to].to_vec(),
+                level_db,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Table A: `(windows scored, accepted)` over consecutive windows of every union, per reference.
+fn marginal_far(
+    emb: &Embedder,
+    d: &SetData,
+    check: usize,
+    threshold: f32,
+    timings: &mut Vec<f64>,
+) -> (usize, usize) {
+    let (mut n, mut hit) = (0, 0);
+    for union in &d.unions {
+        for end in window_ends(Scheme::Consecutive, union.len(), check) {
+            let Some(e) = embed_window(emb, union, end, check, timings) else {
+                continue;
+            };
+            for (_, r) in &d.refs {
+                n += 1;
+                hit += usize::from(cosine(r, &e) >= threshold);
+            }
+        }
+    }
+    (n, hit)
+}
+
+/// Table B trials of one scheme: one per (stream, reference).
+fn stream_trials(
+    emb: &Embedder,
+    d: &SetData,
+    scheme: Scheme,
+    check: usize,
+    threshold: f32,
+    memos: &mut [EmbedMemo],
+    timings: &mut Vec<f64>,
+) -> Vec<StreamTrial> {
+    let mut trials = Vec::new();
+    for (i, stream) in d.streams.iter().enumerate() {
+        let ends = window_ends(scheme, stream.len(), check);
+        let embs: Vec<Option<Vec<f32>>> = ends
+            .iter()
+            .map(|&end| cached_window(&mut memos[i], emb, stream, end, check, timings))
+            .collect();
+        for (_, r) in &d.refs {
+            let accepts: Vec<bool> = embs
+                .iter()
+                .map(|e| e.as_ref().is_some_and(|e| cosine(r, e) >= threshold))
+                .collect();
+            trials.push(StreamTrial {
+                len: stream.len(),
+                first_accept: first_accept_end(&ends, &accepts),
+            });
+        }
+    }
+    trials
+}
+
+/// Table C: every (scheme, overlap, k) with one trial per caller clip.
+#[allow(clippy::too_many_arguments)]
+fn caller_recall(
+    emb: &Embedder,
+    test: &SetData,
+    clips: &[CallerClip],
+    check: usize,
+    threshold: f32,
+    memos: &mut [EmbedMemo],
+    timings: &mut Vec<f64>,
+) -> Vec<RecallRun> {
+    let mut runs: Vec<RecallRun> = Vec::new();
+    for scheme in SCHEMES {
+        for overlap_ms in RECALL_OVERLAP_MS {
+            for k_s in RECALL_K_S {
+                runs.push(RecallRun {
+                    scheme,
+                    overlap_ms,
+                    k_s,
+                    trials: Vec::new(),
+                });
+            }
+        }
+    }
+    let run_index = |si: usize, oi: usize, ki: usize| {
+        (si * RECALL_OVERLAP_MS.len() + oi) * RECALL_K_S.len() + ki
+    };
+    for (j, clip) in clips.iter().enumerate() {
+        let sidx = j % test.streams.len();
+        let other = &test.streams[sidx];
+        let reference = test
+            .refs
+            .iter()
+            .find(|(level, _)| *level == clip.level_db)
+            .unwrap_or(&test.refs[0])
+            .1
+            .as_slice();
+        let gain = 10f32.powf(clip.level_db as f32 / 20.0);
+        for (oi, overlap_ms) in RECALL_OVERLAP_MS.iter().enumerate() {
+            for (ki, k_s) in RECALL_K_S.iter().enumerate() {
+                let onset = ((k_s * SR as f32) as usize).min(other.len());
+                let mut x: Vec<f32> = other[..onset].to_vec();
+                x.extend_from_slice(&clip.audio);
+                for i in 0..overlap_ms * 16 {
+                    if onset + i >= x.len() || onset + i >= other.len() {
+                        break;
+                    }
+                    x[onset + i] += other[onset + i] * gain;
+                }
+                let mut accepted_at: HashMap<usize, bool> = HashMap::new();
+                for (si, scheme) in SCHEMES.iter().enumerate() {
+                    let ends = window_ends(*scheme, x.len(), check);
+                    let mut accepts = Vec::with_capacity(ends.len());
+                    for &end in &ends {
+                        let accepted = *accepted_at.entry(end).or_insert_with(|| {
+                            // Before the onset the window is pure other speech: shared with
+                            // table B's stream cache.
+                            let e = if end <= onset {
+                                cached_window(&mut memos[sidx], emb, other, end, check, timings)
+                            } else {
+                                embed_window(emb, &x, end, check, timings)
+                            };
+                            e.is_some_and(|e| cosine(reference, &e) >= threshold)
+                        });
+                        accepts.push(accepted);
+                    }
+                    runs[run_index(si, oi, ki)].trials.push(TrialScores {
+                        onset,
+                        ends,
+                        accepts,
+                    });
+                }
+            }
+        }
+    }
+    runs
+}
+
+fn cap_label(cap: Option<usize>) -> String {
+    cap.map_or("unlimited".to_string(), |n| n.to_string())
+}
+
+fn cap_json(cap: Option<usize>) -> String {
+    cap.map_or("null".to_string(), |n| n.to_string())
+}
+
+/// Tables A-D for one (model, check length) as `(markdown, json object)`.
+fn long_other_section(
+    fx: &mut Fixtures,
+    emb: &Embedder,
+    check_s: f32,
+    threshold: f32,
+) -> Result<(String, String), String> {
+    let check = check_samples(check_s);
+    let sets = [
+        load_set_data(fx, emb, Set::Tune, "tune")?,
+        load_set_data(fx, emb, Set::Test, "test")?,
+    ];
+    let test = &sets[1];
+    let clips = caller_clips(fx)?;
+    if clips.is_empty() {
+        return Err("--long-other: no caller clips in the test set".into());
+    }
+    let mut timings: Vec<f64> = Vec::new();
+    let mut memos: Vec<Vec<EmbedMemo>> = sets
+        .iter()
+        .map(|d| vec![EmbedMemo::new(); d.streams.len()])
+        .collect();
+
+    let mut md = format!(
+        "## {} / check {check_s} s\n\nReferences: {}. Streams per set: tune {}, test {}. Caller clips: {}.\n\n",
+        emb.id,
+        sets.iter()
+            .map(|d| format!("{} n={}", d.name, d.refs.len()))
+            .collect::<Vec<_>>()
+            .join(", "),
+        sets[0].streams.len(),
+        sets[1].streams.len(),
+        clips.len()
+    );
+    let mut json = format!(
+        "{{\"model\": \"{}\", \"check_s\": {check_s}, \"refs\": {{{}}}, \"streams\": {{{}}}, \"caller_clips\": {}",
+        json_escape(&emb.id),
+        sets.iter()
+            .map(|d| format!("\"{}\": {}", d.name, d.refs.len()))
+            .collect::<Vec<_>>()
+            .join(", "),
+        sets.iter()
+            .map(|d| format!("\"{}\": {}", d.name, d.streams.len()))
+            .collect::<Vec<_>>()
+            .join(", "),
+        clips.len()
+    );
+
+    // ---- A ----
+    md.push_str("### A) Marginal FAR per consecutive window\n\nWindows of each `bystander_alone` speech union (window ends <= union length), pooled over references; accept = score >= threshold.\n\n| set | refs | windows x refs | accepted | FAR % |\n|---|---|---|---|---|\n");
+    let mut a_rows = Vec::new();
+    let (mut pooled_n, mut pooled_hit) = (0, 0);
+    let mut p_by_set = Vec::new();
+    for d in &sets {
+        let (n, hit) = marginal_far(emb, d, check, threshold, &mut timings);
+        pooled_n += n;
+        pooled_hit += hit;
+        p_by_set.push(hit as f64 / n.max(1) as f64);
+        md.push_str(&format!(
+            "| {} | {} | {n} | {hit} | {} |\n",
+            d.name,
+            d.refs.len(),
+            fmt_opt(pct(hit, n), 2)
+        ));
+        a_rows.push(format!(
+            "{{\"set\": \"{}\", \"refs\": {}, \"windows\": {n}, \"accepted\": {hit}, \"far_pct\": {}}}",
+            d.name,
+            d.refs.len(),
+            json_num(pct(hit, n))
+        ));
+    }
+    let p_pooled = pooled_hit as f64 / pooled_n.max(1) as f64;
+    md.push_str(&format!(
+        "| pooled | - | {pooled_n} | {pooled_hit} | {} |\n\n",
+        fmt_opt(pct(pooled_hit, pooled_n), 2)
+    ));
+    a_rows.push(format!(
+        "{{\"set\": \"pooled\", \"windows\": {pooled_n}, \"accepted\": {pooled_hit}, \"far_pct\": {}}}",
+        json_num(pct(pooled_hit, pooled_n))
+    ));
+    json.push_str(&format!(", \"a\": [{}]", a_rows.join(", ")));
+
+    // ---- B ----
+    md.push_str(&format!(
+        "### B) FAR on long other streams (about {} s each: {STREAM_UNIONS} bystander unions)\n\nTrials = streams x references with stream length >= T. FAR(T) = share with an accepting window ending at or before T. Bound = 1 - (1 - p)^windows(T) from table A's p (consecutive scheme).\n\n",
+        STREAM_UNIONS * 4
+    ));
+    let mut trials: Vec<Vec<Vec<StreamTrial>>> = Vec::new(); // [set][scheme]
+    for (si, d) in sets.iter().enumerate() {
+        let per_scheme = SCHEMES
+            .iter()
+            .map(|s| stream_trials(emb, d, *s, check, threshold, &mut memos[si], &mut timings))
+            .collect();
+        trials.push(per_scheme);
+    }
+    let mut b_json = Vec::new();
+    let pooled_trials: Vec<Vec<StreamTrial>> = (0..SCHEMES.len())
+        .map(|s| {
+            trials
+                .iter()
+                .flat_map(|per| per[s].iter().copied())
+                .collect()
+        })
+        .collect();
+    let mut tables: Vec<(&str, &[Vec<StreamTrial>], f64)> = Vec::new();
+    for (si, d) in sets.iter().enumerate() {
+        tables.push((d.name, &trials[si], p_by_set[si]));
+    }
+    tables.push(("pooled", &pooled_trials, p_pooled));
+    for (name, per_scheme, p) in tables {
+        md.push_str(&format!(
+            "#### {name}\n\n| T s | cons n | cons acc | cons FAR % | bound % | slide n | slide acc | slide FAR % |\n|---|---|---|---|---|---|---|---|\n"
+        ));
+        let mut rows = Vec::new();
+        for t_s in EXPOSURES_S {
+            let t = (t_s * SR as f32) as usize;
+            let (cn, ch) = far_at(&per_scheme[0], t);
+            let (sn, sh) = far_at(&per_scheme[1], t);
+            let windows = t / check;
+            let bound = 100.0 * (1.0 - (1.0 - p).powi(windows as i32));
+            md.push_str(&format!(
+                "| {t_s} | {cn} | {ch} | {} | {bound:.2} | {sn} | {sh} | {} |\n",
+                fmt_opt(pct(ch, cn), 2),
+                fmt_opt(pct(sh, sn), 2)
+            ));
+            rows.push(format!(
+                "{{\"t_s\": {t_s}, \"consecutive\": {{\"n\": {cn}, \"accepted\": {ch}, \"far_pct\": {}}}, \"sliding_500\": {{\"n\": {sn}, \"accepted\": {sh}, \"far_pct\": {}}}, \"independence_bound_pct\": {bound:.4}}}",
+                json_num(pct(ch, cn)),
+                json_num(pct(sh, sn))
+            ));
+        }
+        md.push('\n');
+        b_json.push(format!("\"{name}\": [{}]", rows.join(", ")));
+    }
+    json.push_str(&format!(", \"b\": {{{}}}", b_json.join(", ")));
+
+    // ---- C ----
+    let runs = caller_recall(
+        emb,
+        test,
+        &clips,
+        check,
+        threshold,
+        &mut memos[1],
+        &mut timings,
+    );
+    md.push_str("### C) Caller recall after k s of other speech\n\nTest set, one trial per caller clip: x = other[0..k] ++ caller (other speech x gain mixed into the first overlap ms of the caller). N = windows scored from the start of x (consecutive with N = 2 is the 0.15.0 behaviour). early_fa = a window ending at or before the onset accepted first; latency = accepting window end - onset.\n\n");
+    let mut c_json = Vec::new();
+    for scheme in SCHEMES {
+        for overlap_ms in RECALL_OVERLAP_MS {
+            md.push_str(&format!(
+                "#### {} / overlap {overlap_ms} ms\n\n| k s | N | n | caller % | early_fa % | miss % | latency p50 ms | latency p90 ms |\n|---|---|---|---|---|---|---|---|\n",
+                scheme.name()
+            ));
+            for run in runs
+                .iter()
+                .filter(|r| r.scheme == scheme && r.overlap_ms == overlap_ms)
+            {
+                for cap in RECALL_CAPS {
+                    let c = recall_cell(&run.trials, cap);
+                    md.push_str(&format!(
+                        "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                        run.k_s,
+                        cap_label(cap),
+                        c.n,
+                        fmt_opt(pct(c.caller, c.n), 1),
+                        fmt_opt(pct(c.early, c.n), 1),
+                        fmt_opt(pct(c.miss, c.n), 1),
+                        fmt_opt(c.lat_p50_ms, 0),
+                        fmt_opt(c.lat_p90_ms, 0)
+                    ));
+                    c_json.push(format!(
+                        "{{\"scheme\": \"{}\", \"overlap_ms\": {overlap_ms}, \"k_s\": {}, \"cap\": {}, \"n\": {}, \"caller_pct\": {}, \"early_fa_pct\": {}, \"miss_pct\": {}, \"latency_p50_ms\": {}, \"latency_p90_ms\": {}}}",
+                        scheme.name(),
+                        run.k_s,
+                        cap_json(cap),
+                        c.n,
+                        json_num(pct(c.caller, c.n)),
+                        json_num(pct(c.early, c.n)),
+                        json_num(pct(c.miss, c.n)),
+                        json_num(c.lat_p50_ms),
+                        json_num(c.lat_p90_ms)
+                    ));
+                }
+            }
+            md.push('\n');
+        }
+    }
+    json.push_str(&format!(", \"c\": [{}]", c_json.join(", ")));
+
+    // ---- D ----
+    timings.sort_by(|a, b| a.total_cmp(b));
+    let (p50, p99) = (percentile(&timings, 0.5), percentile(&timings, 0.99));
+    md.push_str(&format!(
+        "### D) Cost\n\nOne embed of a (check + pre-roll) window over all {} windows computed: p50 {p50:.4} s, p99 {p99:.4} s (one thread).\n\n| scheme | N | windows for a {COST_UTTERANCE_S} s utterance | CPU s at p50 |\n|---|---|---|---|\n",
+        timings.len()
+    ));
+    let mut d_rows = Vec::new();
+    for scheme in SCHEMES {
+        for cap in COST_CAPS {
+            let w = windows_scored(scheme, COST_UTTERANCE_S * SR as usize, check, cap);
+            let cpu = w as f64 * p50;
+            md.push_str(&format!(
+                "| {} | {} | {w} | {cpu:.3} |\n",
+                scheme.name(),
+                cap_label(cap)
+            ));
+            d_rows.push(format!(
+                "{{\"scheme\": \"{}\", \"cap\": {}, \"windows\": {w}, \"cpu_s_at_p50\": {cpu:.4}}}",
+                scheme.name(),
+                cap_json(cap)
+            ));
+        }
+    }
+    md.push('\n');
+    json.push_str(&format!(
+        ", \"d\": {{\"embeds\": {}, \"p50_s\": {p50:.6}, \"p99_s\": {p99:.6}, \"utterance_s\": {COST_UTTERANCE_S}, \"rows\": [{}]}}}}",
+        timings.len(),
+        d_rows.join(", ")
+    ));
+    Ok((md, json))
+}
+
+fn long_other_run(
+    fx: &mut Fixtures,
+    args: &Args,
+    model_files: &[PathBuf],
+    manifest_sha: &str,
+) -> Result<(), String> {
+    let threshold = args
+        .fixed_threshold
+        .ok_or("--long-other requires --fixed-threshold")?;
+    let sha = git_sha();
+    let mut md = format!(
+        "# Long other-speech bench\n\nthreshold {threshold}, checks {:?} s, pre-roll 300 ms, fixtures `{}`, manifest sha256 `{manifest_sha}`, git {sha}\n\n",
+        args.checks,
+        args.fixtures.display()
+    );
+    let mut runs = Vec::new();
+    for path in model_files {
+        let emb = Embedder::open(path, 1)?;
+        for &check_s in &args.checks {
+            eprintln!("long-other: model {} check {check_s} s", emb.id);
+            let (section, json) = long_other_section(fx, &emb, check_s, threshold)?;
+            md.push_str(&section);
+            runs.push(json);
+        }
+    }
+    let json = format!(
+        "{{\"git_sha\": \"{}\", \"manifest_sha256\": \"{manifest_sha}\", \"fixtures\": \"{}\", \"threshold\": {threshold}, \"runs\": [\n{}\n]}}\n",
+        json_escape(&sha),
+        json_escape(&args.fixtures.display().to_string()),
+        runs.join(",\n")
+    );
+    let md_path = args.out.join("long_other.md");
+    fs::write(&md_path, &md).map_err(|e| format!("write {}: {e}", md_path.display()))?;
+    let json_path = args.out.join("long_other.json");
+    fs::write(&json_path, json).map_err(|e| format!("write {}: {e}", json_path.display()))?;
+    eprint!("{md}");
+    eprintln!("--long-other: wrote {}", md_path.display());
+    Ok(())
+}
+
 fn main() {
     if let Err(err) = run() {
         eprintln!("speaker_bench: {err}");
@@ -3371,5 +4138,152 @@ mod tests {
     fn cosine_of_parallel_vectors_is_one() {
         assert!((cosine(&[1.0, 2.0], &[2.0, 4.0]) - 1.0).abs() < 1e-6);
         assert_eq!(cosine(&[0.0, 0.0], &[1.0, 1.0]), 0.0);
+    }
+
+    #[test]
+    fn window_ends_per_scheme_and_cap() {
+        let check = 24_000; // 1.5 s
+        let len = 5 * 16_000; // 5 s
+        assert_eq!(
+            window_ends(Scheme::Consecutive, len, check),
+            vec![24_000, 48_000, 72_000]
+        );
+        assert_eq!(
+            window_ends(Scheme::Sliding500, len, check),
+            vec![24_000, 32_000, 40_000, 48_000, 56_000, 64_000, 72_000, 80_000]
+        );
+        assert!(window_ends(Scheme::Consecutive, 23_999, check).is_empty());
+        let ends = window_ends(Scheme::Sliding500, len, check);
+        assert_eq!(capped(&ends, Some(2)), &[24_000, 32_000]);
+        assert_eq!(capped(&ends, Some(99)).len(), ends.len());
+        assert_eq!(capped(&ends, None).len(), ends.len());
+        assert_eq!(
+            windows_scored(Scheme::Consecutive, 17 * 16_000, check, None),
+            11
+        );
+        assert_eq!(
+            windows_scored(Scheme::Sliding500, 17 * 16_000, check, Some(4)),
+            4
+        );
+    }
+
+    #[test]
+    fn window_range_clamps_at_zero_with_pre_roll() {
+        let check = 24_000;
+        assert_eq!(window_range(24_000, check), (0, 24_000));
+        assert_eq!(window_range(28_800, check), (0, 28_800));
+        assert_eq!(window_range(48_000, check), (48_000 - 28_800, 48_000));
+    }
+
+    #[test]
+    fn speech_union_merges_overlaps_and_cuts_gaps() {
+        assert_eq!(
+            merge_spans(&[(500, 700), (0, 100), (50, 150), (150, 200), (300, 300)]),
+            vec![(0, 200), (500, 700)]
+        );
+        let audio: Vec<f32> = (0..1000 * 16).map(|i| i as f32).collect();
+        let union = speech_union(&audio, &[(10, 12), (11, 13), (20, 21)]);
+        // [10, 13) ms then [20, 21) ms, gap cut.
+        assert_eq!(union.len(), (3 + 1) * 16);
+        assert_eq!(union[0], 160.0);
+        assert_eq!(union[3 * 16], 320.0);
+    }
+
+    #[test]
+    fn stitch_wraps_modulo_the_number_of_unions() {
+        let unions = vec![vec![0.0], vec![1.0], vec![2.0]];
+        assert_eq!(stitch(&unions, 0, 4), vec![0.0, 1.0, 2.0, 0.0]);
+        assert_eq!(stitch(&unions, 2, 4), vec![2.0, 0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn far_at_counts_only_long_enough_trials_with_an_accept_by_t() {
+        let trials = [
+            StreamTrial {
+                len: 100,
+                first_accept: Some(40),
+            },
+            StreamTrial {
+                len: 100,
+                first_accept: Some(90),
+            },
+            StreamTrial {
+                len: 100,
+                first_accept: None,
+            },
+            StreamTrial {
+                len: 50,
+                first_accept: Some(10),
+            },
+        ];
+        assert_eq!(far_at(&trials, 30), (4, 1));
+        assert_eq!(far_at(&trials, 40), (4, 2));
+        assert_eq!(far_at(&trials, 60), (3, 1));
+        assert_eq!(far_at(&trials, 100), (3, 2));
+        assert_eq!(far_at(&trials, 101), (0, 0));
+    }
+
+    #[test]
+    fn first_accept_end_takes_the_earliest_window() {
+        assert_eq!(
+            first_accept_end(&[10, 20, 30], &[false, true, true]),
+            Some(20)
+        );
+        assert_eq!(first_accept_end(&[10, 20], &[false, false]), None);
+    }
+
+    #[test]
+    fn classify_early_fa_caller_and_miss() {
+        let ends = [100, 200, 300, 400];
+        let onset = 200;
+        // Accept exactly at the onset is an early false accept.
+        assert_eq!(
+            classify(&ends, &[false, true, false, false], onset, None),
+            Outcome::EarlyFa
+        );
+        assert_eq!(
+            classify(&ends, &[true, false, false, false], onset, None),
+            Outcome::EarlyFa
+        );
+        // First accept after the onset: caller, latency = end - onset.
+        assert_eq!(
+            classify(&ends, &[false, false, true, true], onset, None),
+            Outcome::Caller(100)
+        );
+        assert_eq!(
+            classify(&ends, &[false, false, false, false], onset, None),
+            Outcome::Miss
+        );
+        // The cap hides the later accept.
+        assert_eq!(
+            classify(&ends, &[false, false, false, true], onset, Some(3)),
+            Outcome::Miss
+        );
+        assert_eq!(
+            classify(&ends, &[false, false, false, true], onset, Some(4)),
+            Outcome::Caller(200)
+        );
+    }
+
+    #[test]
+    fn recall_cell_counts_outcomes_and_latency_percentiles() {
+        let trial = |accepts: [bool; 3]| TrialScores {
+            onset: 16_000,
+            ends: vec![16_000, 32_000, 48_000],
+            accepts: accepts.to_vec(),
+        };
+        let trials = [
+            trial([false, true, true]),   // caller, 1000 ms
+            trial([false, false, true]),  // caller, 2000 ms
+            trial([true, false, false]),  // early_fa
+            trial([false, false, false]), // miss
+        ];
+        let c = recall_cell(&trials, None);
+        assert_eq!((c.n, c.caller, c.early, c.miss), (4, 2, 1, 1));
+        assert_eq!(c.lat_p50_ms, Some(2000.0)); // round(0.5) of two values picks the upper one
+        assert_eq!(c.lat_p90_ms, Some(2000.0));
+        let capped = recall_cell(&trials, Some(2));
+        assert_eq!((capped.caller, capped.early, capped.miss), (1, 1, 2));
+        assert_eq!(capped.lat_p50_ms, Some(1000.0));
     }
 }

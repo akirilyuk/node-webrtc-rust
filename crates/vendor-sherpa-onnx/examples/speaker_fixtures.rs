@@ -68,6 +68,13 @@
 //! a main turn's start are pushed to start after that turn's end, or dropped when they then no
 //! longer fit before the same voice's next sentence (each logged as `babble-clear: pushed|dropped`).
 //! The draws stay the same, only placements move, so VAD opens on the caller, not on babble.
+//! `--babble-clear-pull` (with `--babble-clear-ms`): such a sentence is pulled back to start just
+//! before the window instead (it then talks through the window, with no onset in it), and nothing
+//! is dropped. Pushing leaves a babble-free stretch of the window plus the dropped sentence around
+//! the caller turn; the adaptive VAD reads its noise level as the 70th percentile of the last 3 s
+//! of inactive frames, so a stretch of about 2.1 s or more lowers the noise level to silence, and
+//! the babble returning after a short caller turn then holds the VAD open into the next turn
+//! (measured: turns merged in 12 of 22 rolled scenes with push, see ROUNDTRIP.md).
 //! `--only` (repeatable): generate only scenes whose id starts with one of the prefixes; the
 //! manifest lists only those. Without it every scene is generated (the bench default).
 //!
@@ -440,13 +447,24 @@ fn segment(
 /// Start of a babble sentence drawn at `pos` with `--babble-clear-ms` (`clear` samples): a start
 /// within `clear` before a turn's start (`turns`: main turn (start, end) in samples) moves to that
 /// turn's end, repeated until it sits in no such window. `clear == 0` returns `pos`.
-fn babble_clear_start(pos: usize, turns: &[(usize, usize)], clear: usize) -> usize {
+///
+/// `pull`: the start moves to one sample before that window instead (repeated the same way, so it
+/// only moves earlier and ends).
+fn babble_clear_start(pos: usize, turns: &[(usize, usize)], clear: usize, pull: bool) -> usize {
     let mut pos = pos;
-    while let Some(&(_, end)) = turns
+    while let Some(&(start, end)) = turns
         .iter()
         .find(|(start, _)| clear > 0 && start.saturating_sub(clear) <= pos && pos < *start)
     {
-        pos = end;
+        if pull {
+            let window = start.saturating_sub(clear);
+            if window == 0 {
+                return 0;
+            }
+            pos = window - 1;
+        } else {
+            pos = end;
+        }
     }
     pos
 }
@@ -461,15 +479,17 @@ fn place_babble(
     len: usize,
     turns: &[(usize, usize)],
     clear: usize,
+    pull: bool,
 ) -> Vec<Option<usize>> {
     starts
         .iter()
         .zip(lens)
         .enumerate()
         .map(|(i, (&pos, &clip_len))| {
-            let start = babble_clear_start(pos, turns, clear);
-            if start == pos {
-                return Some(pos);
+            let start = babble_clear_start(pos, turns, clear, pull);
+            if start == pos || start < pos {
+                // Unmoved, or pulled earlier: it still ends before the next drawn start.
+                return Some(start);
             }
             let next = starts.get(i + 1).copied().unwrap_or(len).min(len);
             (start + clip_len <= next).then_some(start)
@@ -491,6 +511,7 @@ fn babble(
     len: usize,
     turns: &[(usize, usize)],
     clear: usize,
+    pull: bool,
 ) -> Result<(Vec<f32>, Vec<Segment>), String> {
     let candidates: Vec<Voice> = pool
         .iter()
@@ -518,7 +539,7 @@ fn babble(
         }
         let starts: Vec<usize> = drawn.iter().map(|d| d.0).collect();
         let lens: Vec<usize> = drawn.iter().map(|d| d.2.len()).collect();
-        let placements = place_babble(&starts, &lens, len, turns, clear);
+        let placements = place_babble(&starts, &lens, len, turns, clear, pull);
         for ((drawn_at, text, clip), placed) in drawn.iter().zip(placements) {
             let Some(pos) = placed else {
                 eprintln!(
@@ -598,6 +619,8 @@ struct Ctx {
     bystander_db: i32,
     /// `--babble-clear-ms`: S3 babble keeps clear of this window before each main turn (0 = off).
     babble_clear_ms: usize,
+    /// `--babble-clear-pull`: a start in that window moves to just before it, not to the turn end.
+    babble_clear_pull: bool,
 }
 
 impl Ctx {
@@ -690,6 +713,7 @@ impl Ctx {
             total,
             &[],
             0,
+            false,
         )?;
         scale_babble(&mut bab, MAIN_REF_DB + level_db as f32);
         let mut mix = bab;
@@ -778,6 +802,7 @@ impl Ctx {
             total,
             &[],
             0,
+            false,
         )?;
         scale_babble(&mut bab, MAIN_REF_DB + BABBLE_UNDER_DB as f32);
         let mut mix = bab;
@@ -903,6 +928,7 @@ impl Ctx {
             total,
             &main_turns,
             ms(self.babble_clear_ms),
+            self.babble_clear_pull,
         )?;
         // One level for the whole babble track first, then a piecewise gain: -20 dB until the
         // enrollment ends, the scene level after it, with a 100 ms linear ramp between.
@@ -1154,6 +1180,7 @@ struct Args {
     only: Vec<String>,
     bystander_db: i32,
     babble_clear_ms: usize,
+    babble_clear_pull: bool,
 }
 
 fn parse_main_levels(text: &str) -> Result<Vec<i32>, String> {
@@ -1186,6 +1213,7 @@ fn parse_args() -> Result<Args, String> {
     let mut only = Vec::new();
     let mut bystander_db = 0i32;
     let mut babble_clear_ms = 0usize;
+    let mut babble_clear_pull = false;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = |name: &str| -> Result<PathBuf, String> {
@@ -1227,6 +1255,7 @@ fn parse_args() -> Result<Args, String> {
                     .parse()
                     .map_err(|e| format!("--babble-clear-ms {text:?}: {e}"))?;
             }
+            "--babble-clear-pull" => babble_clear_pull = true,
             "--only" => only.push(value("--only")?.to_string_lossy().into_owned()),
             other => return Err(format!("unknown argument {other}")),
         }
@@ -1244,6 +1273,7 @@ fn parse_args() -> Result<Args, String> {
         only,
         bystander_db,
         babble_clear_ms,
+        babble_clear_pull,
     })
 }
 
@@ -1293,6 +1323,7 @@ fn run() -> Result<(), String> {
         only: args.only.clone(),
         bystander_db: args.bystander_db,
         babble_clear_ms: args.babble_clear_ms,
+        babble_clear_pull: args.babble_clear_pull,
     };
 
     let sets = [Set::Tune, Set::Test];
@@ -1494,10 +1525,10 @@ mod tests {
             pos += clip + ms(rng.range(150, 400));
         }
         // Off: every drawn start kept as is.
-        let off = place_babble(&starts, &lens, len, &turns, 0);
+        let off = place_babble(&starts, &lens, len, &turns, 0, false);
         assert_eq!(off, starts.iter().map(|&s| Some(s)).collect::<Vec<_>>());
         // On: one entry per draw (the draws do not change), no start in [turnStart - n, turnStart).
-        let on = place_babble(&starts, &lens, len, &turns, clear);
+        let on = place_babble(&starts, &lens, len, &turns, clear, false);
         assert_eq!(on.len(), starts.len());
         for (i, placed) in on.iter().enumerate() {
             let in_window = |p: usize| turns.iter().any(|&(t, _)| t - clear <= p && p < t);
@@ -1525,11 +1556,84 @@ mod tests {
             "the fixture must exercise at least one moved or dropped start"
         );
         // Direct cases: in the window → turn end; just outside → unchanged; chained windows.
-        assert_eq!(babble_clear_start(ms(4500), &turns, clear), ms(7000));
-        assert_eq!(babble_clear_start(ms(3999), &turns, clear), ms(3999));
-        assert_eq!(babble_clear_start(ms(5000), &turns, clear), ms(5000));
+        assert_eq!(babble_clear_start(ms(4500), &turns, clear, false), ms(7000));
+        assert_eq!(babble_clear_start(ms(3999), &turns, clear, false), ms(3999));
+        assert_eq!(babble_clear_start(ms(5000), &turns, clear, false), ms(5000));
         let chained = [(ms(1000), ms(2000)), (ms(2500), ms(4000))];
-        assert_eq!(babble_clear_start(ms(500), &chained, clear), ms(4000));
+        assert_eq!(
+            babble_clear_start(ms(500), &chained, clear, false),
+            ms(4000)
+        );
+    }
+
+    #[test]
+    fn babble_clear_pull_moves_starts_before_the_window_and_keeps_every_draw() {
+        let clear = ms(1000);
+        let turns = [
+            (ms(5000), ms(7000)),
+            (ms(9500), ms(11000)),
+            (ms(14000), ms(16000)),
+        ];
+        let turns_before = turns;
+        let mut rng = Rng::new(11);
+        let len = ms(20_000);
+        let (mut starts, mut lens) = (Vec::new(), Vec::new());
+        let mut pos = rng.range(0, ms(300));
+        while pos < len {
+            let clip = ms(rng.range(1500, 3000));
+            starts.push(pos);
+            lens.push(clip);
+            pos += clip + ms(rng.range(150, 400));
+        }
+        let in_window = |p: usize| turns.iter().any(|&(t, _)| t - clear <= p && p < t);
+        let on = place_babble(&starts, &lens, len, &turns, clear, true);
+        // Every draw is kept (nothing dropped), no start sits in a window, only window starts
+        // move, and they move earlier, to one sample before a window.
+        assert_eq!(on.len(), starts.len());
+        let mut moved = 0;
+        for (i, placed) in on.iter().enumerate() {
+            let p = placed.expect("pull never drops a sentence");
+            assert!(!in_window(p), "start {p} in a cleared window");
+            if p != starts[i] {
+                moved += 1;
+                assert!(in_window(starts[i]), "only starts in a window move");
+                assert!(p < starts[i], "pulled starts move earlier");
+                assert!(
+                    turns.iter().any(|&(t, _)| p + 1 == t - clear),
+                    "to just before a window"
+                );
+            }
+        }
+        assert!(
+            moved > 0,
+            "the fixture must exercise at least one pulled start"
+        );
+        // Push (the default) is unchanged by the new parameter.
+        assert_eq!(
+            place_babble(&starts, &lens, len, &turns, 0, true),
+            starts.iter().map(|&s| Some(s)).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            turns, turns_before,
+            "turn positions never depend on the babble"
+        );
+        // Direct cases: in the window -> just before it; outside -> unchanged; chained windows
+        // keep pulling; a window that starts at 0 clamps to 0.
+        assert_eq!(
+            babble_clear_start(ms(4500), &turns, clear, true),
+            ms(4000) - 1
+        );
+        assert_eq!(babble_clear_start(ms(3999), &turns, clear, true), ms(3999));
+        assert_eq!(babble_clear_start(ms(5000), &turns, clear, true), ms(5000));
+        let chained = [(ms(1500), ms(2000)), (ms(2400), ms(4000))];
+        assert_eq!(
+            babble_clear_start(ms(2000), &chained, clear, true),
+            ms(500) - 1
+        );
+        assert_eq!(
+            babble_clear_start(ms(100), &[(ms(800), ms(900))], clear, true),
+            0
+        );
     }
 
     #[test]

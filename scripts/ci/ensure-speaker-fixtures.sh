@@ -9,7 +9,10 @@
 # at -26 dBFS), with every turn gap raised to 2.5 s so the agent's default end-of-turn (1.5 s
 # finalize + VAD hangover) closes each turn before the next speaker starts, and no babble sentence
 # starts within 1 s before a caller turn (otherwise VAD opens on babble and the 1.5 s speaker check
-# rejects the caller). Scenes are never committed.
+# rejects the caller). --babble-clear-pull moves such a sentence to start just before that 1 s
+# window instead of after the caller turn (or dropping it): dropped sentences left babble-free holes,
+# the adaptive VAD noise floor (70th percentile over 3 s) fell to silence, and the babble plus the
+# next bystander turn then held the VAD open into the next caller turn. Scenes are never committed.
 #
 # Idempotent: skips when manifest.json exists and .speaker-fixtures-args (written after a successful
 # generation) matches the generator args. The speaker model is downloaded only when missing (the CI
@@ -35,7 +38,8 @@ ensure_speaker_fixtures() {
   local args=(
     --models "$ex/.models/speaker" --main-tts "$ex/.models/vits-piper-en_US-amy-low"
     --phrases "$ex/stt-phrase-qualification.json" --out "$out"
-    --main-levels -26 --min-turn-gap-ms 2500 --bystander-db -15 --babble-clear-ms 1000 --only s3_test_m15
+    --main-levels -26 --min-turn-gap-ms 2500 --bystander-db -15 --babble-clear-ms 1000 --babble-clear-pull
+    --only s3_test_m15
   )
   local want="${args[*]}"
 

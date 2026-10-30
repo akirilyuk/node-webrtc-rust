@@ -13,13 +13,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **speech / bindings / sdk:** adaptive energy VAD, opt-in with `vad.provider: 'adaptive'`. The energy VAD stays the default. Defaults: `noiseMarginDb` 6, `useSpeechLevel` true, `stuckActiveMs` 8000.
-- **speech / bindings / sdk:** opt-in caller speaker gate (TitaNet-small via sherpa-onnx). The first speech of a caller is enrolled, and later utterances are checked against it. Defaults: `checkSpeechMs` 1500, `threshold` 0.459, `minCheckSpeechMs` 1500 (at 1 s of speech about 6 % of genuine caller clips scored below the threshold, at 1.5 s none; a shorter clip is not checked and stays `unknown`, so its barge-in goes through).
+- **speech / bindings / sdk:** opt-in caller speaker gate (TitaNet-small via sherpa-onnx). The first speech of a caller is enrolled, and later utterances are checked against it. Defaults: `checkSpeechMs` 1500, `threshold` 0.459, `minCheckSpeechMs` 1500 (genuine-caller false rejects on the test set: 11.7 % at 1.0 s, 3.1 % at 1.25 s, 0.8 % at 1.5 s; a shorter clip is not checked and stays `unknown`, so its barge-in goes through at the end of the phrase; see "Minimum check length" in `packages/sdk/VOICE-VAD-AND-BARGE-IN.md`).
   - Barge-in waits for the verdict, so a bystander does not interrupt the agent.
   - Finals carry `speaker`.
   - With `onMismatch: 'drop'`, a final from another speaker is dropped and a `user_speech_ignored` event is emitted.
   - `resetSpeakerEnrollment` clears the enrolled caller.
   - Each utterance gets one check, and the first verdict is final.
   - Tested with bystanders 15 dB or more below the caller. A bystander about as loud as the caller can pass the check.
+- **speech / bindings / sdk:** `speakerGate.suppressShortBargeIn` (opt-in, default `false`): an utterance with less speech than `minCheckSpeechMs` suppresses its barge-in like `other`. Other `unknown` verdicts still fail open.
+- **speech / bindings / sdk:** `user_speech_final` carries `speakerUnknownReason` (`short`, `timeout`, `error`, `no_embedding`, `not_enrolled`, `no_check`) when `speaker` is `unknown`, so an app can tell "too short to check" from a failed check.
+- **bench:** `speaker_bench --checks <seconds,...>` sets the Part 1 check lengths, and `--fixed-threshold <t>` scores every length at one threshold (`part1_fixed.md`).
 - **speech / bindings / sdk:** `barge_in` carries the `utteranceId` of the interrupting utterance, so consumers can pair it with its utterance by id. It is unset for a manual flush and for the standalone VAD.
 
 ### Fixed

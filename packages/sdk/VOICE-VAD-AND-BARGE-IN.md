@@ -351,13 +351,66 @@ How it works:
 - **Enrollment.** The agent learns the caller's voice from their first `enrollSpeechMs` of speech (default 3000 ms). Until then every utterance is `speaker: 'unknown'` and nothing changes.
 - **Check.** Each later utterance is compared with the enrolled voice using `checkSpeechMs` of its speech (default 1500 ms, `minCheckSpeechMs` 1500 ms). The cosine score must reach `threshold` (default 0.459, TitaNet-small). The check costs about 20 ms of CPU and runs off the audio path.
 - **Barge-in delay.** While the agent speaks and a voice is enrolled, a barge-in waits for the verdict. The caller therefore interrupts at the later of `checkSpeechMs` after they start speaking and the first partial with `minSttPartialTokens` tokens when `requireSttPartial` is on (the roundtrip asserts within 300 ms of that). A voice that does not match never barges in. Turn the gate off if you need instant barge-in.
-- **`flag` or `drop`.** `onMismatch: 'flag'` (default) keeps the final and sets `speaker: 'other'` on it. `'drop'` replaces it with `user_speech_ignored` (`reason: 'speaker_mismatch'`, no text). Clips shorter than `minCheckSpeechMs`, and any check that fails or exceeds `verifyTimeoutMs`, are `speaker: 'unknown'` and behave as without the gate, so a stuck gate never mutes the real caller.
-- **Why 1500 ms.** In our bench, about 6 % of genuine caller clips scored below the threshold when only 1 s of speech was used, and none did at 1.5 s. With a 1000 ms minimum, a short caller utterance such as "stop" or "excuse me please" could be labelled `other` and its barge-in suppressed. With 1500 ms, an utterance with less speech than that is not checked: it stays `unknown`, fails open, and the barge-in goes through.
+- **`flag` or `drop`.** `onMismatch: 'flag'` (default) keeps the final and sets `speaker: 'other'` on it. `'drop'` replaces it with `user_speech_ignored` (`reason: 'speaker_mismatch'`, no text). Clips shorter than `minCheckSpeechMs` (reason `short`), and any check that fails or exceeds `verifyTimeoutMs`, are `speaker: 'unknown'` and behave as without the gate, so a stuck gate never mutes the real caller.
+- **Minimum check length.** `minCheckSpeechMs` defaults to 1500 ms. Shorter utterances are not scored and stay `unknown`; see [Minimum check length](#minimum-check-length-mincheckspeechms-why-1500-ms) for the numbers and the trade-off.
 - **`resetSpeakerEnrollment()`** forgets the voice, for example when another person takes over the line. The next utterances enroll again.
 
 Recommended with `vad.provider: 'adaptive'`. With the energy VAD, turns in background noise split into short pieces, which are more often `unknown`.
 
 Limit: a bystander about as loud as the caller can pass the check; the gate is tested with bystanders 15 dB or more below the caller. Turns from two people less than about 1.5 s apart end up in one transcript, labelled by the check of its first speaker, because the agent's end of turn waits that long for more speech. Other speech that starts less than about 1 s before the caller (a voice in the background) can fall into the 1.5 s check and make it reject the caller, so the barge-in is suppressed and the final is labelled other.
+
+### Minimum check length (`minCheckSpeechMs`): why 1500 ms
+
+`minCheckSpeechMs` is the least speech an utterance needs before the gate scores it. We measured how it trades off false rejects of the real caller (FRR) against false accepts of a bystander (FAR). Setup: TitaNet-small, threshold 0.459 fixed, `speaker_bench` Part 1, 128 genuine and 92 impostor clips per set, the bystander at -6, -10, -15 and -20 dB re the caller pooled (measured 2026-10-30).
+
+| check length | set  | FRR    | FAR   |
+| ------------ | ---- | ------ | ----- |
+| 1.0 s        | test | 11.7 % | 0.0 % |
+| 1.0 s        | tune | 18.0 % | 1.1 % |
+| 1.25 s       | test | 3.1 %  | 0.0 % |
+| 1.25 s       | tune | 7.8 %  | 1.1 % |
+| 1.5 s        | test | 0.8 %  | 0.0 % |
+| 1.5 s        | tune | 1.6 %  | 2.2 % |
+
+At 1.25 s, FRR per bystander level, test (tune): -6 dB 9.4 % (21.9 %), -10 dB 3.1 % (9.4 %), -15 dB 0 % (0 %), -20 dB 0 % (0 %). A bystander nearly as loud as the caller is where short clips fail most.
+
+**What happens to an utterance below the minimum.**
+
+1. While the utterance is live and has no verdict, a barge-in attempt is deferred and the agent keeps talking.
+2. The utterance ends with less speech than `minCheckSpeechMs`. It is not scored: the verdict is `unknown`, and the final carries `speaker: 'unknown'` and `speakerUnknownReason: 'short'`.
+3. The deferred barge-in is released at that moment. A short phrase that already met the normal barge-in rules (the agent is speaking, and a partial with at least `minSttPartialTokens` words arrived) therefore interrupts at the end of the phrase, not at its start.
+4. This holds for the caller and a bystander alike. A short bystander phrase can interrupt the agent, because the gate never looked at it.
+
+**Why not shorter.** At 1.0 s, 11.7 % of genuine caller clips on the test set (18.0 % on tune) fall below the threshold, so about one caller in nine would be told `other` and ignored. At 1.25 s the test FRR is 3.1 % overall and 9.4 % when the bystander is almost as loud (-6 dB), still too many for a gate whose job is to protect the caller's own turn. At 1.5 s the test FRR is 0.8 %. The price of 1500 ms is the short-utterance gap described above.
+
+| `minCheckSpeechMs` | caller                                                                              | bystander                                                       |
+| ------------------ | ----------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| 1000               | most short phrases are checked, but about 12 % of checked caller clips are rejected | short bystander phrases are checked and suppressed              |
+| 1250               | 3 % rejected (9 % next to a loud bystander)                                         | phrases of 1.25 s or more are checked                           |
+| 1500 (default)     | under 1 % rejected; phrases under 1.5 s are unchecked and barge in at their end     | phrases under 1.5 s are unchecked and can barge in at their end |
+
+**`speakerUnknownReason`.** `user_speech_final` carries it whenever the gate is on and `speaker` is `'unknown'`, in the same event. It tells an app "too short to check" apart from a failed check: `short` (less speech than `minCheckSpeechMs`), `timeout` (the check or the wait for it exceeded `verifyTimeoutMs`), `error` (the embedding call failed), `no_embedding` (no embedding or no score), `not_enrolled` (no reference voice yet), `no_check` (enrolled, but no check was sent). It is absent for `caller` and `other`. Only `short` is affected by the option below; every other unknown still lets the barge-in through, so a stuck gate never mutes the caller.
+
+**`suppressShortBargeIn` (opt-in, default `false`).** When `true`, an utterance whose verdict is `unknown` with reason `short` suppresses its barge-in like `other` does, including the deferred one released at its end. Use it where background voices are loud and you would rather ignore a short phrase than let a bystander interrupt, for example an open-plan office. The cost: short caller phrases such as "stop" no longer interrupt the agent. They are still transcribed, and their final still arrives with `speaker: 'unknown'`.
+
+**Tuning per project.** Lower `minCheckSpeechMs` (towards 1250) only if your callers say many short interruptions and a bystander rarely talks over them. Keep 1500 or raise it where bystanders are loud and you want fewer false accepts. Pair it with `suppressShortBargeIn: true` when short bystander phrases must never interrupt. Keep `checkSpeechMs` at or above `minCheckSpeechMs`.
+
+**Reproduce the table.** Generate the scenes once, then run Part 1 at the fixed threshold (Parts 2 and 3 are skipped). Paths are examples; the speaker model comes from `npm run download-speaker --workspace=@node-webrtc-rust/example-voice-agent-local-sherpa`.
+
+```bash
+cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
+  --models examples/voice-agent-local-sherpa/.models/speaker \
+  --main-tts examples/voice-agent-local-sherpa/.models/vits-piper-en_US-amy-low \
+  --phrases examples/voice-agent-local-sherpa/stt-phrase-qualification.json \
+  --out /tmp/speaker-fixtures
+cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_bench -- \
+  --fixtures /tmp/speaker-fixtures \
+  --models examples/voice-agent-local-sherpa/.models/speaker \
+  --stt-model <zipformer dir> --out /tmp/speaker-bench \
+  --checks 1.0,1.25,1.5 --fixed-threshold 0.459
+```
+
+The per-set FRR and FAR per level are written to `/tmp/speaker-bench/part1_fixed.md`.
 
 `barge_in` carries the `utteranceId` of the utterance that interrupted, so an app can tell which turn it belongs to.
 

@@ -141,6 +141,26 @@ pub struct SynthesizeRequest {
     /// "auto" | "off"; empty = auto (older clients)
     #[prost(string, tag = "6")]
     pub sentence_case: ::prost::alloc::string::String,
+    /// Cloud vendor synthesis (mirrors nwr TtsConfig). All empty = Sherpa, unchanged.
+    ///
+    /// TtsConfig.provider wire name, e.g. "openai"; empty = Sherpa
+    #[prost(string, tag = "7")]
+    pub vendor: ::prost::alloc::string::String,
+    /// TtsConfig.model for a cloud vendor
+    #[prost(string, tag = "8")]
+    pub vendor_model: ::prost::alloc::string::String,
+    /// TtsConfig.voice for a cloud vendor
+    #[prost(string, tag = "9")]
+    pub voice: ::prost::alloc::string::String,
+    /// TtsConfig.api_key (per request, never logged)
+    #[prost(string, tag = "10")]
+    pub api_key: ::prost::alloc::string::String,
+    /// TtsConfig.endpoint
+    #[prost(string, tag = "11")]
+    pub endpoint: ::prost::alloc::string::String,
+    /// TtsConfig.transport: "auto" | "websocket" | "http"; empty = auto
+    #[prost(string, tag = "12")]
+    pub transport: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SynthesizeResponse {
@@ -159,10 +179,10 @@ pub mod speech_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
-    use tonic::codegen::http::Uri;
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     #[derive(Debug, Clone)]
     pub struct SpeechClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -206,8 +226,9 @@ pub mod speech_client {
                     <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<http::Request<tonic::body::BoxBody>>>::Error:
-                Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::BoxBody>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             SpeechClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -246,15 +267,22 @@ pub mod speech_client {
         pub async fn prepare(
             &mut self,
             request: impl tonic::IntoRequest<super::PrepareRequest>,
-        ) -> std::result::Result<tonic::Response<super::PrepareResponse>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::PrepareResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static("/speech.v1.Speech/Prepare");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("speech.v1.Speech", "Prepare"));
+            req.extensions_mut().insert(GrpcMethod::new("speech.v1.Speech", "Prepare"));
             self.inner.unary(req, path, codec).await
         }
         /// One stream == one SttProvider lifetime (VoiceAgent start..stop). Many utterances per stream.
@@ -265,11 +293,18 @@ pub mod speech_client {
             tonic::Response<tonic::codec::Streaming<super::TranscribeResponse>>,
             tonic::Status,
         > {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/speech.v1.Speech/Transcribe");
+            let path = http::uri::PathAndQuery::from_static(
+                "/speech.v1.Speech/Transcribe",
+            );
             let mut req = request.into_streaming_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("speech.v1.Speech", "Transcribe"));
@@ -283,11 +318,18 @@ pub mod speech_client {
             tonic::Response<tonic::codec::Streaming<super::SynthesizeResponse>>,
             tonic::Status,
         > {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/speech.v1.Speech/Synthesize");
+            let path = http::uri::PathAndQuery::from_static(
+                "/speech.v1.Speech/Synthesize",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("speech.v1.Speech", "Synthesize"));
@@ -303,7 +345,7 @@ pub mod speech_server {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with SpeechServer.
@@ -317,7 +359,8 @@ pub mod speech_server {
         /// Server streaming response type for the Transcribe method.
         type TranscribeStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::TranscribeResponse, tonic::Status>,
-            > + std::marker::Send
+            >
+            + std::marker::Send
             + 'static;
         /// One stream == one SttProvider lifetime (VoiceAgent start..stop). Many utterances per stream.
         async fn transcribe(
@@ -327,7 +370,8 @@ pub mod speech_server {
         /// Server streaming response type for the Synthesize method.
         type SynthesizeStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::SynthesizeResponse, tonic::Status>,
-            > + std::marker::Send
+            >
+            + std::marker::Send
             + 'static;
         /// One call == one synthesize_progressive. Client cancel (drop stream) == barge-in.
         async fn synthesize(
@@ -356,7 +400,10 @@ pub mod speech_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -411,15 +458,21 @@ pub mod speech_server {
                 "/speech.v1.Speech/Prepare" => {
                     #[allow(non_camel_case_types)]
                     struct PrepareSvc<T: Speech>(pub Arc<T>);
-                    impl<T: Speech> tonic::server::UnaryService<super::PrepareRequest> for PrepareSvc<T> {
+                    impl<T: Speech> tonic::server::UnaryService<super::PrepareRequest>
+                    for PrepareSvc<T> {
                         type Response = super::PrepareResponse;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::PrepareRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { <T as Speech>::prepare(&inner, request).await };
+                            let fut = async move {
+                                <T as Speech>::prepare(&inner, request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -448,18 +501,26 @@ pub mod speech_server {
                 "/speech.v1.Speech/Transcribe" => {
                     #[allow(non_camel_case_types)]
                     struct TranscribeSvc<T: Speech>(pub Arc<T>);
-                    impl<T: Speech> tonic::server::StreamingService<super::TranscribeRequest> for TranscribeSvc<T> {
+                    impl<
+                        T: Speech,
+                    > tonic::server::StreamingService<super::TranscribeRequest>
+                    for TranscribeSvc<T> {
                         type Response = super::TranscribeResponse;
                         type ResponseStream = T::TranscribeStream;
-                        type Future =
-                            BoxFuture<tonic::Response<Self::ResponseStream>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::ResponseStream>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<tonic::Streaming<super::TranscribeRequest>>,
+                            request: tonic::Request<
+                                tonic::Streaming<super::TranscribeRequest>,
+                            >,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut =
-                                async move { <T as Speech>::transcribe(&inner, request).await };
+                            let fut = async move {
+                                <T as Speech>::transcribe(&inner, request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -488,20 +549,24 @@ pub mod speech_server {
                 "/speech.v1.Speech/Synthesize" => {
                     #[allow(non_camel_case_types)]
                     struct SynthesizeSvc<T: Speech>(pub Arc<T>);
-                    impl<T: Speech> tonic::server::ServerStreamingService<super::SynthesizeRequest>
-                        for SynthesizeSvc<T>
-                    {
+                    impl<
+                        T: Speech,
+                    > tonic::server::ServerStreamingService<super::SynthesizeRequest>
+                    for SynthesizeSvc<T> {
                         type Response = super::SynthesizeResponse;
                         type ResponseStream = T::SynthesizeStream;
-                        type Future =
-                            BoxFuture<tonic::Response<Self::ResponseStream>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::ResponseStream>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::SynthesizeRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut =
-                                async move { <T as Speech>::synthesize(&inner, request).await };
+                            let fut = async move {
+                                <T as Speech>::synthesize(&inner, request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -527,19 +592,23 @@ pub mod speech_server {
                     };
                     Box::pin(fut)
                 }
-                _ => Box::pin(async move {
-                    let mut response = http::Response::new(empty_body());
-                    let headers = response.headers_mut();
-                    headers.insert(
-                        tonic::Status::GRPC_STATUS,
-                        (tonic::Code::Unimplemented as i32).into(),
-                    );
-                    headers.insert(
-                        http::header::CONTENT_TYPE,
-                        tonic::metadata::GRPC_CONTENT_TYPE,
-                    );
-                    Ok(response)
-                }),
+                _ => {
+                    Box::pin(async move {
+                        let mut response = http::Response::new(empty_body());
+                        let headers = response.headers_mut();
+                        headers
+                            .insert(
+                                tonic::Status::GRPC_STATUS,
+                                (tonic::Code::Unimplemented as i32).into(),
+                            );
+                        headers
+                            .insert(
+                                http::header::CONTENT_TYPE,
+                                tonic::metadata::GRPC_CONTENT_TYPE,
+                            );
+                        Ok(response)
+                    })
+                }
             }
         }
     }

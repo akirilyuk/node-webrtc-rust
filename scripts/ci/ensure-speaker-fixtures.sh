@@ -21,7 +21,8 @@
 # them; at -6 dB the VAD opens and the gate has to reject them. Scenes are never committed.
 #
 # Idempotent: skips when manifest.json exists and .speaker-fixtures-args (written after a successful
-# generation) matches the generator args. The speaker model is downloaded only when missing (the CI
+# generation) matches the generator args plus the sha256 of stt-phrase-qualification.json (the
+# scene's caller phrases are its babble-clean entries). The speaker model is downloaded only when missing (the CI
 # test image ships it under /opt/sherpa-models/speaker, linked by ensure-sherpa-models.sh).
 #
 # SPEAKER_FIXTURES_REROLL=1 (sherpa-e2e-stress.yml input reroll_fixtures): ignore the stamp and
@@ -47,7 +48,11 @@ ensure_speaker_fixtures() {
     --main-levels -26 --min-turn-gap-ms 2500 --bystander-db -15 --babble-clear-ms 1000 --babble-clear-pull --long-bystanders 2 --long-bystander-db -6
     --only s3_test_m15
   )
-  local want="${args[*]}"
+  # The stamp also carries the phrase table's hash: S3 caller phrases are the babble-clean entries
+  # of stt-phrase-qualification.json, so a new babble sweep result changes the scenes.
+  local phrases_sha
+  phrases_sha="$(shasum -a 256 "$ex/stt-phrase-qualification.json" 2>/dev/null | cut -d' ' -f1)"
+  local want="${args[*]} phrases-sha256=${phrases_sha:-missing}"
 
   local reroll="${SPEAKER_FIXTURES_REROLL:-0}"
   if [[ "$reroll" == "1" && "${SPEAKER_FIXTURES_REROLLED:-0}" == "1" && -s "$out/manifest.json" ]]; then

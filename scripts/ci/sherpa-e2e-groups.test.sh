@@ -158,6 +158,8 @@ rr="$tmp/reroll-root"
 rr_out="$rr/examples/voice-agent-local-sherpa/.models/speaker-fixtures"
 mkdir -p "$rr/scripts/ci" "$rr/examples/voice-agent-local-sherpa/.models/speaker"
 echo model >"$rr/examples/voice-agent-local-sherpa/.models/speaker/nemo_en_titanet_small.onnx"
+rr_phrases="$rr/examples/voice-agent-local-sherpa/stt-phrase-qualification.json"
+echo '{"phrases":[]}' >"$rr_phrases"
 cat >"$rr/scripts/ci/ci-step.sh" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >>"$REROLL_CALLS"
@@ -200,8 +202,14 @@ rr_run once || fail "normal call after re-roll failed"
 [[ "$(rr_lines)" == 4 ]] || fail "normal call after re-roll must generate, got $(rr_lines) calls"
 last="$(tail -n 1 "$REROLL_CALLS")"
 [[ "$last" != *"--cache "* ]] || fail "normal call must not pass --cache"
-[[ -f "$rr_out/.speaker-fixtures-args" && "$(cat "$rr_out/.speaker-fixtures-args")" == "${last#*--example speaker_fixtures -- }" ]] \
-  || fail "normal call must stamp exactly the generator args"
+rr_sha="$(shasum -a 256 "$rr_phrases" | cut -d' ' -f1)"
+[[ -f "$rr_out/.speaker-fixtures-args" && "$(cat "$rr_out/.speaker-fixtures-args")" == "${last#*--example speaker_fixtures -- } phrases-sha256=$rr_sha" ]] \
+  || fail "normal call must stamp exactly the generator args and the phrase table hash"
+rr_run once || fail "normal call with an unchanged stamp failed"
+[[ "$(rr_lines)" == 4 ]] || fail "unchanged args and phrase table must not regenerate, got $(rr_lines) calls"
+echo '{"phrases":[{"phrase":"x"}]}' >"$rr_phrases"
+rr_run once || fail "normal call after a phrase table change failed"
+[[ "$(rr_lines)" == 5 ]] || fail "a changed phrase table must regenerate the scenes, got $(rr_lines) calls"
 
 if ! bash -c '(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3) ))'; then
   echo "sherpa-e2e-groups.test.sh: bash < 4.3 (no wait -n); skipping the width > 1 cases"

@@ -4,7 +4,8 @@
 //!
 //! ```text
 //! cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example phrase_sweep -- \
-//!   --stt <stt-model-dir> --tts <tts-model-dir> --n <N> [--keyword <word>]... [--dump-misses <dir>] "<phrase>"
+//!   --stt <stt-model-dir> --tts <tts-model-dir> --n <N> [--keyword <word>]... [--dump-misses <dir>] \
+//!   [--babble <voices-root> [--seed <n>]] "<phrase>"
 //! ```
 //!
 //! Each iteration feeds 300 ms of silence, the clip, then 2500 ms of silence (so the recognizer
@@ -20,6 +21,21 @@
 //! keyword missing) as `<dir>/miss-<iteration>.wav` (16 kHz mono, the clip without padding), so a
 //! rare misrecognition can be compared with audio captured in a roundtrip.
 //!
+//! `--babble <voices-root>` qualifies the phrase under the noisy-bystander scene's conditions
+//! instead (`speaker_fixtures` `s3_test_m15`, the scene `start:roundtrip-noisy-bystander` plays):
+//! per caller level ([`BABBLE_CALLER_LEVELS`], -20 and -26 dBFS voiced RMS) `--n` rolls, each a
+//! fresh synthesis over background babble [`BABBLE_REL_DB`] (-15) dB below the caller. The babble
+//! is built as the scene builds it: two of the scene's test-set voices (Piper bundles under
+//! `<voices-root>`) reading `support/background_sentences.txt` with 150-400 ms gaps, already
+//! playing when the window starts (random voices, sentences and phase per roll), no babble
+//! sentence starting within 1000 ms before the caller (`--babble-clear-ms 1000
+//! --babble-clear-pull`). The recognizer gets what the live agent feeds it: the STT pre-roll
+//! ([`BABBLE_LEAD_MS`] of babble), the caller over babble, then babble for the VAD's
+//! `min_silence_duration_ms` before the utterance ends. The clean sweep (300 ms digital silence
+//! before the clip) never sees a weak onset under babble: "excuse me please" was clean in 3000
+//! clean runs and heard as "X cuse me, please." in the noisy-bystander scene. Misses are scored
+//! with the scene's oracle ([`BABBLE_MIN_SIMILARITY`]); `--dump-misses` writes the whole input.
+//!
 //! Output: one JSON object on stdout; progress goes to stderr.
 
 use std::collections::HashMap;
@@ -34,11 +50,34 @@ mod support;
 #[allow(dead_code, unused_imports)]
 mod audio;
 
-use support::{create_recognizer, create_tts, recognize, synthesize, write_wav};
+use support::{
+    add_at, babble_clear_start, create_recognizer, create_tts, normalize_to, recognize,
+    resample_linear, synthesize, synthesize_sid, write_wav, Rng, TEST_VOICES,
+};
 
 const LEAD_SILENCE_MS: usize = 300;
 const TAIL_SILENCE_MS: usize = 2500;
 const SAMPLE_RATE: i32 = 16_000;
+/// `--babble`: caller levels (dBFS, voiced RMS) of the two noisy-bystander scenes,
+/// `s3_test_m15` (speaker_fixtures `MAIN_REF_DB`) and `s3_test_m15_l26` (`--main-levels -26` in
+/// `scripts/ci/ensure-speaker-fixtures.sh`).
+const BABBLE_CALLER_LEVELS: [i32; 2] = [-20, -26];
+/// `--babble`: babble level re the caller, the `m15` of `s3_test_m15`.
+const BABBLE_REL_DB: i32 = -15;
+/// `--babble`: no babble sentence starts within this many ms before the caller
+/// (`--babble-clear-ms 1000 --babble-clear-pull` in `scripts/ci/ensure-speaker-fixtures.sh`).
+const BABBLE_CLEAR_MS: usize = 1000;
+/// `--babble`: the noisy-bystander roundtrip judges a caller turn with
+/// `DEFAULT_BARGE_PHRASE_MIN_SIMILARITY` (`roundtrip-noisy-bystander-helpers.ts`); a roll below it
+/// is a miss.
+const BABBLE_MIN_SIMILARITY: f64 = 0.75;
+/// `--babble`: babble before the caller's onset in the recognizer input: the STT pre-roll
+/// capacity (`stt_pre_roll_capacity_ms`, `speech_pad_ms + min_speech_duration_ms`) of the VAD the
+/// noisy-bystander listener runs, `VOICE_AGENT_VAD_PRESET` (speechPad 500 + minSpeech 250). Not
+/// `VadConfig::default()` (550 ms).
+const BABBLE_LEAD_MS: usize = 750;
+/// Background sentences the scene's babble reads (`speaker_fixtures` `BACKGROUND`).
+const BACKGROUND: &str = include_str!("support/background_sentences.txt");
 
 /// Bring a mono TTS clip at `rate` to the recognizer's 16 kHz the way the product does: nwr TTS
 /// output resampler to 48 kHz stereo s16le (`audio::f32_mono_to_stereo_48k_s16le_raw`), then the
@@ -143,6 +182,10 @@ struct Args {
     n: usize,
     keywords: Vec<String>,
     dump_misses: Option<PathBuf>,
+    /// `--babble <voices-root>`: sweep under the noisy-bystander scene's babble.
+    babble: Option<PathBuf>,
+    /// `--seed` (default 20261030): babble draws (`--babble` only).
+    seed: u64,
     phrase: String,
 }
 
@@ -152,6 +195,8 @@ fn parse_args() -> Result<Args, String> {
     let mut n = None;
     let mut keywords = Vec::new();
     let mut dump_misses = None;
+    let mut babble = None;
+    let mut seed = 20_261_030u64;
     let mut phrase = None;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -168,6 +213,12 @@ fn parse_args() -> Result<Args, String> {
             }
             "--keyword" => keywords.push(value("--keyword")?),
             "--dump-misses" => dump_misses = Some(PathBuf::from(value("--dump-misses")?)),
+            "--babble" => babble = Some(PathBuf::from(value("--babble")?)),
+            "--seed" => {
+                seed = value("--seed")?
+                    .parse::<u64>()
+                    .map_err(|e| format!("--seed: {e}"))?
+            }
             other if other.starts_with("--") => return Err(format!("unknown flag {other}")),
             other => {
                 if phrase.replace(other.to_string()).is_some() {
@@ -182,8 +233,208 @@ fn parse_args() -> Result<Args, String> {
         n: n.filter(|n| *n > 0).ok_or("missing or zero --n")?,
         keywords,
         dump_misses,
+        babble,
+        seed,
         phrase: phrase.ok_or("missing phrase")?,
     })
+}
+
+/// Score counts of one sweep (one caller level in `--babble` mode).
+struct Tally {
+    n: usize,
+    min_observed: f64,
+    below_075: usize,
+    below_060: usize,
+    keyword_missing: usize,
+    texts: HashMap<String, usize>,
+}
+
+impl Tally {
+    fn new() -> Self {
+        Self {
+            n: 0,
+            min_observed: f64::MAX,
+            below_075: 0,
+            below_060: 0,
+            keyword_missing: 0,
+            texts: HashMap::new(),
+        }
+    }
+
+    /// Scores one transcript; `true` when it is a perfect match (similarity 1, keywords present).
+    fn add(&mut self, phrase: &str, keywords: &[String], text: String) -> bool {
+        let similarity = word_similarity(phrase, &text);
+        self.n += 1;
+        self.min_observed = self.min_observed.min(similarity);
+        if similarity < 0.75 {
+            self.below_075 += 1;
+        }
+        if similarity < 0.60 {
+            self.below_060 += 1;
+        }
+        let keywords_ok = all_keywords_are_tokens(&text, keywords);
+        if !keywords_ok {
+            self.keyword_missing += 1;
+        }
+        *self.texts.entry(text).or_insert(0) += 1;
+        similarity >= 1.0 && keywords_ok
+    }
+
+    fn top_json(&self) -> String {
+        let mut top: Vec<(&String, &usize)> = self.texts.iter().collect();
+        top.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        top.truncate(5);
+        top.iter()
+            .map(|(text, count)| format!("[{},{count}]", json_string(text)))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn keyword_json(&self, keywords: &[String]) -> (String, String) {
+        if keywords.is_empty() {
+            ("null".to_string(), "null".to_string())
+        } else {
+            (
+                json_string(&keywords.join(",")),
+                self.keyword_missing.to_string(),
+            )
+        }
+    }
+}
+
+fn ms(n: usize) -> usize {
+    n * SAMPLE_RATE as usize / 1000
+}
+
+/// Every background sentence in every test-set voice, 16 kHz, each at -20 dBFS voiced RMS (the
+/// scene levels each babble voice to -20 before summing). Synthesized once; the rolls draw from it.
+fn babble_pool(voices_root: &std::path::Path) -> Result<Vec<Vec<Vec<f32>>>, String> {
+    let sentences: Vec<&str> = BACKGROUND
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let mut engines: HashMap<&str, sherpa_onnx::OfflineTts> = HashMap::new();
+    let mut pool = Vec::new();
+    for voice in TEST_VOICES {
+        if !engines.contains_key(voice.bundle) {
+            engines.insert(voice.bundle, create_tts(&voices_root.join(voice.bundle))?);
+        }
+        let mut clips = Vec::new();
+        for text in &sentences {
+            let (samples, rate) = synthesize_sid(&engines[voice.bundle], text, voice.sid)?;
+            clips.push(normalize_to(
+                &resample_linear(&samples, rate, SAMPLE_RATE),
+                -20.0,
+            ));
+        }
+        eprintln!(
+            "phrase_sweep: babble voice {} sid {} ready",
+            voice.name, voice.sid
+        );
+        pool.push(clips);
+    }
+    Ok(pool)
+}
+
+/// One babble window of `len` samples with the caller turn at `onset..onset + caller_len`: two
+/// distinct voices from `pool`, each reading random sentences with 150-400 ms gaps from a random
+/// point before the window (already playing), sentences starting within [`BABBLE_CLEAR_MS`]
+/// before the onset pulled back as the scene does. Level: unscaled (each voice at -20 dBFS).
+fn babble_window(
+    rng: &mut Rng,
+    pool: &[Vec<Vec<f32>>],
+    len: usize,
+    onset: usize,
+    caller_len: usize,
+) -> Vec<f32> {
+    let pre = rng.range(ms(2000), ms(5000));
+    let total = pre + len;
+    let turn = [(pre + onset, pre + onset + caller_len)];
+    let first = rng.below(pool.len());
+    let mut second = rng.below(pool.len() - 1);
+    if second >= first {
+        second += 1;
+    }
+    let mut mix = vec![0f32; total];
+    for clips in [&pool[first], &pool[second]] {
+        let mut pos = rng.range(0, ms(300));
+        while pos < total {
+            let clip = &clips[rng.below(clips.len())];
+            let next = pos + clip.len() + ms(rng.range(150, 400));
+            let start = babble_clear_start(pos, &turn, ms(BABBLE_CLEAR_MS), true);
+            let used = clip.len().min(total - start);
+            add_at(&mut mix, &clip[..used], start);
+            pos = next;
+        }
+    }
+    mix.split_off(pre)
+}
+
+/// `--babble`: the sweep under the noisy-bystander scene's conditions (see the module docs).
+fn run_babble(
+    args: &Args,
+    voices_root: &std::path::Path,
+    recognizer: &sherpa_onnx::OnlineRecognizer,
+    tts: &sherpa_onnx::OfflineTts,
+) -> Result<String, String> {
+    let vad = node_webrtc_rust_speech::config::VadConfig::default();
+    let lead_ms = BABBLE_LEAD_MS;
+    let tail_ms = vad.min_silence_duration_ms as usize;
+    let pool = babble_pool(voices_root)?;
+    let mut rng = Rng::new(args.seed);
+    let mut levels_json = Vec::new();
+    for caller_db in BABBLE_CALLER_LEVELS {
+        let mut tally = Tally::new();
+        let mut misses = 0usize;
+        for i in 0..args.n {
+            let (raw, rate) = synthesize(tts, &args.phrase)?;
+            let (clip, _) = to_recognizer_rate(raw, rate)?;
+            let clip = normalize_to(&clip, caller_db as f32);
+            let onset = ms(lead_ms);
+            let len = onset + clip.len() + ms(tail_ms);
+            let babble = babble_window(&mut rng, &pool, len, onset, clip.len());
+            let mut input = normalize_to(&babble, (caller_db + BABBLE_REL_DB) as f32);
+            add_at(&mut input, &clip, onset);
+            let text = recognize(recognizer, &input);
+            let similarity = word_similarity(&args.phrase, &text);
+            let keywords_ok = all_keywords_are_tokens(&text, &args.keywords);
+            if similarity < BABBLE_MIN_SIMILARITY || !keywords_ok {
+                misses += 1;
+            }
+            if !tally.add(&args.phrase, &args.keywords, text.clone()) {
+                if let Some(dir) = &args.dump_misses {
+                    write_wav(
+                        &dir.join(format!("miss-l{}-{i:05}.wav", caller_db.abs())),
+                        &input,
+                    )?;
+                    eprintln!("phrase_sweep: {caller_db} dBFS miss {i}: {text:?}");
+                }
+            }
+            if (i + 1) % 50 == 0 {
+                eprintln!(
+                    "phrase_sweep: {caller_db} dBFS {}/{} misses {misses}",
+                    i + 1,
+                    args.n
+                );
+            }
+        }
+        let (keyword_json, missing_json) = tally.keyword_json(&args.keywords);
+        levels_json.push(format!(
+            "{{\"callerDb\":{caller_db},\"n\":{},\"misses\":{misses},\"minObserved\":{},\"below075\":{},\"below060\":{},\"keyword\":{keyword_json},\"keywordMissing\":{missing_json},\"topTexts\":[{}]}}",
+            tally.n,
+            tally.min_observed,
+            tally.below_075,
+            tally.below_060,
+            tally.top_json(),
+        ));
+    }
+    Ok(format!(
+        "{{\"phrase\":{},\"babble\":{{\"relDb\":{BABBLE_REL_DB},\"threshold\":{BABBLE_MIN_SIMILARITY},\"leadMs\":{lead_ms},\"tailMs\":{tail_ms},\"clearMs\":{BABBLE_CLEAR_MS},\"voices\":\"test\",\"seed\":{},\"levels\":[{}]}}}}",
+        json_string(&args.phrase),
+        args.seed,
+        levels_json.join(","),
+    ))
 }
 
 fn run(args: &Args) -> Result<String, String> {
@@ -192,14 +443,13 @@ fn run(args: &Args) -> Result<String, String> {
     if let Some(dir) = &args.dump_misses {
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     }
+    if let Some(voices_root) = &args.babble {
+        return run_babble(args, voices_root, &recognizer, &tts);
+    }
     let lead = vec![0.0_f32; SAMPLE_RATE as usize * LEAD_SILENCE_MS / 1000];
     let tail = vec![0.0_f32; SAMPLE_RATE as usize * TAIL_SILENCE_MS / 1000];
 
-    let mut min_observed = f64::MAX;
-    let mut below_075 = 0usize;
-    let mut below_060 = 0usize;
-    let mut keyword_missing = 0usize;
-    let mut texts: HashMap<String, usize> = HashMap::new();
+    let mut tally = Tally::new();
     let mut tts_rate: Option<i32> = None;
     let mut resampled = false;
 
@@ -220,53 +470,27 @@ fn run(args: &Args) -> Result<String, String> {
         input.extend_from_slice(&clip);
         input.extend_from_slice(&tail);
         let text = recognize(&recognizer, &input);
-
-        let similarity = word_similarity(&args.phrase, &text);
-        min_observed = min_observed.min(similarity);
-        if similarity < 0.75 {
-            below_075 += 1;
-        }
-        if similarity < 0.60 {
-            below_060 += 1;
-        }
-        let keywords_ok = all_keywords_are_tokens(&text, &args.keywords);
-        if !keywords_ok {
-            keyword_missing += 1;
-        }
-        if let Some(dir) = &args.dump_misses {
-            if similarity < 1.0 || !keywords_ok {
+        if !tally.add(&args.phrase, &args.keywords, text.clone()) {
+            if let Some(dir) = &args.dump_misses {
                 write_wav(&dir.join(format!("miss-{i:05}.wav")), &clip)?;
                 eprintln!("phrase_sweep: miss {i}: {text:?}");
             }
         }
-        *texts.entry(text).or_insert(0) += 1;
         if (i + 1) % 50 == 0 {
             eprintln!("phrase_sweep: {}/{}", i + 1, args.n);
         }
     }
 
-    let mut top: Vec<(String, usize)> = texts.into_iter().collect();
-    top.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    top.truncate(5);
-    let top_json = top
-        .iter()
-        .map(|(text, count)| format!("[{},{count}]", json_string(text)))
-        .collect::<Vec<_>>()
-        .join(",");
-    let (keyword_json, missing_json) = if args.keywords.is_empty() {
-        ("null".to_string(), "null".to_string())
-    } else {
-        (
-            json_string(&args.keywords.join(",")),
-            keyword_missing.to_string(),
-        )
-    };
+    let (keyword_json, missing_json) = tally.keyword_json(&args.keywords);
     Ok(format!(
-        "{{\"phrase\":{},\"n\":{},\"minObserved\":{},\"below075\":{below_075},\"below060\":{below_060},\"keyword\":{keyword_json},\"keywordMissing\":{missing_json},\"ttsSampleRate\":{},\"resampled\":{resampled},\"topTexts\":[{top_json}]}}",
+        "{{\"phrase\":{},\"n\":{},\"minObserved\":{},\"below075\":{},\"below060\":{},\"keyword\":{keyword_json},\"keywordMissing\":{missing_json},\"ttsSampleRate\":{},\"resampled\":{resampled},\"topTexts\":[{}]}}",
         json_string(&args.phrase),
         args.n,
-        min_observed,
+        tally.min_observed,
+        tally.below_075,
+        tally.below_060,
         tts_rate.unwrap_or(SAMPLE_RATE),
+        tally.top_json(),
     ))
 }
 
@@ -275,7 +499,7 @@ fn main() {
         Ok(a) => a,
         Err(e) => {
             eprintln!(
-                "phrase_sweep: {e}\nusage: phrase_sweep --stt <dir> --tts <dir> --n <N> [--keyword <word>]... [--dump-misses <dir>] \"<phrase>\""
+                "phrase_sweep: {e}\nusage: phrase_sweep --stt <dir> --tts <dir> --n <N> [--keyword <word>]... [--dump-misses <dir>] [--babble <voices-root> [--seed <n>]] \"<phrase>\""
             );
             std::process::exit(2);
         }

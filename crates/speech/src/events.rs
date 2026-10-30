@@ -152,6 +152,10 @@ pub struct SpeechEvent {
     pub interrupted: Option<bool>,
     /// `user_speech_final` with the speaker gate on: `caller` | `other` | `unknown`.
     pub speaker: Option<String>,
+    /// `user_speech_final` with `speaker: "unknown"`: why (`short` | `timeout` | `error` |
+    /// `not_enrolled` | `no_embedding` | `no_check`). Absent for `caller` / `other` and without
+    /// the gate.
+    pub speaker_unknown_reason: Option<String>,
 }
 
 impl SpeechEvent {
@@ -186,6 +190,7 @@ impl SpeechEvent {
             synthesis_complete: None,
             interrupted: None,
             speaker: None,
+            speaker_unknown_reason: None,
         }
     }
 
@@ -279,6 +284,11 @@ impl SpeechEvent {
     }
 
     /// Tags a final with the speaker-gate verdict (`caller` | `other` | `unknown`).
+    pub fn with_speaker_unknown_reason(mut self, reason: &str) -> Self {
+        self.speaker_unknown_reason = Some(reason.to_string());
+        self
+    }
+
     pub fn with_speaker(mut self, speaker: &str) -> Self {
         self.speaker = Some(speaker.to_string());
         self

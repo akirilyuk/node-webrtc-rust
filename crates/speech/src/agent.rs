@@ -3106,11 +3106,18 @@ impl VoiceAgent {
             }
             return;
         }
-        if verdict.outcome == Outcome::Other {
-            eprintln!(
-                "[speaker-gate] info: speaker gate suppressed barge-in key={}",
-                verdict.key
-            );
+        if gate.vetoes_barge(&verdict) {
+            if verdict.outcome == Outcome::Other {
+                eprintln!(
+                    "[speaker-gate] info: speaker gate suppressed barge-in key={}",
+                    verdict.key
+                );
+            } else {
+                eprintln!(
+                    "[speaker-gate] info: speaker gate suppressed barge-in key={} reason=short",
+                    verdict.key
+                );
+            }
             return;
         }
         if !speaking || self.protected_tts_active() {
@@ -3141,7 +3148,14 @@ impl VoiceAgent {
         match gate.barge_decision(key) {
             BargeDecision::Proceed => false,
             BargeDecision::Suppress => {
-                eprintln!("[speaker-gate] info: speaker gate suppressed barge-in key={key}");
+                let reason = if gate.outcome_for(key) == Some(Outcome::Unknown) {
+                    " reason=short"
+                } else {
+                    ""
+                };
+                eprintln!(
+                    "[speaker-gate] info: speaker gate suppressed barge-in key={key}{reason}"
+                );
                 true
             }
             BargeDecision::Defer => {
@@ -3714,7 +3728,13 @@ impl VoiceAgent {
         let event = if outcome == Outcome::Other && drop_mismatch {
             SpeechEvent::user_speech_ignored(Some(record_id))
         } else {
-            event.with_speaker(outcome.as_str())
+            let event = event.with_speaker(outcome.as_str());
+            match (outcome, self.speaker_gate.as_ref()) {
+                (Outcome::Unknown, Some(gate)) => {
+                    event.with_speaker_unknown_reason(gate.unknown_reason(key))
+                }
+                _ => event,
+            }
         };
         match slot {
             Some(slot) => self.event_bus.fill_slot(slot, event),

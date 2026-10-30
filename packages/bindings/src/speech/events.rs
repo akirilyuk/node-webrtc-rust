@@ -66,6 +66,7 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
         synthesis_complete: event.synthesis_complete,
         interrupted: event.interrupted,
         speaker: event.speaker,
+        speaker_unknown_reason: event.speaker_unknown_reason,
     }
 }
 
@@ -131,6 +132,13 @@ mod speech_event_to_js_tests {
             SpeechEvent::user_speech_final("hi", Some("u1".into())).with_speaker("other"),
         );
         assert_eq!(js.speaker.as_deref(), Some("other"));
+        assert!(js.speaker_unknown_reason.is_none());
+        let js = speech_event_to_js(
+            SpeechEvent::user_speech_final("hi", Some("u1".into()))
+                .with_speaker("unknown")
+                .with_speaker_unknown_reason("short"),
+        );
+        assert_eq!(js.speaker_unknown_reason.as_deref(), Some("short"));
         let js = speech_event_to_js(SpeechEvent::user_speech_ignored(Some("u2".into())));
         assert_eq!(js.event_type, JsSpeechEventType::UserSpeechIgnored);
         assert_eq!(js.reason.as_deref(), Some("speaker_mismatch"));

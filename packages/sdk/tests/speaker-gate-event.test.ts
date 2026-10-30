@@ -34,5 +34,17 @@ describe('speaker gate speech events', () => {
     })
     expect(ev.type).toBe('user_speech_final')
     expect(ev.speaker).toBe('other')
+    expect(ev.speakerUnknownReason).toBeUndefined()
+  })
+
+  test('user_speech_final passes speakerUnknownReason through', () => {
+    const ev = fromJsSpeechEvent({
+      eventType: JsSpeechEventType.UserSpeechFinal,
+      text: 'stop',
+      speaker: 'unknown',
+      speakerUnknownReason: 'short',
+    })
+    expect(ev.speaker).toBe('unknown')
+    expect(ev.speakerUnknownReason).toBe('short')
   })
 })

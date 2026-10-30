@@ -204,9 +204,31 @@ pub struct SpeakerGateConfig {
     pub enroll_speech_ms: u32,
     /// Speech (ms) of an utterance used for one check.
     pub check_speech_ms: u32,
-    /// Clips with less speech than this (ms) are `unknown` (the gate fails open). Default 1500:
-    /// at 1 s of speech about 6 % of genuine caller clips scored below the threshold, at 1.5 s none.
+    /// Clips with less speech than this (ms) are not scored: the verdict is `unknown` and the gate
+    /// fails open (unless `suppress_short_barge_in`). Default 1500.
+    ///
+    /// Measured 2026-10-30 (TitaNet-small, threshold 0.459, `speaker_bench` Part 1 at a fixed
+    /// threshold, 128 genuine / 92 impostor clips per set, bystander at -6/-10/-15/-20 dB pooled):
+    ///
+    /// | check | set  | FRR    | FAR   |
+    /// |-------|------|--------|-------|
+    /// | 1.0 s | test | 11.7 % | 0.0 % |
+    /// | 1.0 s | tune | 18.0 % | 1.1 % |
+    /// | 1.25 s| test | 3.1 %  | 0.0 % |
+    /// | 1.25 s| tune | 7.8 %  | 1.1 % |
+    /// | 1.5 s | test | 0.8 %  | 0.0 % |
+    /// | 1.5 s | tune | 1.6 %  | 2.2 % |
+    ///
+    /// At 1.25 s per bystander level, test (tune) FRR: -6 dB 9.4 % (21.9 %), -10 dB 3.1 % (9.4 %),
+    /// -15 and -20 dB 0 % (0 %). Full reasoning: `packages/sdk/VOICE-VAD-AND-BARGE-IN.md`.
     pub min_check_speech_ms: u32,
+    /// Opt-in. While an utterance is live and has no verdict, a barge-in is deferred. When the
+    /// utterance ends with less speech than `min_check_speech_ms`, the verdict is `unknown` and
+    /// the deferred barge-in is normally released. With this set, it is suppressed instead, like
+    /// `other`, so a short bystander phrase cannot interrupt the agent. Short caller phrases
+    /// stop interrupting too (they are still transcribed). Every other `unknown` (not enrolled,
+    /// embed timeout or error) still proceeds. Default false.
+    pub suppress_short_barge_in: bool,
     pub on_mismatch: SpeakerMismatchAction,
     /// Bound (ms) on one embedding call and on a final waiting for its verdict.
     pub verify_timeout_ms: u32,
@@ -221,6 +243,7 @@ impl Default for SpeakerGateConfig {
             enroll_speech_ms: 3000,
             check_speech_ms: 1500,
             min_check_speech_ms: 1500,
+            suppress_short_barge_in: false,
             on_mismatch: SpeakerMismatchAction::Flag,
             verify_timeout_ms: 500,
         }

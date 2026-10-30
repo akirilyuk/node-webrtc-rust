@@ -45,6 +45,10 @@ enum Behavior {
     Vector(Vec<f32>),
     /// `embed` never settles.
     Pending,
+    /// `embed` fails.
+    Fail,
+    /// `embed` returns no embedding.
+    Empty,
     /// `embed` settles with the vector once the notify fires.
     WaitFor(Arc<Notify>, Vec<f32>),
 }
@@ -62,6 +66,10 @@ impl SpeakerEmbedder for FakeEmbedder {
         match behavior {
             Behavior::Vector(v) => Ok(Some(v)),
             Behavior::Pending => std::future::pending().await,
+            Behavior::Fail => Err(node_webrtc_rust_speech::error::SpeechError::Config(
+                "fake embed failure".into(),
+            )),
+            Behavior::Empty => Ok(None),
             Behavior::WaitFor(n, v) => {
                 n.notified().await;
                 Ok(Some(v))
@@ -155,6 +163,7 @@ fn gate_cfg(on_mismatch: SpeakerMismatchAction) -> SpeakerGateConfig {
         enroll_speech_ms: 400,
         check_speech_ms: 200,
         min_check_speech_ms: 100,
+        suppress_short_barge_in: false,
         on_mismatch,
         verify_timeout_ms: 300,
     }
@@ -378,6 +387,14 @@ async fn default_min_check_skips_1200ms_utterance_and_barge_in_proceeds() {
         rig.finals().last().unwrap().speaker.as_deref(),
         Some("unknown")
     );
+    assert_eq!(
+        rig.finals()
+            .last()
+            .unwrap()
+            .speaker_unknown_reason
+            .as_deref(),
+        Some("short")
+    );
     rig.agent.stop().await.unwrap();
 }
 
@@ -405,6 +422,167 @@ async fn default_min_check_checks_1800ms_utterance() {
         rig.finals().last().unwrap().speaker.as_deref(),
         Some("other")
     );
+    rig.agent.stop().await.unwrap();
+}
+
+/// Default check window with the opt-in `suppress_short_barge_in`.
+fn suppress_short_cfg() -> SpeakerGateConfig {
+    let mut cfg = default_check_cfg();
+    cfg.check_speech_ms = SpeakerGateConfig::default().check_speech_ms;
+    cfg.min_check_speech_ms = SpeakerGateConfig::default().min_check_speech_ms;
+    cfg.suppress_short_barge_in = true;
+    cfg
+}
+
+/// Opt-in on: an utterance with about 1.0 s of speech is below `minCheckSpeechMs`, so its
+/// verdict is `unknown` and the deferred barge-in is suppressed (like `other`). The final still
+/// says `unknown`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn suppress_short_barge_in_suppresses_1000ms_utterance() {
+    let mut rig = rig_with(agent_config(suppress_short_cfg())).await;
+    rig.enroll().await;
+    *rig.default.lock().unwrap() = Behavior::Vector(REF.to_vec());
+    rig.start_speaking().await;
+    rig.script.lock().unwrap().final_on_finalize = Some("stop".into());
+    // 50 frames x 20 ms = 1.0 s of speech.
+    rig.feed(&loud_stereo_frame(), 50).await;
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    assert_eq!(
+        rig.count(SpeechEventKind::BargeIn),
+        0,
+        "short utterance: barge-in suppressed"
+    );
+    assert_eq!(
+        rig.finals().last().unwrap().speaker.as_deref(),
+        Some("unknown")
+    );
+    assert_eq!(
+        rig.finals()
+            .last()
+            .unwrap()
+            .speaker_unknown_reason
+            .as_deref(),
+        Some("short")
+    );
+    rig.agent.stop().await.unwrap();
+}
+
+/// Opt-in on: an utterance of about 1.8 s with the caller's voice is checked; the caller
+/// barges in as usual.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn suppress_short_barge_in_lets_checked_caller_barge_in() {
+    let mut rig = rig_with(agent_config(suppress_short_cfg())).await;
+    rig.enroll().await;
+    *rig.default.lock().unwrap() = Behavior::Vector(REF.to_vec());
+    rig.start_speaking().await;
+    rig.script.lock().unwrap().final_on_finalize = Some("let me interrupt".into());
+    // 90 frames x 20 ms = 1.8 s of speech.
+    rig.feed(&loud_stereo_frame(), 90).await;
+    assert!(
+        rig.wait_event(SpeechEventKind::BargeIn, 3000).await,
+        "checked caller utterance barges in"
+    );
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    assert_eq!(
+        rig.finals().last().unwrap().speaker.as_deref(),
+        Some("caller")
+    );
+    rig.agent.stop().await.unwrap();
+}
+
+/// Opt-in on: an embedder that never settles (check timeout) is an `unknown` that is NOT short,
+/// so it still fails open and the barge-in proceeds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn suppress_short_barge_in_still_fails_open_on_embed_timeout() {
+    let mut cfg = suppress_short_cfg();
+    cfg.verify_timeout_ms = 300;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    *rig.default.lock().unwrap() = Behavior::Pending;
+    rig.start_speaking().await;
+    rig.script.lock().unwrap().final_on_finalize = Some("slow verifier".into());
+    // 90 frames x 20 ms = 1.8 s of speech: long enough to be checked.
+    rig.feed(&loud_stereo_frame(), 90).await;
+    assert!(
+        rig.wait_event(SpeechEventKind::BargeIn, 3000).await,
+        "embed timeout is unknown but not short: barge-in proceeds"
+    );
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    assert_eq!(
+        rig.finals().last().unwrap().speaker.as_deref(),
+        Some("unknown")
+    );
+    assert_eq!(
+        rig.finals()
+            .last()
+            .unwrap()
+            .speaker_unknown_reason
+            .as_deref(),
+        Some("timeout")
+    );
+    rig.agent.stop().await.unwrap();
+}
+
+/// Opt-in on, gate not enrolled: `unknown` is not short (no reference), barge-in proceeds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn suppress_short_barge_in_not_enrolled_barges_in() {
+    let mut cfg = suppress_short_cfg();
+    cfg.enroll_speech_ms = 400;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.start_speaking().await;
+    rig.feed(&loud_stereo_frame(), 3).await;
+    assert!(
+        rig.wait_event(SpeechEventKind::BargeIn, 2000).await,
+        "no reference yet: barge-in is not suppressed"
+    );
+    rig.agent.stop().await.unwrap();
+}
+
+/// `speakerUnknownReason` is `error` / `no_embedding` when the check itself fails (fail open), and
+/// absent for `caller`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unknown_reason_error_and_no_embedding() {
+    for (behavior, want) in [(Behavior::Fail, "error"), (Behavior::Empty, "no_embedding")] {
+        let mut rig = rig_with(agent_config(suppress_short_cfg())).await;
+        rig.enroll().await;
+        *rig.default.lock().unwrap() = behavior;
+        rig.start_speaking().await;
+        rig.script.lock().unwrap().final_on_finalize = Some("check fails".into());
+        rig.feed(&loud_stereo_frame(), 90).await;
+        assert!(rig.wait_event(SpeechEventKind::BargeIn, 3000).await);
+        rig.feed(&silent_stereo_frame(), 30).await;
+        assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+        rig.drain();
+        let last = rig.finals().last().copied().unwrap().clone();
+        assert_eq!(last.speaker.as_deref(), Some("unknown"));
+        assert_eq!(last.speaker_unknown_reason.as_deref(), Some(want));
+        rig.agent.stop().await.unwrap();
+    }
+}
+
+/// Before enrollment the final is `unknown` with `not_enrolled`; a checked caller carries no reason.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unknown_reason_not_enrolled_and_absent_for_caller() {
+    let mut rig = rig_with(agent_config(gate_cfg(SpeakerMismatchAction::Flag))).await;
+    rig.enroll().await;
+    let first = rig.finals()[0].clone();
+    assert_eq!(first.speaker.as_deref(), Some("unknown"));
+    assert_eq!(
+        first.speaker_unknown_reason.as_deref(),
+        Some("not_enrolled")
+    );
+    rig.start_speaking().await;
+    rig.utterance("hello again", 15).await;
+    rig.drain();
+    let last = rig.finals().last().copied().unwrap().clone();
+    assert_eq!(last.speaker.as_deref(), Some("caller"));
+    assert_eq!(last.speaker_unknown_reason, None);
     rig.agent.stop().await.unwrap();
 }
 
@@ -1108,6 +1286,10 @@ fn config_errors() {
         (0.459, 1500, 1500, 3000, 500)
     );
     assert!(!d.enabled);
+    assert!(
+        !d.suppress_short_barge_in,
+        "opt-in option is off by default"
+    );
 }
 
 #[tokio::test]

@@ -277,6 +277,7 @@ function toJsConfig(config?: VoiceAgentConfig): JsVoiceAgentConfig | undefined {
           enrollSpeechMs: config.speakerGate.enrollSpeechMs,
           checkSpeechMs: config.speakerGate.checkSpeechMs,
           minCheckSpeechMs: config.speakerGate.minCheckSpeechMs,
+          suppressShortBargeIn: config.speakerGate.suppressShortBargeIn,
           onMismatch: config.speakerGate.onMismatch,
           verifyTimeoutMs: config.speakerGate.verifyTimeoutMs,
         }
@@ -356,6 +357,8 @@ export function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
     synthesisComplete: event.synthesisComplete ?? undefined,
     interrupted: event.interrupted ?? undefined,
     speaker: (event.speaker as SpeechEvent['speaker']) ?? undefined,
+    speakerUnknownReason:
+      (event.speakerUnknownReason as SpeechEvent['speakerUnknownReason']) ?? undefined,
   }
 }
 

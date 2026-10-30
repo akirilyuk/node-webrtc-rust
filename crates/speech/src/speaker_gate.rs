@@ -59,7 +59,24 @@ pub struct Verdict {
     pub key: u64,
     pub outcome: Outcome,
     pub timed_out: bool,
+    /// Why the verdict is `Unknown` (`None` for caller/other): see [`UNKNOWN_SHORT`] and the
+    /// other `UNKNOWN_*` values. Only `short` is suppressed by `suppress_short_barge_in`.
+    pub reason: Option<&'static str>,
 }
+
+/// `speakerUnknownReason` values (the final's `speaker` is `unknown`).
+/// No reference voice yet.
+pub const UNKNOWN_NOT_ENROLLED: &str = "not_enrolled";
+/// Less speech than `min_check_speech_ms`: the utterance was not scored.
+pub const UNKNOWN_SHORT: &str = "short";
+/// The embedding call exceeded `verify_timeout_ms`, or the final stopped waiting for the verdict.
+pub const UNKNOWN_TIMEOUT: &str = "timeout";
+/// The embedding call failed.
+pub const UNKNOWN_ERROR: &str = "error";
+/// The embedder returned no embedding, or the score could not be computed.
+pub const UNKNOWN_NO_EMBEDDING: &str = "no_embedding";
+/// Gate enrolled, but no check was sent for the utterance and no verdict exists.
+pub const UNKNOWN_NO_CHECK: &str = "no_check";
 
 /// What a barge-in attempt for utterance `key` should do right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +105,8 @@ enum Msg {
 #[derive(Default)]
 struct Book {
     verdicts: VecDeque<(u64, Outcome)>,
+    /// Why each `Unknown` verdict is unknown (see [`Verdict::reason`]).
+    reasons: VecDeque<(u64, &'static str)>,
     sent: VecDeque<u64>,
 }
 
@@ -393,8 +412,48 @@ impl SpeakerGate {
         }
         match self.outcome_for(key) {
             Some(Outcome::Other) => BargeDecision::Suppress,
+            Some(Outcome::Unknown)
+                if self.cfg.suppress_short_barge_in
+                    && self.stored_unknown_reason(key) == Some(UNKNOWN_SHORT) =>
+            {
+                BargeDecision::Suppress
+            }
             Some(_) => BargeDecision::Proceed,
             None => BargeDecision::Defer,
+        }
+    }
+
+    /// True when `verdict` vetoes the barge-in of its utterance: `other`, or (opt-in
+    /// `suppress_short_barge_in`) `unknown` because the speech was below `min_check_speech_ms`.
+    /// Every other `unknown` fails open.
+    pub fn vetoes_barge(&self, verdict: &Verdict) -> bool {
+        verdict.outcome == Outcome::Other
+            || (self.cfg.suppress_short_barge_in
+                && verdict.outcome == Outcome::Unknown
+                && verdict.reason == Some(UNKNOWN_SHORT))
+    }
+
+    fn stored_unknown_reason(&self, key: u64) -> Option<&'static str> {
+        lock(&self.shared.book)
+            .reasons
+            .iter()
+            .rev()
+            .find(|(k, _)| *k == key)
+            .map(|(_, r)| *r)
+    }
+
+    /// `speakerUnknownReason` for the final of `key` whose outcome is `Unknown`.
+    pub fn unknown_reason(&self, key: u64) -> &'static str {
+        if let Some(r) = self.stored_unknown_reason(key) {
+            return r;
+        }
+        if !self.is_enrolled() {
+            UNKNOWN_NOT_ENROLLED
+        } else if self.check_sent(key) {
+            // The final stopped waiting before the verdict arrived.
+            UNKNOWN_TIMEOUT
+        } else {
+            UNKNOWN_NO_CHECK
         }
     }
 
@@ -546,9 +605,11 @@ async fn run(
                 speech_bytes,
             } => {
                 let started = Instant::now();
-                let (outcome, timed_out) = match reference.as_ref() {
-                    None => (Outcome::Unknown, false),
-                    Some(_) if speech_bytes < min_check_bytes => (Outcome::Unknown, false),
+                let (outcome, timed_out, reason) = match reference.as_ref() {
+                    None => (Outcome::Unknown, false, Some(UNKNOWN_NOT_ENROLLED)),
+                    Some(_) if speech_bytes < min_check_bytes => {
+                        (Outcome::Unknown, false, Some(UNKNOWN_SHORT))
+                    }
                     Some(reference) => match embed_bounded(&embedder, pcm, verify).await {
                         Ok(Some(v)) => match cosine(reference, &v) {
                             Some(score) => {
@@ -556,33 +617,37 @@ async fn run(
                                     "speaker gate score key={key} score={score:.3}"
                                 ));
                                 if score >= cfg.threshold {
-                                    (Outcome::Caller, false)
+                                    (Outcome::Caller, false, None)
                                 } else {
-                                    (Outcome::Other, false)
+                                    (Outcome::Other, false, None)
                                 }
                             }
-                            None => (Outcome::Unknown, false),
+                            None => (Outcome::Unknown, false, Some(UNKNOWN_NO_EMBEDDING)),
                         },
-                        Ok(None) => (Outcome::Unknown, false),
+                        Ok(None) => (Outcome::Unknown, false, Some(UNKNOWN_NO_EMBEDDING)),
                         Err(EmbedFail::Timeout) => {
                             let elapsed_ms = started.elapsed().as_millis();
                             shared.warn(format!(
                                 "speaker gate verify timeout key={key} elapsed_ms={elapsed_ms}"
                             ));
-                            (Outcome::Unknown, true)
+                            (Outcome::Unknown, true, Some(UNKNOWN_TIMEOUT))
                         }
-                        Err(EmbedFail::Error) => (Outcome::Unknown, false),
+                        Err(EmbedFail::Error) => (Outcome::Unknown, false, Some(UNKNOWN_ERROR)),
                     },
                 };
                 {
                     let mut book = lock(&shared.book);
                     push_capped(&mut book.verdicts, (key, outcome));
+                    if let Some(r) = reason {
+                        push_capped(&mut book.reasons, (key, r));
+                    }
                 }
                 shared.notify.notify_waiters();
                 on_verdict(Verdict {
                     key,
                     outcome,
                     timed_out,
+                    reason,
                 });
             }
         }

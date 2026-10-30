@@ -307,8 +307,20 @@ export interface VoiceAgentConfig {
     enrollSpeechMs?: number
     /** Speech (ms) of an utterance used for one check. Default 1500. */
     checkSpeechMs?: number
-    /** Clips with less speech than this are `unknown` and fail open. Default 1500: at 1 s of speech about 6 % of genuine caller clips scored below the threshold, at 1.5 s none. */
+    /**
+     * Clips with less speech than this (ms) are not scored: `speaker: 'unknown'`, fail open.
+     * Default 1500: genuine-caller false rejects were 11.7 % at 1.0 s, 3.1 % at 1.25 s and
+     * 0.8 % at 1.5 s (test set). See "Minimum check length" in VOICE-VAD-AND-BARGE-IN.md.
+     */
     minCheckSpeechMs?: number
+    /**
+     * Opt-in, default `false`. An utterance that ended with less speech than `minCheckSpeechMs`
+     * normally releases its deferred barge-in at its end. When `true` that barge-in is suppressed
+     * (as for `other`), for caller and bystander alike. Other `unknown` verdicts (not enrolled,
+     * check failed or timed out) still barge in. See "Minimum check length" in
+     * VOICE-VAD-AND-BARGE-IN.md.
+     */
+    suppressShortBargeIn?: boolean
     /** `'flag'` (default) keeps the final with `speaker: 'other'`; `'drop'` emits `user_speech_ignored`. */
     onMismatch?: 'flag' | 'drop'
     /** Bound (ms) on one check and on a final waiting for its verdict. Default 500. */
@@ -528,6 +540,19 @@ export interface SpeechEvent {
   interrupted?: boolean
   /** `user_speech_final` with `speakerGate` on: who spoke. */
   speaker?: 'caller' | 'other' | 'unknown'
+  /**
+   * `user_speech_final` with `speaker: 'unknown'`: why the utterance was not scored. `'short'`: less
+   * speech than `minCheckSpeechMs` (too short to check); `'timeout'` / `'error'` / `'no_embedding'`:
+   * the check failed; `'not_enrolled'`: no reference voice yet; `'no_check'`: no check was sent.
+   * Absent for `caller` / `other`. See "Minimum check length" in VOICE-VAD-AND-BARGE-IN.md.
+   */
+  speakerUnknownReason?:
+    | 'short'
+    | 'timeout'
+    | 'error'
+    | 'not_enrolled'
+    | 'no_embedding'
+    | 'no_check'
 }
 
 /** `languageId.timing` values. */

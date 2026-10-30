@@ -446,7 +446,10 @@ impl SpeakerGate {
                 speech_bytes: speech,
                 recheck: false,
             });
-        } else if !cur.rechecked && self.outcome_for(cur.key) == Some(Outcome::Other) {
+        } else if self.cfg.recheck_on_other
+            && !cur.rechecked
+            && self.outcome_for(cur.key) == Some(Outcome::Other)
+        {
             // Ended before the re-check window filled: the `other` verdict stands and the barge-in
             // held for the re-check is dropped.
             feed.pending_barge.remove(&cur.key);

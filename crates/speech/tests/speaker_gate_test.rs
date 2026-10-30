@@ -1668,3 +1668,53 @@ async fn recheck_off_keeps_one_check() {
     assert_eq!(rig.queue.lock().unwrap().len(), 1, "exactly one check");
     rig.agent.stop().await.unwrap();
 }
+
+/// Flake reproduction (`flaky-tests-root-cause.md`): a `WaitFor` released before the verifier
+/// reaches `embed` must not be lost. With `notify_waiters` the release is dropped, the check runs
+/// into `verify_timeout_ms` (3 s) and the final is `unknown`; `notify_one` keeps a permit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn waitfor_release_sent_before_embed_is_not_lost() {
+    let mut cfg = gate_cfg(SpeakerMismatchAction::Flag);
+    cfg.verify_timeout_ms = 3000;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    let base = rig.log.len();
+    rig.start_speaking().await;
+    let release = Arc::new(Notify::new());
+    queue_checks(
+        &rig,
+        vec![Behavior::WaitFor(Arc::clone(&release), OTHER.to_vec())],
+    );
+    release.notify_one();
+    rig.script.lock().unwrap().final_on_finalize = Some("early release".into());
+    rig.feed(&loud_stereo_frame(), 12).await;
+    rig.feed(&silent_stereo_frame(), 30).await;
+    rig.agent.flush_tts().await.unwrap();
+    rig.feed(&silent_stereo_frame(), 30).await;
+    let deadline = Instant::now() + Duration::from_millis(1000);
+    let mut fin = None;
+    while Instant::now() < deadline {
+        rig.drain();
+        fin = rig.log[base..]
+            .iter()
+            .find(|e| {
+                e.kind == SpeechEventKind::UserSpeechFinal
+                    && e.text.as_deref() == Some("early release")
+            })
+            .cloned();
+        if fin.is_some() {
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    let fin = fin.expect("final within 1 s");
+    assert_eq!(fin.speaker.as_deref(), Some("other"));
+    assert!(
+        !rig.agent
+            .speaker_gate_warnings()
+            .iter()
+            .any(|w| w.contains("verify timeout")),
+        "the early release was lost"
+    );
+    rig.agent.stop().await.unwrap();
+}

@@ -556,6 +556,40 @@ mod tests {
         );
     }
 
+    /// `babble_window`: two distinct voices, and no babble sentence starts in the clear window
+    /// before the caller's onset (the scene's `--babble-clear-ms 1000 --babble-clear-pull`).
+    /// Voice k's clip is the constant 16^k, so each voice owns a 4-bit field of the summed sample
+    /// (a pulled sentence may overlap the same voice's previous one; 4 bits hold that count).
+    #[test]
+    fn babble_window_two_voices_and_no_onset_in_clear_window() {
+        let pool: Vec<Vec<Vec<f32>>> = (0..5).map(|k| vec![vec![16f32.powi(k); ms(500)]]).collect();
+        let voices_at = |x: f32| -> Vec<bool> {
+            let bits = x as u32;
+            (0..5).map(|k| (bits >> (4 * k)) & 0xF != 0).collect()
+        };
+        for seed in 1..=50u64 {
+            let window = babble_window(&mut Rng::new(seed), &pool, ms(3000), ms(750), ms(1000));
+            assert_eq!(window.len(), ms(3000), "seed {seed}");
+            let mut union = [false; 5];
+            for x in &window {
+                for (k, on) in voices_at(*x).into_iter().enumerate() {
+                    union[k] |= on;
+                }
+            }
+            assert_eq!(union.iter().filter(|v| **v).count(), 2, "seed {seed}");
+            for i in 1..ms(750) {
+                let (before, now) = (voices_at(window[i - 1]), voices_at(window[i]));
+                for k in 0..5 {
+                    assert!(
+                        !(now[k] && !before[k]),
+                        "seed {seed}: voice {k} starts at {} ms, inside the clear window",
+                        i * 1000 / SAMPLE_RATE as usize
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn identical_text_scores_one() {
         assert_eq!(

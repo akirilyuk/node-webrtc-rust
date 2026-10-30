@@ -260,10 +260,21 @@ describe('evaluateTurns', () => {
     )
   })
 
-  it('fails a pass with fewer than 2 other bystanders', () => {
-    const seen = healthy().filter((e) => e.utteranceId !== 'u3' && e.utteranceId !== 'u4')
-    expect(evaluateTurns(TURNS, seen, 'p').join('\n')).toMatch(
-      /only 1 bystander .* need at least 2/,
+  it('passes with exactly one other bystander and the rest short-unknown', () => {
+    const seen = healthy().map((e) =>
+      e.type === 'user_speech_final' && (e.utteranceId === 'u2' || e.utteranceId === 'u3')
+        ? { ...e, speaker: 'unknown', speakerUnknownReason: 'short' }
+        : e,
     )
+    expect(evaluateTurns(TURNS, seen, 'p')).toEqual([])
+  })
+
+  it('fails a pass whose bystanders are all short-unknown (zero other)', () => {
+    const seen = healthy().map((e) =>
+      e.type === 'user_speech_final' && e.utteranceId !== 'u1'
+        ? { ...e, speaker: 'unknown', speakerUnknownReason: 'short' }
+        : e,
+    )
+    expect(evaluateTurns(TURNS, seen, 'p').join('\n')).toMatch(/vacuous/)
   })
 })

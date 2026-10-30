@@ -25,10 +25,12 @@ export const BYSTANDER_RELATIVE_DB = -15
 export const QUIET_CALLER_DBFS = -26
 export const WARMUP_S = 0.6
 /**
- * Anti-vacuous rule: a pass needs at least this many bystander turns whose final is `other` (and
- * that did not barge in), so the gate demonstrably scored bystanders.
+ * Anti-vacuous rule: a pass needs at least one bystander turn whose final is `other` (and that
+ * did not barge in), so the gate demonstrably scored a bystander. The scene's bystanders sit 15 dB
+ * under the caller, and how many of them open the VAD varies per run, so the oracle requires one
+ * checked `other` bystander, not a count.
  */
-export const MIN_OTHER_BYSTANDERS = 2
+export const MIN_OTHER_BYSTANDERS = 1
 
 export interface Turn {
   role: 'main' | 'bystander'

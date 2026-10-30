@@ -8,7 +8,9 @@
  * --long-bystander-db -6`), loud enough to open the adaptive VAD over the babble, so each pass has
  * bystander finals for the gate to label other. The background babble is at the scene level, 15 dB
  * below the caller. No babble sentence starts
- * within 1 s before a caller turn (`--babble-clear-ms 1000`): other speech that starts less than
+ * within 2 s before a caller turn (`--babble-clear-ms 2000`). The clear window has to exceed the
+ * VAD preset's end silence (minSilenceDurationMs + speechPadMs): with less, babble keeps the VAD
+ * open and the caller turn is stitched onto earlier speech. Separately, other speech that starts less than
  * about 1 s before the caller can fall into the 1.5 s check and make it reject the caller, so the
  * barge-in is suppressed and the final is labelled other. The agent answers every
  * `user_speech_final` with a long reply, like an app, so every turn starts during playback.
@@ -33,7 +35,7 @@
  *   cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
  *     --models .models/speaker --main-tts .models/vits-piper-en_US-amy-low \
  *     --phrases stt-phrase-qualification.json --out .models/speaker-fixtures --main-levels -26 \
- *     --min-turn-gap-ms 2500 --bystander-db -15 --babble-clear-ms 1000 --babble-clear-pull \
+ *     --min-turn-gap-ms 2500 --bystander-db -15 --babble-clear-ms 2000 --babble-clear-pull \
  *     --long-bystanders 2 --long-bystander-db -6 --only s3_test_m15
  * (CI does this in `scripts/ci/ensure-speaker-fixtures.sh`.)
  *

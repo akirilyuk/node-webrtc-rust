@@ -210,6 +210,45 @@ describe('evaluateTurns', () => {
     )
   })
 
+  describe('re-checked barge bounded by speech end and final', () => {
+    const rechecked = (o: { endAt?: number; bargeAt: number }): Seen[] => {
+      const base = healthy().filter(
+        (e) => e.type !== 'user_speech_partial' && e.type !== 'barge_in' && e.utteranceId !== 'u1',
+      )
+      return [
+        ...base,
+        ev('user_speaking_start', 10_100, { utteranceId: 'u1' }),
+        ev('user_speech_partial', 10_600, { utteranceId: 'u1', text: 'please check' }),
+        ev('barge_in', o.bargeAt, { utteranceId: 'u1' }),
+        ...(o.endAt != null ? [ev('user_speaking_end', o.endAt, { utteranceId: 'u1' })] : []),
+        ev('user_speech_final', 13_600, {
+          utteranceId: 'u1',
+          text: 'please check my order',
+          speaker: 'caller',
+          speakerRechecked: true,
+          speakerCheckWindows: 2,
+        }),
+      ].sort((a, b) => a.atMs - b.atMs)
+    }
+    const long = [{ ...TURNS[0]!, endMs: 20_000 }, ...TURNS.slice(1)]
+
+    it("fails a re-checked barge more than 300 ms after the utterance's speech end", () => {
+      expect(
+        evaluateTurns(long, rechecked({ endAt: 12_600, bargeAt: 13_500 }), 'p').join('\n'),
+      ).toMatch(/barge 900 ms after the utterance's speech end at 12600 ms \(> 300 ms/)
+    })
+
+    it('passes a re-checked barge within 300 ms of speech end', () => {
+      expect(evaluateTurns(long, rechecked({ endAt: 13_200, bargeAt: 13_400 }), 'p')).toEqual([])
+    })
+
+    it('fails a re-checked barge after its final', () => {
+      expect(evaluateTurns(long, rechecked({ bargeAt: 13_700 }), 'p').join('\n')).toMatch(
+        /barge-in at 13700 ms after its final at 13600 ms/,
+      )
+    })
+  })
+
   it('keeps the 3 s cap for a caller turn that was not re-checked', () => {
     const base = healthy().filter((e) => e.type !== 'user_speech_partial' && e.type !== 'barge_in')
     const seen = [
@@ -512,7 +551,12 @@ describe('merged caller utterance (VAD opened in the bystander slot)', () => {
     const atStart = run(u7({ ...shape, endAt: 67_352, text }))
     expect(atStart.failures).toMatch(/turn 1 .*barge_in for the bystander utterance u7/)
     expect(atStart.failures).toMatch(/turn 2 .*caller speech start not detected/)
-    const after = run(u7({ ...shape, endAt: 67_353, text }))
+    // The merged key ends twice: the first end (67 353) decides the merge, and speech continued
+    // after the rejoin until the second end at 68 100 (the last end bounds the barge).
+    const after = run([
+      ...u7({ ...shape, endAt: 67_353, text }),
+      ev('user_speaking_end', 68_100, { utteranceId: 'u7' }),
+    ])
     expect(after.failures).toBe('')
   })
 

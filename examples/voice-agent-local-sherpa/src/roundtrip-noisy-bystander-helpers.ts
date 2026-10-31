@@ -347,6 +347,14 @@ export function voicedMsBetween(turns: Turn[], fromMs: number, toMs: number): nu
   return total
 }
 
+/** Last `user_speaking_end` of the utterance (a rejoined key can have several). */
+export function lastSpeakingEndMs(utteranceId: string, seen: Seen[]): number | undefined {
+  const ends = seen.filter(
+    (e) => e.type === SPEECH_EVENT_TYPE.userSpeakingEnd && e.utteranceId === utteranceId,
+  )
+  return ends.length > 0 ? ends[ends.length - 1]!.atMs : undefined
+}
+
 /** Pure evaluation of one pass; exported for the evaluator unit test. */
 export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): string[] {
   const failures: string[] = []
@@ -470,15 +478,22 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
           `${tag}: barge_in without a qualifying partial (>= ${MIN_STT_PARTIAL_TOKENS} tokens) on ${id}`,
         )
       } else if (isRechecked(start, seen)) {
-        // The gate scores counted speech, not wall-clock: a pause inside the utterance moves the
-        // deciding window later. Voiced scene time over-counts what the gate scores (babble is not
-        // included, so this is an upper bound on counted speech), and a pause does not count.
+        // The gate counts every frame while its VAD segment is open (speech, babble, pauses under minSilenceDurationMs; not the pre-roll) and restarts at the last window boundary when a segment rejoins the key after SpeechEnd. Voiced scene time is therefore usually at most the counted speech, so this check understates lateness; it can overstate it only after a rejoin. The speech-end and final checks below bound a barge after the audio stops.
         const windowEnd = verdictAfterMs(start, seen)!
         const late = voicedMsBetween(turns, start.atMs, barge.atMs) - windowEnd
         if (late > BARGE_SLACK_MS) {
           failures.push(
             `${tag}: barge ${late} ms of voiced scene audio after the deciding window (> ${BARGE_SLACK_MS} ms)`,
           )
+        }
+        const endAt = lastSpeakingEndMs(id!, seen) ?? final?.atMs
+        if (endAt != null && barge.atMs - endAt > BARGE_SLACK_MS) {
+          failures.push(
+            `${tag}: barge ${barge.atMs - endAt} ms after the utterance's speech end at ${endAt} ms (> ${BARGE_SLACK_MS} ms; no window is scored after SpeechEnd)`,
+          )
+        }
+        if (final != null && barge.atMs > final.atMs) {
+          failures.push(`${tag}: barge-in at ${barge.atMs} ms after its final at ${final.atMs} ms`)
         }
       } else if (barge.atMs - expected > BARGE_SLACK_MS) {
         failures.push(

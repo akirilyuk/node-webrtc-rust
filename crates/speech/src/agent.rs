@@ -3283,6 +3283,15 @@ impl VoiceAgent {
         self.speaker_gate.as_ref().map_or(0, |g| g.hold_count())
     }
 
+    /// Test hook: the live utterance's key, windows sent and counted speech in ms
+    /// (see `SpeakerGate::live_check_state`).
+    #[doc(hidden)]
+    pub fn speaker_gate_live_check_state(&self) -> Option<(u64, u32, usize)> {
+        self.speaker_gate
+            .as_ref()
+            .and_then(|g| g.live_check_state())
+    }
+
     /// True when a barge-in for the live utterance must wait for (or is vetoed by) the speaker
     /// verdict. Records the pending barge so the verdict handler fires it.
     async fn speaker_gate_holds_barge(&self) -> bool {

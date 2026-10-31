@@ -121,13 +121,15 @@ enum Msg {
         pcm: Vec<u8>,
     },
     /// `speech_bytes` is the clip without the pre-roll. `recheck`: a window after the first, sent
-    /// while the verdict is `other`. `window`: 1 for the first check.
+    /// while the verdict is `other`. `window`: 1 for the first check. `attempt`: feed-side send
+    /// counter (monotonic per gate), used to drop the verdicts of checks a re-open superseded.
     Check {
         key: u64,
         pcm: Vec<u8>,
         speech_bytes: usize,
         recheck: bool,
         window: u32,
+        attempt: u64,
     },
     Reset,
 }
@@ -144,9 +146,9 @@ struct Book {
     windows_scored: VecDeque<(u64, u32)>,
     /// Keys whose final read its verdict: no re-check starts after that.
     closed: VecDeque<u64>,
-    /// Lowest window still accepted per re-opened key: a late `short` verdict of an earlier
-    /// window is dropped, so it never answers the resumed check.
-    min_window: VecDeque<(u64, u32)>,
+    /// Per re-opened key, the last check attempt sent before the re-open: the verdicts of those
+    /// attempts are dropped, so a late one never answers the resumed check.
+    reopened_after: VecDeque<(u64, u64)>,
 }
 
 struct Shared {
@@ -163,6 +165,8 @@ struct Shared {
     park_release: Notify,
     /// Test hook: times a barge-in was held for a further window.
     holds: std::sync::atomic::AtomicU64,
+    /// Test hook: verdicts dropped because a re-open superseded their check.
+    superseded: std::sync::atomic::AtomicU64,
 }
 
 impl Shared {
@@ -189,6 +193,9 @@ struct Cur {
     speech_seen: usize,
     /// The final read the verdict: no further window starts.
     rechecks_closed: bool,
+    /// Re-opened after a `short` end: the buffer always rolls (pre-roll plus the latest check), so
+    /// the resumed window scores the latest speech whatever `recheck_on_other` says.
+    reopened: bool,
 }
 
 #[derive(Default)]
@@ -202,9 +209,13 @@ struct Feed {
     /// Utterance key -> playback epoch the barge-in was raised against.
     pending_barge: BTreeMap<u64, u64>,
     /// Keys whose last check went out short (counted speech below `min_check_speech_ms`, or a
-    /// resumed segment that ended before its window), with the counted speech at SpeechEnd.
-    /// Decided here at SpeechEnd, so a re-open never waits for the verifier.
-    shorts: VecDeque<(u64, usize)>,
+    /// resumed segment that ended before its window): (key, counted speech at SpeechEnd, the
+    /// window the next scored check of the key is). Decided here at SpeechEnd, so a re-open never
+    /// depends on the verifier. A short window is not a scored window: a re-opened key that ends
+    /// short again keeps the same next window.
+    shorts: VecDeque<(u64, usize, u32)>,
+    /// `Msg::Check` sends so far (the attempt number of the last one).
+    attempts: u64,
 }
 
 /// Per-agent speaker gate (feed side plus the handle to the verifier task).
@@ -261,6 +272,7 @@ impl SpeakerGate {
                 parked: AtomicBool::new(false),
                 park_release: Notify::new(),
                 holds: std::sync::atomic::AtomicU64::new(0),
+                superseded: std::sync::atomic::AtomicU64::new(0),
             }),
             feed: Mutex::new(Feed::default()),
         })
@@ -336,6 +348,12 @@ impl SpeakerGate {
         self.shared.holds.load(Ordering::SeqCst)
     }
 
+    /// Test hook: verdicts dropped because a re-open superseded their check.
+    #[doc(hidden)]
+    pub fn superseded_verdicts(&self) -> u64 {
+        self.shared.superseded.load(Ordering::SeqCst)
+    }
+
     /// Test hook: bytes currently buffered for the live utterance.
     #[doc(hidden)]
     pub fn live_buffer_bytes(&self) -> usize {
@@ -405,6 +423,7 @@ impl SpeakerGate {
                         windows_sent: ws,
                         speech_seen: ws as usize * check,
                         rechecks_closed: self.recheck_closed(k),
+                        reopened: false,
                     }
                 }
             },
@@ -426,6 +445,7 @@ impl SpeakerGate {
                         // next `check_speech_ms`; otherwise the window follows the first check.
                         speech_seen: ws as usize * check,
                         rechecks_closed: self.recheck_closed(key),
+                        reopened: false,
                     }
                 }
             }
@@ -443,12 +463,14 @@ impl SpeakerGate {
         let rolling = self.rolling();
         let keep = PRE_ROLL_MS * BYTES_PER_MS + check;
         let mut to_send = None;
+        let attempt;
         {
             let mut feed = lock(&self.feed);
             match feed.cur.as_mut() {
                 Some(cur) => {
                     let speech = cur.buf.len() - cur.pre;
-                    if rolling {
+                    let roll = rolling || cur.reopened;
+                    if roll {
                         cur.buf.extend_from_slice(frame);
                     } else if speech < cap {
                         let room = cap - speech;
@@ -488,7 +510,7 @@ impl SpeakerGate {
                         let pcm = cur.buf[from..].to_vec();
                         to_send = Some((cur.key, pcm, check, true, cur.windows_sent));
                     }
-                    if rolling && cur.sent && cur.buf.len() > keep {
+                    if roll && (cur.sent || cur.reopened) && cur.buf.len() > keep {
                         let n = cur.buf.len() - keep;
                         cur.buf.drain(..n);
                         cur.pre = 0;
@@ -503,6 +525,10 @@ impl SpeakerGate {
                     }
                 }
             }
+            if to_send.is_some() {
+                feed.attempts += 1;
+            }
+            attempt = feed.attempts;
         }
         if let Some((key, pcm, speech_bytes, recheck, window)) = to_send {
             if recheck {
@@ -518,6 +544,7 @@ impl SpeakerGate {
                 speech_bytes,
                 recheck,
                 window,
+                attempt,
             });
         }
     }
@@ -536,27 +563,28 @@ impl SpeakerGate {
     /// counted speech continued) checks the rejoined speech. Caller holds the feed lock and fills
     /// in `buf` / `pre`.
     fn reopen_short(&self, feed: &mut Feed, key: u64) -> Option<Cur> {
-        let i = feed.shorts.iter().position(|(k, _)| *k == key)?;
-        let (_, speech_seen) = feed.shorts.remove(i)?;
+        let i = feed.shorts.iter().position(|(k, _, _)| *k == key)?;
+        let (_, speech_seen, next_window) = feed.shorts.remove(i)?;
         if self.recheck_closed(key) {
             return None;
         }
-        let windows_sent = self.windows_sent_for(key);
         {
             let mut book = lock(&self.shared.book);
             book.verdicts.retain(|(k, _)| *k != key);
             book.reasons.retain(|(k, _)| *k != key);
-            book.min_window.retain(|(k, _)| *k != key);
-            push_capped(&mut book.min_window, (key, windows_sent + 1));
+            book.reopened_after.retain(|(k, _)| *k != key);
+            push_capped(&mut book.reopened_after, (key, feed.attempts));
         }
         Some(Cur {
             key,
             buf: Vec::new(),
             pre: 0,
             sent: false,
-            windows_sent,
+            // From the feed record only, never from verifier state.
+            windows_sent: next_window - 1,
             speech_seen,
             rechecks_closed: false,
+            reopened: true,
         })
     }
 
@@ -589,18 +617,29 @@ impl SpeakerGate {
                 (cur.buf.len() - cur.pre).min(self.check_bytes())
             };
             if speech < self.cfg.min_check_speech_ms as usize * BYTES_PER_MS {
-                feed.shorts.retain(|(k, _)| *k != cur.key);
-                feed.shorts.push_back((cur.key, cur.speech_seen));
+                // The short first check used window 1, so the next scored window is 2. A
+                // re-opened key that ends short again keeps its next window: a short window does
+                // not use up a window number.
+                let next_window = if cur.reopened {
+                    cur.windows_sent + 1
+                } else {
+                    cur.windows_sent.max(1) + 1
+                };
+                feed.shorts.retain(|(k, _, _)| *k != cur.key);
+                feed.shorts
+                    .push_back((cur.key, cur.speech_seen, next_window));
                 while feed.shorts.len() > BOOK_CAP {
                     feed.shorts.pop_front();
                 }
             }
+            feed.attempts += 1;
             self.send(Msg::Check {
                 key: cur.key,
                 pcm: cur.buf[..cur.pre + speech].to_vec(),
                 speech_bytes: speech,
                 recheck: false,
                 window: cur.windows_sent + 1,
+                attempt: feed.attempts,
             });
         } else if self.cfg.recheck_on_other
             && self.outcome_for(cur.key) == Some(Outcome::Other)
@@ -971,18 +1010,27 @@ async fn run(
                 speech_bytes,
                 recheck,
                 window,
+                attempt,
             } => {
                 let superseded = lock(&shared.book)
-                    .min_window
+                    .reopened_after
                     .iter()
                     .find(|(k, _)| *k == key)
-                    .is_some_and(|(_, w)| window < *w);
+                    .is_some_and(|(_, a)| attempt <= *a);
                 if superseded {
-                    // A `short` check whose key was re-opened by a rejoin: the resumed check
-                    // answers for the key now.
+                    // A check sent before its key was re-opened by a rejoin: the resumed check
+                    // answers for the key now. A re-open needs a short record, which only a
+                    // `!sent` SpeechEnd writes, and a re-opened key that sends a window from the
+                    // frame path is `sent` and never writes another. So every attempt up to the
+                    // re-open is a short-end check, whose verdict is `short` or `not_enrolled`.
+                    debug_assert!(
+                        reference.is_none() || speech_bytes < min_check_bytes,
+                        "superseded check would be scored (key={key} attempt={attempt})"
+                    );
                     crate::agent::voice_debug(format!(
-                        "speaker gate drops superseded verdict key={key} window={window}"
+                        "speaker gate drops superseded verdict key={key} window={window} attempt={attempt}"
                     ));
+                    shared.superseded.fetch_add(1, Ordering::SeqCst);
                     shared.notify.notify_waiters();
                     continue;
                 }
@@ -1189,6 +1237,116 @@ mod tests {
         }
         gate.end_utterance();
         assert!(checks(&mut rx).is_empty(), "at most one re-check per key");
+    }
+
+    /// (key, pcm, speech bytes, window) of every check sent so far.
+    fn checks_full(rx: &mut UnboundedReceiver<Msg>) -> Vec<(u64, Vec<u8>, usize, u32)> {
+        let mut out = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            if let Msg::Check {
+                key,
+                pcm,
+                speech_bytes,
+                window,
+                ..
+            } = msg
+            {
+                out.push((key, pcm, speech_bytes, window));
+            }
+        }
+        out
+    }
+
+    /// A short, B short (rejoin), then C rejoins with no verifier running: C's window count and
+    /// counted speech come from the SpeechEnd record only. Key 2 additionally has verifier state
+    /// as if B's late window-2 `short` verdict had been processed (windows scored 2); C must not
+    /// read it, so C is still one window sent, and its next scored window is 2.
+    #[test]
+    fn second_short_rejoin_window_is_from_feed_record() {
+        for (key, verifier_ran) in [(1_u64, false), (2_u64, true)] {
+            let gate = enrolled_gate(true);
+            let mut rx = lock(&gate.rx).take().unwrap();
+            // A: 3 frames (60 ms) < min 100 ms.
+            start(&gate, key, 3);
+            gate.end_utterance();
+            // B: 3 frames (60 ms), short again.
+            gate.begin(key, &[2_u8; FRAME]);
+            gate_push(&gate, 2, 2);
+            gate.end_utterance();
+            let sent: Vec<(u64, usize, u32)> = checks_full(&mut rx)
+                .into_iter()
+                .map(|(k, _, s, w)| (k, s, w))
+                .collect();
+            assert_eq!(sent, vec![(key, 60 * 32, 1), (key, 0, 2)]);
+            if verifier_ran {
+                let mut book = lock(&gate.shared.book);
+                push_capped(&mut book.windows_scored, (key, 2));
+            }
+            // C.
+            gate.begin(key, &[2_u8; FRAME]);
+            assert_eq!(
+                gate.live_check_state(),
+                Some((key, 1, 140)),
+                "C continues from the feed record (verifier ran: {verifier_ran})"
+            );
+            // Window 2 goes out at 2 × 200 ms of counted speech: 13 more frames (A+B+C = 400).
+            gate_push(&gate, 2, 12);
+            assert!(checks_full(&mut rx).is_empty(), "no check below the bound");
+            gate_push(&gate, 2, 1);
+            let sent = checks_full(&mut rx);
+            assert_eq!(sent.len(), 1);
+            assert_eq!((sent[0].0, sent[0].2, sent[0].3), (key, 200 * 32, 2));
+            assert_eq!(gate.live_check_state(), Some((key, 2, 400)));
+        }
+    }
+
+    fn gate_push(gate: &SpeakerGate, value: u8, n: usize) {
+        for _ in 0..n {
+            gate.push_frame(&[value; FRAME]);
+        }
+    }
+
+    /// `recheck_on_other` off (buffer does not roll for ordinary utterances): a re-opened short key
+    /// still keeps pre-roll plus the latest check, so window 2 scores the latest speech (Y), not
+    /// the first `check_speech_ms` of the rejoin (X).
+    #[test]
+    fn reopened_short_scores_latest_speech_without_recheck_on_other() {
+        let gate = enrolled_gate(false);
+        let mut rx = lock(&gate.rx).take().unwrap();
+        // A: one frame (20 ms), short.
+        start(&gate, 1, 1);
+        gate.end_utterance();
+        assert_eq!(checks_full(&mut rx).len(), 1);
+        // Rejoin: pre-roll (value 1), first 200 ms X (value 4), then Y (value 5).
+        gate_push(&gate, 1, 15);
+        let mut fed: Vec<u8> = vec![1_u8; 15 * FRAME];
+        gate.begin(1, &[4_u8; FRAME]);
+        gate_push(&gate, 4, 9);
+        fed.extend(std::iter::repeat_n(4_u8, 10 * FRAME));
+        // Counted 20 + 200 ms; window 2 at 400 ms: 9 frames of Y.
+        gate_push(&gate, 5, 8);
+        fed.extend(std::iter::repeat_n(5_u8, 8 * FRAME));
+        assert!(checks_full(&mut rx).is_empty());
+        gate_push(&gate, 5, 1);
+        fed.extend(std::iter::repeat_n(5_u8, FRAME));
+        let sent = checks_full(&mut rx);
+        assert_eq!(sent.len(), 1);
+        let (_, pcm, speech, window) = &sent[0];
+        assert_eq!((*speech, *window), (200 * 32, 2));
+        let keep = (PRE_ROLL_MS + 200) * BYTES_PER_MS;
+        assert_eq!(pcm.len(), keep, "pre-roll plus the latest check");
+        assert_eq!(
+            pcm.as_slice(),
+            &fed[fed.len() - keep..],
+            "the clip is the latest audio"
+        );
+        assert!(pcm.ends_with(&[5_u8; 9 * FRAME]), "ends with all of Y");
+        let window_part = &pcm[pcm.len() - 200 * BYTES_PER_MS..];
+        assert_eq!(
+            window_part.iter().filter(|b| **b == 4).count(),
+            FRAME,
+            "only the X that fits in the window (1 frame)"
+        );
     }
 
     /// Lockstep with `SPEAKER_GATE_RECHECK_MAX_WINDOWS` in packages/sdk/src/voice/defaults.ts

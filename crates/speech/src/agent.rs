@@ -3283,6 +3283,14 @@ impl VoiceAgent {
         self.speaker_gate.as_ref().map_or(0, |g| g.hold_count())
     }
 
+    /// Test hook: verdicts the gate dropped because a re-open superseded their check.
+    #[doc(hidden)]
+    pub fn speaker_gate_superseded_verdicts(&self) -> u64 {
+        self.speaker_gate
+            .as_ref()
+            .map_or(0, |g| g.superseded_verdicts())
+    }
+
     /// Test hook: the live utterance's key, windows sent and counted speech in ms
     /// (see `SpeakerGate::live_check_state`).
     #[doc(hidden)]

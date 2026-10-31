@@ -238,7 +238,8 @@ pub struct SpeakerGateConfig {
     /// true; false is the one-check behaviour of 0.14.
     pub recheck_on_other: bool,
     /// Windows scored per utterance, the first check included, while the verdict stays `other`
-    /// (`recheck_on_other`). `2` is the one re-check of 0.15.0; `0` keeps checking until the
+    /// (`recheck_on_other`). `2` is the one re-check of 0.15.0 (same window count and barge bound; a
+    /// late first verdict re-checks the latest window, not the one right after the first); `0` keeps checking until the
     /// final; `1` is rejected (use `recheck_on_other: false`). Default 8 (12 s of speech with the
     /// default 1.5 s check).
     pub recheck_max_windows: u32,

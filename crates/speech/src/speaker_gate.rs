@@ -156,6 +156,8 @@ struct Shared {
     /// Test hook: while set, the verifier stores verdicts but holds back `on_verdict`.
     parked: AtomicBool,
     park_release: Notify,
+    /// Test hook: times a barge-in was held for a further window.
+    holds: std::sync::atomic::AtomicU64,
 }
 
 impl Shared {
@@ -248,6 +250,7 @@ impl SpeakerGate {
                 warnings: Mutex::new(Vec::new()),
                 parked: AtomicBool::new(false),
                 park_release: Notify::new(),
+                holds: std::sync::atomic::AtomicU64::new(0),
             }),
             feed: Mutex::new(Feed::default()),
         })
@@ -314,6 +317,12 @@ impl SpeakerGate {
         if !on {
             self.shared.park_release.notify_waiters();
         }
+    }
+
+    /// Test hook: how often a barge-in was held for a further window.
+    #[doc(hidden)]
+    pub fn hold_count(&self) -> u64 {
+        self.shared.holds.load(Ordering::SeqCst)
     }
 
     /// Test hook: bytes currently buffered for the live utterance.
@@ -599,6 +608,7 @@ impl SpeakerGate {
         let mut feed = lock(&self.feed);
         if self.recheck_open_locked(&feed, key) {
             feed.pending_barge.insert(key);
+            self.shared.holds.fetch_add(1, Ordering::SeqCst);
             true
         } else {
             false

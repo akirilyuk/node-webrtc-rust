@@ -513,6 +513,9 @@ struct EmitOrder {
     /// `(slot, event)`: slot 0 = an ordinary event (always `Some`); a reserved slot is `None`
     /// until its final is filled in.
     queue: std::collections::VecDeque<(u64, Option<SpeechEvent>)>,
+    /// While set, events are inserted before this open slot instead of behind it (a barge-in
+    /// that belongs before its own final).
+    before_slot: Option<u64>,
 }
 
 impl SpeechEventBus {
@@ -531,10 +534,32 @@ impl SpeechEventBus {
     /// Emits in production order: behind any open final slot, else at once.
     pub fn emit(&self, event: SpeechEvent) {
         let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(slot) = order.before_slot {
+            if let Some(pos) = order.queue.iter().position(|(s, _)| *s == slot) {
+                order.queue.insert(pos, (0, Some(event)));
+                self.deliver_ready(&mut order);
+                return;
+            }
+        }
         if order.queue.is_empty() {
             let _ = self.tx.send(event);
         } else {
             order.queue.push_back((0, Some(event)));
+        }
+    }
+
+    /// Events emitted while `slot` is set land before that open slot (`None` restores normal
+    /// order). Used for a barge-in that must precede the final holding the slot.
+    pub(crate) fn set_before_slot(&self, slot: Option<u64>) {
+        let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
+        order.before_slot = slot;
+    }
+
+    fn deliver_ready(&self, order: &mut EmitOrder) {
+        while order.queue.front().is_some_and(|(_, e)| e.is_some()) {
+            if let Some((_, Some(event))) = order.queue.pop_front() {
+                let _ = self.tx.send(event);
+            }
         }
     }
 
@@ -553,11 +578,7 @@ impl SpeechEventBus {
         if let Some(entry) = order.queue.iter_mut().find(|(s, _)| *s == slot) {
             entry.1 = Some(event);
         }
-        while order.queue.front().is_some_and(|(_, e)| e.is_some()) {
-            if let Some((_, Some(event))) = order.queue.pop_front() {
-                let _ = self.tx.send(event);
-            }
-        }
+        self.deliver_ready(&mut order);
     }
 }
 

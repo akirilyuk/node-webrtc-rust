@@ -1855,6 +1855,15 @@ async fn feed_until_queue_len(rig: &Rig, left: usize) {
     }
 }
 
+/// Waits (3 s bound) until the gate has held a barge-in for a further window.
+async fn wait_hold(rig: &Rig) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while rig.agent.speaker_gate_hold_count() < 1 {
+        assert!(Instant::now() < deadline, "barge-in was never held");
+        sleep(Duration::from_millis(5)).await;
+    }
+}
+
 fn others(n: usize) -> Vec<Behavior> {
     vec![Behavior::Vector(OTHER.to_vec()); n]
 }
@@ -2014,8 +2023,10 @@ async fn caller_first_verdict_is_never_rechecked_default_cap() {
     rig.agent.stop().await.unwrap();
 }
 
-/// A window result for utterance A that settles after A's final, while B is live, never touches
-/// B: no barge-in for B, B's verdict stays `other` (`rt.stale-event-by-key`).
+/// A caller window result for utterance A is stored, but delivered only after A's final and
+/// while B is live (delivery parked): it fires nothing for A or B and never touches B's verdict
+/// (`rt.stale-event-by-key`). The verifier is sequential, so B's first check is embedded once the
+/// parked delivery is released.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recheck_result_for_an_ended_key_never_touches_the_next_utterance() {
     let mut rig = rig_with(agent_config(cfg_cap(DEFAULT_RECHECK_MAX_WINDOWS))).await;
@@ -2023,30 +2034,47 @@ async fn recheck_result_for_an_ended_key_never_touches_the_next_utterance() {
     // Any check beyond the scripted ones says other.
     *rig.default.lock().unwrap() = Behavior::Vector(OTHER.to_vec());
     let base = rig.log.len();
+    let lens_before = rig.lens.lock().unwrap().len();
     rig.start_speaking_for(400).await;
-    let release = Arc::new(Notify::new());
     queue_checks(
         &rig,
         vec![
-            Behavior::Vector(OTHER.to_vec()),
-            Behavior::WaitFor(Arc::clone(&release), REF.to_vec()),
-            Behavior::Vector(OTHER.to_vec()),
+            Behavior::Vector(OTHER.to_vec()), // A1
+            Behavior::Vector(REF.to_vec()),   // A2: settles after A's final
+            Behavior::Vector(OTHER.to_vec()), // B1
         ],
     );
     rig.script.lock().unwrap().final_on_finalize = Some("utterance a".into());
+    feed_until_queue_len(&rig, 2).await;
+    wait_hold(&rig).await;
+    rig.agent.speaker_gate_park_verdicts(true);
     feed_until_queue_len(&rig, 1).await;
-    // A ends with its window held; its final stops waiting after the verify bound.
+    // A ends: its final reads the stored caller result while delivery is parked.
     finish_utterance(&mut rig).await;
     let fin_a = last_final(&rig, base);
-    assert_eq!(fin_a.speaker.as_deref(), Some("other"));
-    // B: first check says other; B is too short for a second window.
+    assert_eq!(fin_a.text.as_deref(), Some("utterance a"));
+    assert_eq!(fin_a.speaker.as_deref(), Some("caller"));
+    // B is live and speaking; its first check cannot be embedded until the verifier is released.
     let base_b = rig.log.len();
     rig.start_speaking_for(400).await;
     rig.script.lock().unwrap().final_on_finalize = Some("utterance b".into());
+    rig.feed(&loud_stereo_frame(), 15).await;
+    rig.agent.speaker_gate_park_verdicts(false);
     feed_until_queue_len(&rig, 0).await;
-    release.notify_one();
     sleep(Duration::from_millis(300)).await;
     rig.drain();
+    assert_eq!(
+        rig.lens.lock().unwrap().len(),
+        lens_before + 3,
+        "A1, A2, B1"
+    );
+    assert!(
+        !rig.agent
+            .speaker_gate_warnings()
+            .iter()
+            .any(|w| w.contains("timeout")),
+        "A's result settled, it did not time out"
+    );
     assert!(
         barges_since(&rig, base).is_empty(),
         "A's late caller result fires nothing, for A or for B"
@@ -2121,9 +2149,9 @@ async fn caller_recheck_after_the_final_while_idle_never_barges_the_next_reply()
     );
     rig.script.lock().unwrap().final_on_finalize = Some("caller after playback".into());
     feed_until_queue_len(&rig, 0).await;
-    // The window-2 embed waits for `release`, so the first verdict has been handed over and its
-    // handler holds the barge-in. Give that handler its turn, then park the next delivery.
-    sleep(Duration::from_millis(100)).await;
+    // The window-2 embed waits for `release`, so the first verdict has been handed over; wait
+    // until its handler holds the barge-in, then park the next delivery.
+    wait_hold(&rig).await;
     rig.agent.speaker_gate_park_verdicts(true);
     release.notify_one();
     rig.feed(&silent_stereo_frame(), 30).await;
@@ -2153,4 +2181,46 @@ async fn caller_recheck_after_the_final_while_idle_never_barges_the_next_reply()
         "stale caller re-check must not barge into the next reply"
     );
     rig.agent.stop().await.unwrap();
+}
+
+/// A window that times out or fails (`unknown`) keeps the barge-in held while later windows run;
+/// the caller's window then barges once.
+async fn recheck_unknown_then_caller(middle: Behavior) {
+    let mut cfg = cfg_cap(DEFAULT_RECHECK_MAX_WINDOWS);
+    cfg.verify_timeout_ms = 300;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    let base = rig.log.len();
+    rig.start_speaking_for(600).await;
+    queue_checks(
+        &rig,
+        vec![
+            Behavior::Vector(OTHER.to_vec()),
+            middle,
+            Behavior::Vector(REF.to_vec()),
+        ],
+    );
+    rig.script.lock().unwrap().final_on_finalize = Some("babble then caller".into());
+    feed_until_queue_len(&rig, 0).await;
+    assert!(rig.wait_event(SpeechEventKind::BargeIn, 3000).await);
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    let barges = barges_since(&rig, base);
+    assert_eq!(barges.len(), 1, "exactly one barge-in");
+    let fin = last_final(&rig, base);
+    assert_eq!(fin.speaker.as_deref(), Some("caller"));
+    assert_eq!(fin.speaker_check_windows, Some(3));
+    assert_eq!(barges[0].utterance_id, fin.utterance_id);
+    rig.agent.stop().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recheck_timeout_then_caller_barges_once() {
+    recheck_unknown_then_caller(Behavior::Pending).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recheck_failure_then_caller_barges_once() {
+    recheck_unknown_then_caller(Behavior::Fail).await;
 }

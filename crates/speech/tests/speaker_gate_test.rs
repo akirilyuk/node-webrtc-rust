@@ -855,6 +855,187 @@ async fn short_caller_verdict_fires_after_next_utterance_started() {
     assert_eq!(starts.len(), 2, "A and B each started once");
     let barge = pos(&|e| e.kind == SpeechEventKind::BargeIn).unwrap();
     assert!(starts[1] < barge, "B started before A's verdict fired");
+    // Exactly one barge-in, A's, and it precedes A's own final.
+    let barges: Vec<&SpeechEvent> = rig.log[base..]
+        .iter()
+        .filter(|e| e.kind == SpeechEventKind::BargeIn)
+        .collect();
+    assert_eq!(barges.len(), 1);
+    assert_eq!(
+        barges[0].utterance_id, finals[0].utterance_id,
+        "A's barge-in"
+    );
+    let final_a = pos(&|e| e.kind == SpeechEventKind::UserSpeechFinal).unwrap();
+    assert!(barge < final_a, "barge_in precedes A's final");
+    rig.agent.stop().await.unwrap();
+}
+
+/// Runs utterance A (short, enrolled caller, verdict held by `release`) and starts utterance B so
+/// A's final is produced and waits for A's verdict while B is live. Every later check says `other`.
+async fn short_a_then_live_b(rig: &mut Rig, release: &Arc<Notify>) {
+    *rig.default.lock().unwrap() = Behavior::Vector(OTHER.to_vec());
+    rig.start_speaking().await;
+    rig.queue
+        .lock()
+        .unwrap()
+        .push_back(Behavior::WaitFor(Arc::clone(release), REF.to_vec()));
+    rig.script.lock().unwrap().final_on_finalize = Some("stop".into());
+    rig.feed(&loud_stereo_frame(), 5).await;
+    rig.feed(&silent_stereo_frame(), 30).await;
+    rig.script.lock().unwrap().final_on_finalize = Some("bravo".into());
+    rig.feed(&loud_stereo_frame(), 15).await;
+    rig.drain();
+    assert_eq!(
+        rig.count(SpeechEventKind::BargeIn),
+        0,
+        "no barge-in before A's verdict"
+    );
+}
+
+/// Ends B and asserts exactly one barge-in, carrying A's id, before A's final.
+async fn assert_one_barge_for_a_before_its_final(rig: &mut Rig, base: usize) {
+    assert!(
+        rig.wait_event(SpeechEventKind::BargeIn, 3000).await,
+        "A's verdict fires the barge-in"
+    );
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    let log = &rig.log[base..];
+    let finals: Vec<(usize, &SpeechEvent)> = log
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.kind == SpeechEventKind::UserSpeechFinal)
+        .collect();
+    assert_eq!(finals.len(), 2, "exactly A's and B's finals");
+    assert_eq!(finals[0].1.speaker.as_deref(), Some("caller"), "A's final");
+    let barges: Vec<(usize, &SpeechEvent)> = log
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.kind == SpeechEventKind::BargeIn)
+        .collect();
+    assert_eq!(barges.len(), 1, "exactly one barge-in");
+    assert_eq!(
+        barges[0].1.utterance_id, finals[0].1.utterance_id,
+        "the barge-in carries A's id"
+    );
+    assert!(barges[0].0 < finals[0].0, "barge_in precedes A's final");
+}
+
+/// Forced ordering: A's final has read its verdict but is parked, so A's verdict handler runs
+/// first. The handler must leave the held barge-in to the final (one route per state); the final
+/// fires it with A's id before itself (`contract.event-order`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn held_barge_handler_first_leaves_it_to_the_final() {
+    let mut cfg = gate_cfg(SpeakerMismatchAction::Flag);
+    cfg.verify_timeout_ms = 3000;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    let base = rig.log.len();
+    let release = Arc::new(Notify::new());
+    short_a_then_live_b(&mut rig, &release).await;
+    rig.agent.speaker_gate_park_finals(true);
+    let applied = rig.agent.speaker_gate_verdicts_applied();
+    release.notify_one();
+    // A's and B's verdict handlers both finish while A's final is parked.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while rig.agent.speaker_gate_verdicts_applied() < applied + 2 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "verdict handlers ran"
+        );
+        sleep(Duration::from_millis(5)).await;
+    }
+    rig.agent.speaker_gate_park_finals(false);
+    assert_one_barge_for_a_before_its_final(&mut rig, base).await;
+    rig.agent.stop().await.unwrap();
+}
+
+/// A's first check never settles (`Pending`, short bound) and A's verdict handler is parked, so
+/// A's final owns the held barge-in with a first-check timeout `unknown`. That fails open: exactly
+/// one barge-in with A's id, before A's final, and the final's speaker is `unknown`. A's final is
+/// produced while the agent speaks because B's start completes A (the product finalizes only with
+/// an idle agent otherwise); B's check says `other`, so B cannot barge.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_check_timeout_unknown_owned_by_the_final_fires_before_it() {
+    let mut cfg = gate_cfg(SpeakerMismatchAction::Flag);
+    cfg.verify_timeout_ms = 300;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    let base = rig.log.len();
+    *rig.default.lock().unwrap() = Behavior::Vector(OTHER.to_vec());
+    rig.start_speaking().await;
+    rig.queue.lock().unwrap().push_back(Behavior::Pending);
+    rig.agent.speaker_gate_park_verdicts(true);
+    rig.script.lock().unwrap().final_on_finalize = Some("stop".into());
+    rig.feed(&loud_stereo_frame(), 5).await;
+    rig.feed(&silent_stereo_frame(), 30).await;
+    rig.script.lock().unwrap().final_on_finalize = Some("bravo".into());
+    rig.feed(&loud_stereo_frame(), 15).await;
+    // A's final reads the timed-out `unknown` while the handler is parked.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        rig.drain();
+        if rig.log[base..]
+            .iter()
+            .any(|e| e.kind == SpeechEventKind::UserSpeechFinal)
+        {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "A's final emitted");
+        sleep(Duration::from_millis(5)).await;
+    }
+    rig.agent.speaker_gate_park_verdicts(false);
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    let log = &rig.log[base..];
+    let finals: Vec<(usize, &SpeechEvent)> = log
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.kind == SpeechEventKind::UserSpeechFinal)
+        .collect();
+    assert_eq!(finals.len(), 2, "exactly A's and B's finals");
+    assert_eq!(finals[0].1.speaker.as_deref(), Some("unknown"), "A's final");
+    let barges: Vec<(usize, &SpeechEvent)> = log
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.kind == SpeechEventKind::BargeIn)
+        .collect();
+    assert_eq!(barges.len(), 1, "exactly one barge-in");
+    assert_eq!(barges[0].1.utterance_id, finals[0].1.utterance_id, "A's id");
+    assert!(barges[0].0 < finals[0].0, "barge_in precedes A's final");
+    rig.agent.stop().await.unwrap();
+}
+
+/// Mirror: A's verdict handler is parked, so A's final reads the verdict first and settles the
+/// held barge-in itself: one barge-in with A's id, before A's final. The late handler finds none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn held_barge_final_first_fires_it_before_itself() {
+    let mut cfg = gate_cfg(SpeakerMismatchAction::Flag);
+    cfg.verify_timeout_ms = 3000;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    let base = rig.log.len();
+    let release = Arc::new(Notify::new());
+    short_a_then_live_b(&mut rig, &release).await;
+    rig.agent.speaker_gate_park_verdicts(true);
+    release.notify_one();
+    // A's final is emitted (with its barge-in before it) while the handler is parked.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        rig.drain();
+        if rig.log[base..]
+            .iter()
+            .any(|e| e.kind == SpeechEventKind::UserSpeechFinal)
+        {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "A's final emitted");
+        sleep(Duration::from_millis(5)).await;
+    }
+    rig.agent.speaker_gate_park_verdicts(false);
+    assert_one_barge_for_a_before_its_final(&mut rig, base).await;
     rig.agent.stop().await.unwrap();
 }
 

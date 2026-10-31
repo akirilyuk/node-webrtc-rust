@@ -672,6 +672,27 @@ impl SpeakerGate {
     /// Every other `unknown` fails open.
     /// A re-check releases the barge-in only when it says `caller`; any other re-check result
     /// (including `unknown`) keeps the first `other` verdict's veto.
+    /// The one allow rule for a held barge-in, used by both routes that can own it (the verdict
+    /// handler with the verdict it received, the final with the verdict it read): fire unless the
+    /// verdict vetoes it. Speaking, epoch and protected TTS are checked by the agent afterwards.
+    pub fn barge_allowed(&self, verdict: &Verdict) -> bool {
+        !self.vetoes_barge(verdict)
+    }
+
+    /// The verdict a final of `key` read as `outcome`, in the shape [`Self::barge_allowed`] takes:
+    /// `recheck` when a re-check settled, the `unknown` reason when the outcome is `unknown`.
+    pub fn verdict_read_by_final(&self, key: u64, outcome: Outcome) -> Verdict {
+        let reason = (outcome == Outcome::Unknown).then(|| self.unknown_reason(key));
+        Verdict {
+            key,
+            outcome,
+            timed_out: reason == Some(UNKNOWN_TIMEOUT),
+            reason,
+            recheck: self.rechecked(key),
+            window: self.windows_scored(key),
+        }
+    }
+
     pub fn vetoes_barge(&self, verdict: &Verdict) -> bool {
         if verdict.recheck {
             return verdict.outcome != Outcome::Caller;
@@ -708,6 +729,16 @@ impl SpeakerGate {
 
     pub fn set_pending_barge(&self, key: u64, epoch: u64) {
         lock(&self.feed).pending_barge.insert(key, epoch);
+    }
+
+    /// True while a barge-in for `key` waits for its verdict (not cleared).
+    pub fn has_pending_barge(&self, key: u64) -> bool {
+        lock(&self.feed).pending_barge.contains_key(&key)
+    }
+
+    /// True once the final of `key` has started reading its verdict ([`Self::close_recheck`]).
+    pub fn final_reading(&self, key: u64) -> bool {
+        self.recheck_closed(key)
     }
 
     /// True (and cleared) when a barge-in for `key` waits for its verdict.

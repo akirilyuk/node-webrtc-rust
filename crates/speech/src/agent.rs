@@ -583,6 +583,11 @@ pub struct VoiceAgent {
     /// Finals waiting for their speaker verdict off the step lock; `wait_stt_idle` waits for them.
     speaker_finals_pending: AtomicU64,
     speaker_finals_done: Notify,
+    /// Test hook: while set, a final that read its verdict waits before settling it.
+    speaker_finals_parked: std::sync::atomic::AtomicBool,
+    speaker_finals_release: Notify,
+    /// Test hook: verdicts the handler has finished applying.
+    speaker_verdicts_applied: AtomicU64,
     tts: Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
     tts_drain_wake: Arc<Notify>,
     tts_drain_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
@@ -770,6 +775,9 @@ impl VoiceAgent {
             speaker_embedder: std::sync::Mutex::new(speaker_embedder),
             speaker_finals_pending: AtomicU64::new(0),
             speaker_finals_done: Notify::new(),
+            speaker_finals_parked: std::sync::atomic::AtomicBool::new(false),
+            speaker_finals_release: Notify::new(),
+            speaker_verdicts_applied: AtomicU64::new(0),
             tts: Arc::new(Mutex::new(tts)),
             tts_drain_wake: Arc::new(Notify::new()),
             tts_drain_worker: Arc::new(Mutex::new(None)),
@@ -3055,7 +3063,12 @@ impl VoiceAgent {
             embedder,
             Box::new(move |verdict| {
                 if let Some(agent) = weak.upgrade() {
-                    tokio::spawn(async move { agent.apply_speaker_verdict(verdict).await });
+                    tokio::spawn(async move {
+                        agent.apply_speaker_verdict(verdict).await;
+                        agent
+                            .speaker_verdicts_applied
+                            .fetch_add(1, Ordering::SeqCst);
+                    });
                 }
             }),
         );
@@ -3097,14 +3110,42 @@ impl VoiceAgent {
         }
     }
 
+    /// Test hook: while on, a final that has read its verdict waits before it settles a held
+    /// barge-in and emits; turning it off releases it.
+    #[doc(hidden)]
+    pub fn speaker_gate_park_finals(&self, on: bool) {
+        self.speaker_finals_parked.store(on, Ordering::SeqCst);
+        if !on {
+            self.speaker_finals_release.notify_waiters();
+        }
+    }
+
+    /// Test hook: verdicts the handler has finished applying.
+    #[doc(hidden)]
+    pub fn speaker_gate_verdicts_applied(&self) -> u64 {
+        self.speaker_verdicts_applied.load(Ordering::SeqCst)
+    }
+
     /// Applies one verdict to its own utterance only (`rt.stale-event-by-key`).
     async fn apply_speaker_verdict(&self, verdict: Verdict) {
         let Some(gate) = self.speaker_gate.as_ref() else {
             return;
         };
         let _step = self.utterance_step.lock().await;
-        // Live or closing: a short utterance's check goes out at SpeechEnd, after the record
-        // moved to closing, and its barge-in still fires on that verdict.
+        // One route per state for a held barge-in (`contract.event-order`,
+        // `one-send-path-per-unit`): once this key's final has started reading its verdict
+        // (`close_recheck`, which runs under this same step lock), the final owns the held
+        // barge-in and settles it before itself with the epoch rule. The handler checks and takes
+        // under the step lock, so it either takes the barge before the final starts or never.
+        if gate.final_reading(verdict.key) && gate.has_pending_barge(verdict.key) {
+            voice_debug(format!(
+                "speaker gate: verdict key={} leaves the held barge-in to its final",
+                verdict.key
+            ));
+            return;
+        }
+        // Live or closing without a final yet: a short utterance's check goes out at SpeechEnd,
+        // after the record moved to closing, and its barge-in still fires on that verdict.
         let record_id = self
             .inner
             .lock()
@@ -3124,7 +3165,7 @@ impl VoiceAgent {
             }
             return;
         };
-        if gate.vetoes_barge(&verdict) {
+        if !gate.barge_allowed(&verdict) {
             // Any non-caller re-check result (other, or unknown after a timeout or failure) keeps
             // the barge-in held while further windows can still run. A first-check `unknown`
             // (not a re-check) does not hold.
@@ -3816,6 +3857,15 @@ impl VoiceAgent {
                 Some(gate) => gate.await_outcome(key).await,
                 None => Outcome::Unknown,
             };
+            while this.speaker_finals_parked.load(Ordering::SeqCst) {
+                let released = this.speaker_finals_release.notified();
+                tokio::pin!(released);
+                released.as_mut().enable();
+                if !this.speaker_finals_parked.load(Ordering::SeqCst) {
+                    break;
+                }
+                released.await;
+            }
             this.emit_final_with_speaker(key, event, record_id, outcome, Some(slot))
                 .await;
             this.speaker_finals_pending.fetch_sub(1, Ordering::SeqCst);
@@ -3857,14 +3907,19 @@ impl VoiceAgent {
             }
         };
         // A barge-in still held for this utterance is settled by the final that read the
-        // verdict, through the one helper: only a `caller` final may fire it (before the final),
-        // and only into the playback it was raised against.
+        // verdict (the verdict handler leaves it once `close_recheck` ran), through the one
+        // helper and the one allow rule (`SpeakerGate::barge_allowed` on the verdict this final
+        // read): it fires before the final (before-slot insertion, `contract.event-order`) only
+        // while the agent still speaks in the playback it was raised against, e.g. a short
+        // utterance whose check settles after its record has closed
+        // (`short_caller_verdict_fires_after_next_utterance_started`); otherwise it is dropped.
         if let Some(gate) = self.speaker_gate.as_ref() {
             if let Some(epoch) = gate.take_pending_barge(key) {
+                let allow = gate.barge_allowed(&gate.verdict_read_by_final(key, outcome));
                 self.settle_pending_barge(
                     key,
                     epoch,
-                    outcome == Outcome::Caller,
+                    allow,
                     Some(barge_record_id),
                     "speaker gate: barge-in from the caller final".into(),
                     slot,

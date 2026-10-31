@@ -328,6 +328,25 @@ export function callerWindowSimilarity(callerText: string, recognized: string): 
   return best
 }
 
+/**
+ * Length of the union of all turns (caller and bystander, scene manifest segments) clipped to
+ * `[fromMs, toMs]`. Overlapping turns count once.
+ */
+export function voicedMsBetween(turns: Turn[], fromMs: number, toMs: number): number {
+  const spans = turns
+    .map((t): [number, number] => [Math.max(t.startMs, fromMs), Math.min(t.endMs, toMs)])
+    .filter(([a, b]) => b > a)
+    .sort((x, y) => x[0] - y[0])
+  let total = 0
+  let curEnd = -Infinity
+  for (const [a, b] of spans) {
+    const from = Math.max(a, curEnd)
+    if (b > from) total += b - from
+    curEnd = Math.max(curEnd, b)
+  }
+  return total
+}
+
 /** Pure evaluation of one pass; exported for the evaluator unit test. */
 export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): string[] {
   const failures: string[] = []
@@ -450,6 +469,17 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
         failures.push(
           `${tag}: barge_in without a qualifying partial (>= ${MIN_STT_PARTIAL_TOKENS} tokens) on ${id}`,
         )
+      } else if (isRechecked(start, seen)) {
+        // The gate scores counted speech, not wall-clock: a pause inside the utterance moves the
+        // deciding window later. Voiced scene time over-counts what the gate scores (babble is not
+        // included, so this is an upper bound on counted speech), and a pause does not count.
+        const windowEnd = verdictAfterMs(start, seen)!
+        const late = voicedMsBetween(turns, start.atMs, barge.atMs) - windowEnd
+        if (late > BARGE_SLACK_MS) {
+          failures.push(
+            `${tag}: barge ${late} ms of voiced scene audio after the deciding window (> ${BARGE_SLACK_MS} ms)`,
+          )
+        }
       } else if (barge.atMs - expected > BARGE_SLACK_MS) {
         failures.push(
           `${tag}: barge-in ${barge.atMs - expected} ms after expected (max of verdict and qualifying partial) > ${BARGE_SLACK_MS}`,

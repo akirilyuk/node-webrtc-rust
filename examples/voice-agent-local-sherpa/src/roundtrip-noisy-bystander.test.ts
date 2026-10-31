@@ -8,6 +8,7 @@ import {
   maxBystanderLeadMs,
   pairTurnUtterances,
   sttPartialTokenCount,
+  voicedMsBetween,
   type Seen,
   type Turn,
 } from './roundtrip-noisy-bystander-helpers.js'
@@ -185,7 +186,7 @@ describe('evaluateTurns', () => {
     expect(expectedBargeAtMs(seen.find((e) => e.utteranceId === 'u1')!, seen)).toBe(13_100)
   })
 
-  it('fails a re-checked caller barge more than 300 ms after start + 2 x checkSpeechMs', () => {
+  it('fails a re-checked caller barge more than 300 ms of voiced audio after start + 2 x checkSpeechMs', () => {
     const base = healthy().filter(
       (e) => e.type !== 'user_speech_partial' && e.type !== 'barge_in' && e.utteranceId !== 'u1',
     )
@@ -202,7 +203,11 @@ describe('evaluateTurns', () => {
         speakerCheckWindows: 2,
       }),
     ].sort((a, b) => a.atMs - b.atMs)
-    expect(evaluateTurns(TURNS, seen, 'p').join('\n')).toMatch(/400 ms after expected .* > 300/)
+    // Voiced scene audio must cover the barge: the caller keeps speaking through 20 000 ms.
+    const long = [{ ...TURNS[0]!, endMs: 20_000 }, ...TURNS.slice(1)]
+    expect(evaluateTurns(long, seen, 'p').join('\n')).toMatch(
+      /400 ms of voiced scene audio after the deciding window \(> 300 ms\)/,
+    )
   })
 
   it('keeps the 3 s cap for a caller turn that was not re-checked', () => {
@@ -616,6 +621,69 @@ describe('check windows of a re-checked final (speakerCheckWindows)', () => {
     expect(early.failures).toMatch(/turn 1 .*before the deciding window ends at 7500 ms/)
     // 40 ms early is inside the 50 ms slack (one inbound frame plus jitter).
     expect(run(u1({ bargeAt: 107_460 })).failures).toBe('')
+  })
+
+  describe('voiced-time late bound for a re-checked final', () => {
+    const seg = (startMs: number, endMs: number): Turn => ({
+      role: 'main',
+      startMs,
+      endMs,
+      text: 'x',
+      kind: 'long',
+    })
+    // Caller speaks 100 000-103 000, pauses 1 200 ms, speaks 104 200-110 000.
+    const A = seg(100_000, 103_000)
+    const B = seg(104_200, 110_000)
+    const pscene = [A, B, t2]
+    const pu = (bargeAt: number): Seen[] => [
+      ev('user_speaking_start', 100_000, { utteranceId: 'p1' }),
+      ev('user_speech_partial', 101_000, { utteranceId: 'p1', text: 'garden full' }),
+      ev('barge_in', bargeAt, { utteranceId: 'p1' }),
+      ev('user_speaking_end', 110_000, { utteranceId: 'p1' }),
+      ev('user_speech_final', 110_300, {
+        utteranceId: 'p1',
+        text: 'garden full of tomatoes charlie one two three',
+        speaker: 'caller',
+        speakerRechecked: true,
+        speakerCheckWindows: 3,
+      }),
+      ...tail(),
+    ]
+    const evalAt = (bargeAt: number): string =>
+      evaluateTurns(
+        pscene,
+        pu(bargeAt).sort((a, b) => a.atMs - b.atMs),
+        'p',
+      ).join('\n')
+
+    it('a pause inside the utterance moves the bound: barge 200 ms of voiced audio late passes', () => {
+      // Window 3 = 4 500 ms of speech; voiced 4 700 at 105 900 (wall-clock 5 900 after start).
+      expect(voicedMsBetween(pscene, 100_000, 105_900)).toBe(4_700)
+      const f = evalAt(105_900)
+      expect(f).not.toMatch(/voiced scene audio/)
+      expect(f).not.toMatch(/after expected/)
+    })
+
+    it('fails with the voiced message when the barge is 400 ms of voiced audio late', () => {
+      expect(evalAt(106_100)).toMatch(
+        /barge 400 ms of voiced scene audio after the deciding window \(> 300 ms\)/,
+      )
+    })
+  })
+
+  it('voicedMsBetween: disjoint, overlapping, clipped, empty', () => {
+    const t = (startMs: number, endMs: number): Turn => ({
+      role: 'main',
+      startMs,
+      endMs,
+      text: 'x',
+      kind: 'long',
+    })
+    expect(voicedMsBetween([t(0, 1_000), t(2_000, 3_500)], 0, 10_000)).toBe(2_500)
+    expect(voicedMsBetween([t(0, 2_000), t(1_000, 3_000)], 0, 10_000)).toBe(3_000)
+    expect(voicedMsBetween([t(0, 5_000)], 1_000, 4_000)).toBe(3_000)
+    expect(voicedMsBetween([t(0, 5_000), t(8_000, 9_000)], 4_000, 8_500)).toBe(1_500)
+    expect(voicedMsBetween([], 0, 10_000)).toBe(0)
   })
 
   it('maxBystanderLeadMs measures bystander start to caller start', () => {

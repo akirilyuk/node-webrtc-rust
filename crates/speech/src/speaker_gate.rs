@@ -399,18 +399,33 @@ impl SpeakerGate {
             None => {
                 let buf = std::mem::take(&mut feed.ring);
                 let pre = buf.len();
-                let sent = self.check_sent(key);
-                let ws = if sent { self.windows_sent_for(key) } else { 0 };
-                Cur {
-                    key,
-                    pre,
-                    buf,
-                    sent,
-                    windows_sent: ws,
-                    // A segment that joins a key whose windows already went out scores its own
-                    // next `check_speech_ms`; otherwise the window follows the first check.
-                    speech_seen: ws as usize * check,
-                    rechecks_closed: self.recheck_closed(key),
+                if self.reopen_short(key) {
+                    // The key's only verdict is `short` and its final has not read it: the
+                    // rejoined speech is checked like a first check (window numbers continue).
+                    // Until it settles there is no verdict, so barge-ins defer and the final waits.
+                    Cur {
+                        key,
+                        pre,
+                        buf,
+                        sent: false,
+                        windows_sent: self.windows_sent_for(key),
+                        speech_seen: 0,
+                        rechecks_closed: false,
+                    }
+                } else {
+                    let sent = self.check_sent(key);
+                    let ws = if sent { self.windows_sent_for(key) } else { 0 };
+                    Cur {
+                        key,
+                        pre,
+                        buf,
+                        sent,
+                        windows_sent: ws,
+                        // A segment that joins a key whose windows already went out scores its own
+                        // next `check_speech_ms`; otherwise the window follows the first check.
+                        speech_seen: ws as usize * check,
+                        rechecks_closed: self.recheck_closed(key),
+                    }
                 }
             }
         };
@@ -441,13 +456,14 @@ impl SpeakerGate {
                     cur.speech_seen += frame.len();
                     if !cur.sent && cur.buf.len() - cur.pre >= check {
                         cur.sent = true;
-                        cur.windows_sent = 1;
+                        // 1 for a first check; a re-opened `short` key continues its count.
+                        cur.windows_sent += 1;
                         to_send = Some((
                             cur.key,
                             cur.buf[..cur.pre + check].to_vec(),
                             check,
                             false,
-                            1,
+                            cur.windows_sent,
                         ));
                     } else if self.cfg.recheck_on_other
                         && cur.sent
@@ -500,7 +516,38 @@ impl SpeakerGate {
     }
 
     fn mark_sent(&self, key: u64) {
-        push_capped(&mut lock(&self.shared.book).sent, key);
+        let mut book = lock(&self.shared.book);
+        if !book.sent.contains(&key) {
+            push_capped(&mut book.sent, key);
+        }
+    }
+
+    /// A `short` verdict is provisional while the key can still rejoin: when the stored verdict
+    /// of `key` is `unknown` (`short`) and its final has not read it, drop it so the rejoined
+    /// speech gets its own check. Returns true when it was re-opened.
+    fn reopen_short(&self, key: u64) -> bool {
+        let mut book = lock(&self.shared.book);
+        let stored = book
+            .verdicts
+            .iter()
+            .rev()
+            .find(|(k, _)| *k == key)
+            .map(|(_, o)| *o);
+        let reason = book
+            .reasons
+            .iter()
+            .rev()
+            .find(|(k, _)| *k == key)
+            .map(|(_, r)| *r);
+        if stored != Some(Outcome::Unknown)
+            || reason != Some(UNKNOWN_SHORT)
+            || book.closed.contains(&key)
+        {
+            return false;
+        }
+        book.verdicts.retain(|(k, _)| *k != key);
+        book.reasons.retain(|(k, _)| *k != key);
+        true
     }
 
     /// SpeechEnd: send what exists if no check went out yet.
@@ -521,7 +568,7 @@ impl SpeakerGate {
                 pcm: cur.buf[..cur.pre + speech].to_vec(),
                 speech_bytes: speech,
                 recheck: false,
-                window: 1,
+                window: cur.windows_sent + 1,
             });
         } else if self.cfg.recheck_on_other
             && self.outcome_for(cur.key) == Some(Outcome::Other)

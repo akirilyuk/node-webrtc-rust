@@ -372,6 +372,9 @@ struct AgentInner {
     utterance_media_ms: u64,
     /// Start C2 only after gate hold drains when `SpeechEnd` preceded partials.
     defer_utterance_finalize_until_hold: bool,
+    /// Incremented on every transition into agent speaking. A held barge-in may interrupt only
+    /// the playback (epoch) it was raised against.
+    playback_epoch: u64,
     /// VAD saw speech during agent TTS; defer immediate flush until STT partial (if required).
     barge_awaiting_stt_partial: bool,
     /// Semantic barge already fired for the current agent playback generation.
@@ -580,6 +583,11 @@ pub struct VoiceAgent {
     /// Finals waiting for their speaker verdict off the step lock; `wait_stt_idle` waits for them.
     speaker_finals_pending: AtomicU64,
     speaker_finals_done: Notify,
+    /// Test hook: while set, a final that read its verdict waits before settling it.
+    speaker_finals_parked: std::sync::atomic::AtomicBool,
+    speaker_finals_release: Notify,
+    /// Test hook: verdicts the handler has finished applying.
+    speaker_verdicts_applied: AtomicU64,
     tts: Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
     tts_drain_wake: Arc<Notify>,
     tts_drain_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
@@ -730,6 +738,7 @@ impl VoiceAgent {
                 last_inbound_pcm_at: None,
                 utterance_media_ms: 0,
                 defer_utterance_finalize_until_hold: false,
+                playback_epoch: 0,
                 barge_awaiting_stt_partial: false,
                 stt_barge_fired_this_agent_playback: false,
                 tts_playback_failure_gen: 0,
@@ -766,6 +775,9 @@ impl VoiceAgent {
             speaker_embedder: std::sync::Mutex::new(speaker_embedder),
             speaker_finals_pending: AtomicU64::new(0),
             speaker_finals_done: Notify::new(),
+            speaker_finals_parked: std::sync::atomic::AtomicBool::new(false),
+            speaker_finals_release: Notify::new(),
+            speaker_verdicts_applied: AtomicU64::new(0),
             tts: Arc::new(Mutex::new(tts)),
             tts_drain_wake: Arc::new(Notify::new()),
             tts_drain_worker: Arc::new(Mutex::new(None)),
@@ -3051,7 +3063,12 @@ impl VoiceAgent {
             embedder,
             Box::new(move |verdict| {
                 if let Some(agent) = weak.upgrade() {
-                    tokio::spawn(async move { agent.apply_speaker_verdict(verdict).await });
+                    tokio::spawn(async move {
+                        agent.apply_speaker_verdict(verdict).await;
+                        agent
+                            .speaker_verdicts_applied
+                            .fetch_add(1, Ordering::SeqCst);
+                    });
                 }
             }),
         );
@@ -3084,26 +3101,61 @@ impl VoiceAgent {
             .map_or_else(Vec::new, |g| g.warnings())
     }
 
+    /// Test hook: hold back verdict delivery while the verdicts stay stored (see
+    /// `SpeakerGate::park_verdict_delivery`).
+    #[doc(hidden)]
+    pub fn speaker_gate_park_verdicts(&self, on: bool) {
+        if let Some(g) = self.speaker_gate.as_ref() {
+            g.park_verdict_delivery(on);
+        }
+    }
+
+    /// Test hook: while on, a final that has read its verdict waits before it settles a held
+    /// barge-in and emits; turning it off releases it.
+    #[doc(hidden)]
+    pub fn speaker_gate_park_finals(&self, on: bool) {
+        self.speaker_finals_parked.store(on, Ordering::SeqCst);
+        if !on {
+            self.speaker_finals_release.notify_waiters();
+        }
+    }
+
+    /// Test hook: verdicts the handler has finished applying.
+    #[doc(hidden)]
+    pub fn speaker_gate_verdicts_applied(&self) -> u64 {
+        self.speaker_verdicts_applied.load(Ordering::SeqCst)
+    }
+
     /// Applies one verdict to its own utterance only (`rt.stale-event-by-key`).
     async fn apply_speaker_verdict(&self, verdict: Verdict) {
         let Some(gate) = self.speaker_gate.as_ref() else {
             return;
         };
         let _step = self.utterance_step.lock().await;
-        // Live or closing: a short utterance's check goes out at SpeechEnd, after the record
-        // moved to closing, and its barge-in still fires on that verdict.
-        let (record_id, barge_in, speaking) = {
-            let inner = self.inner.lock().await;
-            (
-                inner.stt_record_ref(verdict.key).map(|r| r.id.clone()),
-                inner.config.vad.barge_in.clone(),
-                inner.agent_speaking,
-            )
-        };
+        // One route per state for a held barge-in (`contract.event-order`,
+        // `one-send-path-per-unit`): once this key's final has started reading its verdict
+        // (`close_recheck`, which runs under this same step lock), the final owns the held
+        // barge-in and settles it before itself with the epoch rule. The handler checks and takes
+        // under the step lock, so it either takes the barge before the final starts or never.
+        if gate.final_reading(verdict.key) && gate.has_pending_barge(verdict.key) {
+            voice_debug(format!(
+                "speaker gate: verdict key={} leaves the held barge-in to its final",
+                verdict.key
+            ));
+            return;
+        }
+        // Live or closing without a final yet: a short utterance's check goes out at SpeechEnd,
+        // after the record moved to closing, and its barge-in still fires on that verdict.
+        let record_id = self
+            .inner
+            .lock()
+            .await
+            .stt_record_ref(verdict.key)
+            .map(|r| r.id.clone());
         let known = record_id.is_some();
         // A pending barge for this key makes the verdict known even after the record is gone
         // (the next utterance completed it); only a key with neither is stale.
-        if !gate.take_pending_barge(verdict.key) {
+        let Some(epoch) = gate.take_pending_barge(verdict.key) else {
             if !known {
                 gate.note_stale_verdict();
                 voice_debug(format!(
@@ -3112,15 +3164,17 @@ impl VoiceAgent {
                 ));
             }
             return;
-        }
-        if gate.vetoes_barge(&verdict) {
-            if verdict.outcome == Outcome::Other
-                && !verdict.recheck
-                && gate.hold_for_recheck(verdict.key)
+        };
+        if !gate.barge_allowed(&verdict) {
+            // Any non-caller re-check result (other, or unknown after a timeout or failure) keeps
+            // the barge-in held while further windows can still run. A first-check `unknown`
+            // (not a re-check) does not hold.
+            if (verdict.outcome == Outcome::Other || verdict.recheck)
+                && gate.hold_for_recheck(verdict.key, epoch)
             {
                 eprintln!(
-                    "[speaker-gate] info: speaker gate holds barge-in for re-check key={}",
-                    verdict.key
+                    "[speaker-gate] info: speaker gate holds barge-in for re-check key={} window={}",
+                    verdict.key, verdict.window
                 );
                 return;
             }
@@ -3142,21 +3196,108 @@ impl VoiceAgent {
             }
             return;
         }
-        if !speaking || self.protected_tts_active() {
+        self.settle_pending_barge(
+            verdict.key,
+            epoch,
+            true,
+            record_id,
+            format!(
+                "speaker gate: barge-in after verdict ({}{})",
+                verdict.outcome.as_str(),
+                if verdict.recheck { ", re-check" } else { "" }
+            ),
+            None,
+        )
+        .await;
+    }
+
+    /// The one place a taken pending barge-in is settled (`one-send-path-per-unit`): fired only
+    /// if `allow`, the agent is speaking, the playback epoch is the one the barge-in was raised
+    /// against, and protected TTS is not active; otherwise dropped with the reason logged
+    /// (`rt.stale-event-by-key`). With a final `slot` the barge-in lands before that final
+    /// (`contract.event-order`).
+    #[allow(clippy::too_many_arguments)]
+    async fn settle_pending_barge(
+        &self,
+        key: u64,
+        epoch: u64,
+        allow: bool,
+        record_id: Option<String>,
+        note: String,
+        slot: Option<u64>,
+    ) {
+        // The final path takes the step lock first: a playback can end and restart while this
+        // awaits it, so speaking, epoch and protected are read only once the lock is held.
+        let _step = match slot {
+            Some(_) => Some(self.utterance_step.lock().await),
+            None => None,
+        };
+        let (speaking, current) = {
+            let inner = self.inner.lock().await;
+            (inner.agent_speaking, inner.playback_epoch)
+        };
+        let reason = if !allow {
+            Some("outcome")
+        } else if !speaking {
+            Some("idle")
+        } else if current != epoch {
+            Some("epoch changed")
+        } else if self.protected_tts_active() {
+            Some("protected")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            voice_debug(format!(
+                "speaker gate: held barge-in dropped key={key} reason={reason}"
+            ));
             return;
         }
-        {
+        self.event_bus.set_before_slot(slot);
+        self.fire_speaker_barge(record_id, note).await;
+        self.event_bus.set_before_slot(None);
+    }
+
+    /// The one place a speaker-gate barge-in is sent (verdict handler or the caller final).
+    async fn fire_speaker_barge(&self, record_id: Option<String>, note: String) {
+        let barge_in = {
             let mut inner = self.inner.lock().await;
             inner.barge_awaiting_stt_partial = false;
             inner.stt_barge_fired_this_agent_playback = true;
-        }
-        voice_debug(format!(
-            "speaker gate: barge-in after verdict ({}{})",
-            verdict.outcome.as_str(),
-            if verdict.recheck { ", re-check" } else { "" }
-        ));
+            inner.config.vad.barge_in.clone()
+        };
+        voice_debug(note);
         self.barge_in_with_speaking_end(&barge_in, record_id).await;
         self.cancel_pending_tts_synthesis().await;
+    }
+
+    /// Test hook: finals currently waiting for their speaker verdict.
+    #[doc(hidden)]
+    pub fn speaker_gate_finals_pending(&self) -> u64 {
+        self.speaker_finals_pending.load(Ordering::SeqCst)
+    }
+
+    /// Test hook: how often the gate held a barge-in for a further window.
+    #[doc(hidden)]
+    pub fn speaker_gate_hold_count(&self) -> u64 {
+        self.speaker_gate.as_ref().map_or(0, |g| g.hold_count())
+    }
+
+    /// Test hook: verdicts the gate dropped because a re-open superseded their check.
+    #[doc(hidden)]
+    pub fn speaker_gate_superseded_verdicts(&self) -> u64 {
+        self.speaker_gate
+            .as_ref()
+            .map_or(0, |g| g.superseded_verdicts())
+    }
+
+    /// Test hook: the live utterance's key, windows sent and counted speech in ms
+    /// (see `SpeakerGate::live_check_state`).
+    #[doc(hidden)]
+    pub fn speaker_gate_live_check_state(&self) -> Option<(u64, u32, usize)> {
+        self.speaker_gate
+            .as_ref()
+            .and_then(|g| g.live_check_state())
     }
 
     /// True when a barge-in for the live utterance must wait for (or is vetoed by) the speaker
@@ -3165,7 +3306,11 @@ impl VoiceAgent {
         let Some(gate) = self.speaker_gate.as_ref() else {
             return false;
         };
-        let Some(key) = self.inner.lock().await.live_key() else {
+        let (live, epoch) = {
+            let inner = self.inner.lock().await;
+            (inner.live_key(), inner.playback_epoch)
+        };
+        let Some(key) = live else {
             return false;
         };
         match gate.barge_decision(key) {
@@ -3182,7 +3327,7 @@ impl VoiceAgent {
                 true
             }
             BargeDecision::Defer => {
-                gate.set_pending_barge(key);
+                gate.set_pending_barge(key, epoch);
                 true
             }
         }
@@ -3731,6 +3876,15 @@ impl VoiceAgent {
                 Some(gate) => gate.await_outcome(key).await,
                 None => Outcome::Unknown,
             };
+            while this.speaker_finals_parked.load(Ordering::SeqCst) {
+                let released = this.speaker_finals_release.notified();
+                tokio::pin!(released);
+                released.as_mut().enable();
+                if !this.speaker_finals_parked.load(Ordering::SeqCst) {
+                    break;
+                }
+                released.await;
+            }
             this.emit_final_with_speaker(key, event, record_id, outcome, Some(slot))
                 .await;
             this.speaker_finals_pending.fetch_sub(1, Ordering::SeqCst);
@@ -3750,12 +3904,19 @@ impl VoiceAgent {
     ) {
         let drop_mismatch = self.inner.lock().await.config.speaker_gate.on_mismatch
             == crate::config::SpeakerMismatchAction::Drop;
+        let barge_record_id = record_id.clone();
         let event = if outcome == Outcome::Other && drop_mismatch {
             SpeechEvent::user_speech_ignored(Some(record_id))
         } else {
             let mut event = event.with_speaker(outcome.as_str());
-            if self.speaker_gate.as_ref().is_some_and(|g| g.rechecked(key)) {
-                event = event.with_speaker_rechecked();
+            if let Some(gate) = self.speaker_gate.as_ref() {
+                if gate.rechecked(key) {
+                    event = event.with_speaker_rechecked();
+                }
+                let windows = gate.windows_scored(key);
+                if windows > 0 {
+                    event = event.with_speaker_check_windows(windows);
+                }
             }
             match (outcome, self.speaker_gate.as_ref()) {
                 (Outcome::Unknown, Some(gate)) => {
@@ -3764,16 +3925,33 @@ impl VoiceAgent {
                 _ => event,
             }
         };
+        // A barge-in still held for this utterance is settled by the final that read the
+        // verdict (the verdict handler leaves it once `close_recheck` ran), through the one
+        // helper and the one allow rule (`SpeakerGate::barge_allowed` on the verdict this final
+        // read): it fires before the final (before-slot insertion, `contract.event-order`) only
+        // while the agent still speaks in the playback it was raised against, e.g. a short
+        // utterance whose check settles after its record has closed
+        // (`short_caller_verdict_fires_after_next_utterance_started`); otherwise it is dropped.
+        if let Some(gate) = self.speaker_gate.as_ref() {
+            if let Some(epoch) = gate.take_pending_barge(key) {
+                let allow = gate.barge_allowed(&gate.verdict_read_by_final(key, outcome));
+                self.settle_pending_barge(
+                    key,
+                    epoch,
+                    allow,
+                    Some(barge_record_id),
+                    "speaker gate: barge-in from the caller final".into(),
+                    slot,
+                )
+                .await;
+            }
+        }
         match slot {
             Some(slot) => self.event_bus.fill_slot(slot, event),
             None => self.emit(event),
         }
         if let Some(gate) = self.speaker_gate.as_ref() {
-            if outcome == Outcome::Other {
-                // The final says `other`: a re-check result that lands later (the final stopped
-                // waiting) must not fire a barge-in for it (`rt.stale-event-by-key`).
-                gate.take_pending_barge(key);
-            } else {
+            if outcome != Outcome::Other {
                 gate.enroll_utterance(key);
             }
         }
@@ -5770,6 +5948,9 @@ impl VoiceAgent {
                                 turn_ms, project_id, stt_vendor, tts_vendor,
                             );
                         }
+                    }
+                    if !guard.agent_speaking {
+                        guard.playback_epoch += 1;
                     }
                     guard.agent_speaking = true;
                     guard.agent_speaking_since = Some(Instant::now());

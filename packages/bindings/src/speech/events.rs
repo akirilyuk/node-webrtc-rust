@@ -68,6 +68,7 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
         speaker: event.speaker,
         speaker_unknown_reason: event.speaker_unknown_reason,
         speaker_rechecked: event.speaker_rechecked,
+        speaker_check_windows: event.speaker_check_windows,
     }
 }
 
@@ -147,6 +148,13 @@ mod speech_event_to_js_tests {
                 .with_speaker_rechecked(),
         );
         assert_eq!(js.speaker_rechecked, Some(true));
+        assert!(js.speaker_check_windows.is_none());
+        let js = speech_event_to_js(
+            SpeechEvent::user_speech_final("hi", Some("u1".into()))
+                .with_speaker("caller")
+                .with_speaker_check_windows(3),
+        );
+        assert_eq!(js.speaker_check_windows, Some(3));
         let js = speech_event_to_js(SpeechEvent::user_speech_ignored(Some("u2".into())));
         assert_eq!(js.event_type, JsSpeechEventType::UserSpeechIgnored);
         assert_eq!(js.reason.as_deref(), Some("speaker_mismatch"));

@@ -3,7 +3,11 @@ import { describe, expect, test } from 'vitest'
 import { JsSpeechEventType } from '@node-webrtc-rust/bindings'
 
 import { fromJsSpeechEvent } from '../src/voice/VoiceAgent'
-import { SPEAKER_GATE_RECHECK_WINDOWS, speakerRecheckBargeEarliestMs } from '../src/voice/index'
+import {
+  SPEAKER_GATE_RECHECK_MAX_WINDOWS,
+  SPEAKER_GATE_RECHECK_WINDOWS,
+  speakerRecheckBargeEarliestMs,
+} from '../src/voice/index'
 
 describe('speaker gate speech events', () => {
   test('user_speech_ignored carries reason and utterance id, no text', () => {
@@ -65,8 +69,32 @@ describe('speaker gate speech events', () => {
     expect(plain.speakerRechecked).toBeUndefined()
   })
 
-  test('re-check bound mirrors the speech crate (RECHECK_WINDOWS = 2)', () => {
+  test('deprecated SPEAKER_GATE_RECHECK_WINDOWS is still 2 (the 0.15.0 window count)', () => {
     expect(SPEAKER_GATE_RECHECK_WINDOWS).toBe(2)
-    expect(speakerRecheckBargeEarliestMs(1500)).toBe(3000)
+  })
+
+  test('barge-in bound is checkSpeechMs x window', () => {
+    expect(speakerRecheckBargeEarliestMs(1500, 2)).toBe(3000)
+    expect(speakerRecheckBargeEarliestMs(1500, 8)).toBe(12000)
+  })
+
+  test('default window cap mirrors DEFAULT_RECHECK_MAX_WINDOWS in speaker_gate.rs', () => {
+    // lockstep: crates/speech/src/speaker_gate.rs › default_recheck_max_windows_matches_sdk
+    expect(SPEAKER_GATE_RECHECK_MAX_WINDOWS).toBe(8)
+  })
+
+  test('speakerCheckWindows maps from the native event', () => {
+    const ev = fromJsSpeechEvent({
+      eventType: JsSpeechEventType.UserSpeechFinal,
+      text: 'hi',
+      speaker: 'caller',
+      speakerCheckWindows: 3,
+    })
+    expect(ev.speakerCheckWindows).toBe(3)
+    const plain = fromJsSpeechEvent({
+      eventType: JsSpeechEventType.UserSpeechFinal,
+      text: 'hi',
+    })
+    expect(plain.speakerCheckWindows).toBeUndefined()
   })
 })

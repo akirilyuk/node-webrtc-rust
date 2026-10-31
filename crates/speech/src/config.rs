@@ -231,12 +231,18 @@ pub struct SpeakerGateConfig {
     /// embed timeout or error) still proceeds. Default false.
     pub suppress_short_barge_in: bool,
     /// When the first check of an utterance says `other` and the utterance keeps going, score the
-    /// next `check_speech_ms` of speech once more. A `caller` re-check releases the held barge-in
-    /// and labels the final `caller` (`speakerRechecked: true`); any other result keeps `other`.
-    /// It never runs after a `caller` or `unknown` verdict. Covers a bystander who opens the VAD
-    /// shortly before the caller and runs into the caller's words. Default true; false is the
-    /// one-check behaviour of 0.14.
+    /// next `check_speech_ms` windows of speech, up to `recheck_max_windows`. A `caller` re-check
+    /// releases the held barge-in and labels the final `caller` (`speakerRechecked: true`); any
+    /// other result keeps `other`. It never runs after a `caller` or `unknown` verdict. Covers a
+    /// bystander who opens the VAD before the caller and runs into the caller's words. Default
+    /// true; false is the one-check behaviour of 0.14.
     pub recheck_on_other: bool,
+    /// Windows scored per utterance, the first check included, while the verdict stays `other`
+    /// (`recheck_on_other`). `2` is the one re-check of 0.15.0 (same window count and barge bound; a
+    /// late first verdict re-checks the latest window, not the one right after the first); `0` keeps checking until the
+    /// final; `1` is rejected (use `recheck_on_other: false`). Default 8 (12 s of speech with the
+    /// default 1.5 s check).
+    pub recheck_max_windows: u32,
     pub on_mismatch: SpeakerMismatchAction,
     /// Bound (ms) on one embedding call and on a final waiting for its verdict.
     pub verify_timeout_ms: u32,
@@ -253,6 +259,7 @@ impl Default for SpeakerGateConfig {
             min_check_speech_ms: 1500,
             suppress_short_barge_in: false,
             recheck_on_other: true,
+            recheck_max_windows: crate::speaker_gate::DEFAULT_RECHECK_MAX_WINDOWS,
             on_mismatch: SpeakerMismatchAction::Flag,
             verify_timeout_ms: 500,
         }
@@ -284,6 +291,13 @@ impl SpeakerGateConfig {
                  otherwise every utterance is shorter than the minimum and is never checked",
                 self.check_speech_ms, self.min_check_speech_ms
             ));
+        }
+        if self.recheck_on_other && self.recheck_max_windows == 1 {
+            return Err(
+                "speakerGate.recheckMaxWindows must be 0 (no cap) or at least 2; use \
+                 speakerGate.recheckOnOther: false for one check"
+                    .into(),
+            );
         }
         Ok(())
     }

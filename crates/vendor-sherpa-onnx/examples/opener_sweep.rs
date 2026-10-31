@@ -24,6 +24,10 @@
 //! recognizer (300 ms lead / 2500 ms tail silence like `phrase_sweep`) and `firstWordOk` says whether
 //! the transcript's first token is the opener's first word (`ok` ≡ `okay`).
 //!
+//! The committed table (`docs/tts-opener-sweep-2026-10-31.md`) was measured on `e8defdb3`, before
+//! the Kitten short-opener guard. Since then `engine_pieces` merges the opener itself for Kitten
+//! models, so the `written` form of a Kitten voice is synthesized merged too.
+//!
 //! Output: one JSON object written to `--out` (rewritten after each bundle); progress on stderr.
 
 use std::path::{Path, PathBuf};
@@ -37,8 +41,11 @@ mod support;
 #[allow(dead_code, unused_imports)]
 mod audio;
 
+use node_webrtc_rust_vendor_sherpa_onnx::TtsModelFamily;
 use sherpa_onnx::{GenerationConfig, OfflineTts};
-use support::{create_recognizer, create_tts, json_escape, parse_json, recognize, Json};
+use support::{
+    create_recognizer, create_tts, json_escape, parse_json, recognize, tts_family, Json,
+};
 
 const SAMPLE_RATE: i32 = 16_000;
 const LEAD_SILENCE_MS: usize = 300;
@@ -84,6 +91,7 @@ fn synthesize_at(
     text: &str,
     sid: i32,
     speed: f32,
+    family: TtsModelFamily,
 ) -> Result<(Vec<f32>, i32), String> {
     use node_webrtc_rust_speech::config::SentenceCase;
     use node_webrtc_rust_speech::tts_cache::normalize_phrase_text;
@@ -94,7 +102,7 @@ fn synthesize_at(
         ..Default::default()
     };
     let mut samples = Vec::new();
-    for piece in engine_pieces(&normalize_phrase_text(text), SentenceCase::Auto) {
+    for piece in engine_pieces(&normalize_phrase_text(text), SentenceCase::Auto, family) {
         let audio = tts
             .generate_with_config(&piece, &config, None::<fn(&[f32], f32) -> bool>)
             .ok_or_else(|| format!("OfflineTts generation returned no audio for {piece:?}"))?;
@@ -368,6 +376,7 @@ fn run(args: &Args) -> Result<(), String> {
     for bundle in bundles {
         let dir = args.models.join(bundle);
         let tts = create_tts(&dir)?;
+        let family = tts_family(&dir)?;
         for m in selected
             .iter()
             .filter(|m| m.language == "en" && m.bundle == bundle)
@@ -379,7 +388,8 @@ fn run(args: &Args) -> Result<(), String> {
                         [("written", as_written(opener)), ("merged", merged(opener))]
                     {
                         for iter in 0..args.n {
-                            let (raw, rate) = synthesize_at(&tts, &text, m.speaker_id, speed)?;
+                            let (raw, rate) =
+                                synthesize_at(&tts, &text, m.speaker_id, speed, family)?;
                             let clip = to_recognizer_rate(raw, rate)?;
                             let metrics = clip_metrics(&clip);
                             let mut input =

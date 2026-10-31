@@ -1,5 +1,6 @@
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -12,6 +13,7 @@ use node_webrtc_rust_speech::pipeline::{
     TtsAudioChunk, TtsProgressiveSink, TtsProvider, TtsSynthesis,
 };
 use node_webrtc_rust_speech::tts_cache::normalize_phrase_text;
+use node_webrtc_rust_speech::tts_text::merge_short_opener;
 use sherpa_onnx::GenerationConfig;
 use tokio::sync::Mutex;
 
@@ -20,7 +22,7 @@ use crate::loader::voice_debug;
 use crate::native_calls::NativeCallGuard;
 use crate::pool::{SherpaModelPool, TtsEnginePool};
 use crate::sentences::engine_pieces;
-use crate::tts_model_paths::resolve_tts_model_dir_path;
+use crate::tts_model_paths::{resolve_tts_model_dir_path, resolve_tts_model_paths, TtsModelFamily};
 use crate::tts_slots::TtsPriority;
 
 static TTS_GENERATE_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -33,6 +35,8 @@ pub struct SherpaTts {
     speed: f32,
     project_id: Arc<StdMutex<String>>,
     resolved_model_dir: Arc<Mutex<Option<String>>>,
+    /// Model family, resolved once from the model directory (see [`Self::model_family`]).
+    family: OnceLock<TtsModelFamily>,
 }
 
 impl SherpaTts {
@@ -45,6 +49,19 @@ impl SherpaTts {
             speed: parse_speed(config),
             project_id: Arc::new(StdMutex::new(String::new())),
             resolved_model_dir: Arc::new(Mutex::new(None)),
+            family: OnceLock::new(),
+        }
+    }
+
+    /// The model family of the configured bundle. Until the bundle resolves (missing directory)
+    /// it is [`TtsModelFamily::Vits`], whose text is never adjusted, and the answer is not kept.
+    fn model_family(&self) -> TtsModelFamily {
+        if let Some(family) = self.family.get() {
+            return *family;
+        }
+        match resolve_tts_model_paths(&self.config) {
+            Ok(paths) => *self.family.get_or_init(|| paths.family),
+            Err(_) => TtsModelFamily::Vits,
         }
     }
 
@@ -182,7 +199,7 @@ impl SherpaTts {
         let tts_slots = self.pool.tts_slots();
 
         // Only the engine input is adjusted; `normalized` (phrase cache key, callers) is not.
-        let sentences = engine_pieces(normalized, self.config.sentence_case);
+        let sentences = engine_pieces(normalized, self.config.sentence_case, self.model_family());
         voice_debug(format!(
             "tts synthesis start text_len={} sentences={} stream={}",
             normalized.len(),
@@ -520,6 +537,14 @@ impl TtsProvider for SherpaTts {
         }
     }
 
+    fn phrase_cache_text<'a>(&self, normalized: &'a str) -> Cow<'a, str> {
+        if self.model_family() == TtsModelFamily::Kitten {
+            merge_short_opener(normalized)
+        } else {
+            Cow::Borrowed(normalized)
+        }
+    }
+
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
         // Buffered / one-shot callers — no progressive sink.
         self.synthesize_progressive(text, None).await
@@ -590,7 +615,8 @@ mod tests {
             .nth(1)
             .and_then(|rest| rest.split("/// One resampler shared").next())
             .expect("synthesize_miss body");
-        assert!(body.contains("engine_pieces(normalized, self.config.sentence_case)"));
+        assert!(body
+            .contains("engine_pieces(normalized, self.config.sentence_case, self.model_family())"));
         assert!(!body.contains("split_for_first_audio("));
     }
 }

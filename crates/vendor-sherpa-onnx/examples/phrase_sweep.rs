@@ -34,7 +34,7 @@ mod support;
 #[allow(dead_code, unused_imports)]
 mod audio;
 
-use support::{create_recognizer, create_tts, recognize, synthesize, write_wav};
+use support::{create_recognizer, create_tts, recognize, synthesize, tts_family, write_wav};
 
 const LEAD_SILENCE_MS: usize = 300;
 const TAIL_SILENCE_MS: usize = 2500;
@@ -189,6 +189,7 @@ fn parse_args() -> Result<Args, String> {
 fn run(args: &Args) -> Result<String, String> {
     let recognizer = create_recognizer(&args.stt)?;
     let tts = create_tts(&args.tts)?;
+    let family = tts_family(&args.tts)?;
     if let Some(dir) = &args.dump_misses {
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     }
@@ -204,7 +205,7 @@ fn run(args: &Args) -> Result<String, String> {
     let mut resampled = false;
 
     for i in 0..args.n {
-        let (raw, rate) = synthesize(&tts, &args.phrase)?;
+        let (raw, rate) = synthesize(&tts, &args.phrase, family)?;
         match tts_rate {
             Some(first) if first != rate => {
                 return Err(format!(
@@ -369,10 +370,11 @@ mod tests {
         // ones through the product's own split, not a copy of it.
         let src = include_str!("support/mod.rs");
         let body = src
-            .split("pub fn synthesize(")
+            .split("pub fn synthesize_family(")
             .nth(1)
-            .expect("synthesize body");
-        assert!(body.contains("engine_pieces(&normalize_phrase_text(text), SentenceCase::Auto)"));
+            .expect("synthesize_family body");
+        assert!(body
+            .contains("engine_pieces(&normalize_phrase_text(text), SentenceCase::Auto, family)"));
         assert!(!body.contains("prepare_engine_text"));
     }
 

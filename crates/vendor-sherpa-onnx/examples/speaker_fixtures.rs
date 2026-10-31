@@ -7,12 +7,15 @@
 //! cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
 //!   --models <speaker dir> --main-tts <amy-low dir> --phrases <stt-phrase-qualification.json> \
 //!   --out <dir> [--quick] [--voices-root <dir>] [--cache <dir>] [--main-levels <dBFS,...>]
-//!   [--min-turn-gap-ms <ms>] [--bystander-db <dB>] [--only <scene-id-prefix>]
+//!   [--min-turn-gap-ms <ms>] [--bystander-db <dB>] [--long-bystander-db <dB>] [--only <scene-id-prefix>]
 //! ```
 //!
 //! - Main voice: `vits-piper-en_US-amy-low` (`--main-tts`), sid 0. Main text = the phrases of
 //!   `--phrases` with `below075 == 0` and `keywordMissing` 0 or null (a clean entry in the checked-in
 //!   3000-run sweep), so recognized text is a valid oracle.
+//!   S3 caller turns use only those that also have a clean `phrase_sweep --babble` entry (1000
+//!   rolls at -20 and -26 dBFS over babble 15 dB below, zero misses; [`s3_phrases`]): S3 judges
+//!   them over babble, which the clean sweep does not cover.
 //! - Other voices (Piper bundles under `--voices-root`, default: the parent of `--models`), split
 //!   so a threshold is never tuned on the voices it is tested on:
 //!   - tune set: `en_US-ryan-medium`, `en_US-kristin-medium`, `en_US-hfc_male-medium`,
@@ -66,8 +69,28 @@
 //! the scene level. Only the gain changes, so the draws stay the same.
 //! `--babble-clear-ms` (default 0): S3 babble sentences that would start within this many ms before
 //! a main turn's start are pushed to start after that turn's end, or dropped when they then no
-//! longer fit before the same voice's next sentence (each logged as `babble-clear: pushed|dropped`).
+//! longer fit before the same voice's next sentence (each logged as `babble-clear: pushed|pulled|dropped`).
 //! The draws stay the same, only placements move, so VAD opens on the caller, not on babble.
+//! `--babble-clear-pull` (with `--babble-clear-ms`): such a sentence is pulled back to start just
+//! before the window instead (it then talks through the window, with no onset in it), and nothing
+//! is dropped. Pushing leaves a babble-free stretch of the window plus the dropped sentence around
+//! the caller turn; the adaptive VAD reads its noise level as the 70th percentile of the last 3 s
+//! of inactive frames, so a stretch of about 2.1 s or more lowers the noise level to silence, and
+//! the babble returning after a short caller turn then holds the VAD open into the next turn
+//! (measured: turns merged in 12 of 22 rolled scenes with push, see ROUNDTRIP.md).
+//! `--long-bystanders N` (default 0): the first N S3 bystander turns read a sentence from
+//! `examples/support/long_background_sentences.txt` (12 sentences of 17-19 words, about 4-6 s of
+//! Piper speech, no content word shared with a main phrase or a long sentence) instead of the short
+//! background pool. The short pool's 7-10 word sentences give the speaker gate's 1500 ms minimum
+//! check only one or two checkable bystander turns per scene once the adaptive VAD has trimmed them
+//! (−15 dB bystander, 5 dB above the babble); a long sentence keeps the VAD open past 1500 ms. The
+//! text index reuses the turn's draw (index modulo the long pool), so the seed stream, gaps and
+//! babble draws are unchanged and N = 0 writes byte-identical scenes. Babble keeps the short pool.
+//! `--long-bystander-db` (default: the `--bystander-db` value): level of the long-pool bystander
+//! turns (the first `--long-bystanders` turns) re the main voice; the other bystander turns keep
+//! `--bystander-db`. At −15 dB over the babble the adaptive VAD can treat a long bystander as noise
+//! and never open, so the speaker gate never scores it; CI plays the long turns at −6 dB so the VAD
+//! opens and the gate has to reject them. Without the flag the scenes are byte-identical.
 //! `--only` (repeatable): generate only scenes whose id starts with one of the prefixes; the
 //! manifest lists only those. Without it every scene is generated (the bench default).
 //!
@@ -84,8 +107,9 @@ use sherpa_onnx::OfflineTts;
 mod support;
 
 use support::{
-    create_tts, json_escape, parse_json, resample_linear, rms_voiced_db, sha256_hex,
-    synthesize_sid, write_wav, write_wav_stereo_48k, Json,
+    add_at, babble_clear_start, create_tts, db_gain, json_escape, normalize_to, parse_json,
+    resample_linear, rms_voiced_db, sha256_hex, synthesize_sid, voice, write_wav,
+    write_wav_stereo_48k, Json, Rng, Voice, TEST_VOICES, TUNE_VOICES,
 };
 
 const SEED: u64 = 20_261_027;
@@ -105,6 +129,7 @@ const S3_GAP_MAX_MS: usize = 2000;
 const MAIN_BUNDLE: &str = "vits-piper-en_US-amy-low";
 const BACKGROUND: &str = include_str!("support/background_sentences.txt");
 const LONG: &str = include_str!("support/long_sentences.txt");
+const LONG_BACKGROUND: &str = include_str!("support/long_background_sentences.txt");
 const S2_PER_SET: usize = 60;
 /// `level_db` of a `main_clean` scene: no babble at all (stands in for minus infinity).
 const CLEAN_LEVEL_DB: i32 = -99;
@@ -146,28 +171,6 @@ fn ms(n: usize) -> usize {
 // ---------------------------------------------------------------------------------------------
 // Seeded randomness (splitmix64) and hashing
 // ---------------------------------------------------------------------------------------------
-
-struct Rng(u64);
-
-impl Rng {
-    fn new(seed: u64) -> Self {
-        Self(seed)
-    }
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-    fn below(&mut self, n: usize) -> usize {
-        (self.next_u64() % n as u64) as usize
-    }
-    /// Uniform in `lo..=hi`.
-    fn range(&mut self, lo: usize, hi: usize) -> usize {
-        lo + self.below(hi - lo + 1)
-    }
-}
 
 fn fnv1a(text: &str) -> u64 {
     let mut hash = 0xCBF2_9CE4_8422_2325u64;
@@ -215,59 +218,62 @@ fn qualified_phrases(json_text: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// Caller levels (dBFS) of the noisy-bystander scenes a babble sweep must cover: `s3_test_m15`
+/// ([`MAIN_REF_DB`]) and `s3_test_m15_l26` (`--main-levels -26` in
+/// `scripts/ci/ensure-speaker-fixtures.sh`). `phrase_sweep` `BABBLE_CALLER_LEVELS`.
+const BABBLE_SWEEP_LEVELS: [i32; 2] = [-20, -26];
+/// Rolls per caller level a babble sweep needs (zero misses in 1000 bounds the miss rate under
+/// that condition below ~0.3 %, rule of three).
+const BABBLE_SWEEP_MIN_N: f64 = 1000.0;
+/// Babble level re the caller the sweep must have used (the `m15` of `s3_test_m15`).
+const BABBLE_SWEEP_REL_DB: f64 = -15.0;
+
+/// True when `entry` (one `phrases` element) has a clean `phrase_sweep --babble` result: babble at
+/// [`BABBLE_SWEEP_REL_DB`], and at every [`BABBLE_SWEEP_LEVELS`] level at least
+/// [`BABBLE_SWEEP_MIN_N`] rolls with zero misses.
+fn babble_clean(entry: &Json) -> bool {
+    let Some(babble) = entry.get("babble") else {
+        return false;
+    };
+    if !matches!(babble.get("relDb"), Some(Json::Num(db)) if *db == BABBLE_SWEEP_REL_DB) {
+        return false;
+    }
+    let Some(Json::Arr(levels)) = babble.get("levels") else {
+        return false;
+    };
+    BABBLE_SWEEP_LEVELS.iter().all(|want| {
+        levels.iter().any(|level| {
+            matches!(level.get("callerDb"), Some(Json::Num(db)) if *db == f64::from(*want))
+                && matches!(level.get("n"), Some(Json::Num(n)) if *n >= BABBLE_SWEEP_MIN_N)
+                && matches!(level.get("misses"), Some(Json::Num(m)) if *m == 0.0)
+        })
+    })
+}
+
+/// Caller phrases of the S3 conversations: qualified phrases ([`qualified_phrases`]) that also
+/// have a clean babble sweep ([`babble_clean`]). S3 judges caller turns over babble 15 dB below
+/// the caller; the clean sweep alone does not cover that ("excuse me please" was clean in 3000
+/// clean runs and heard as "X cuse me, please." in the scene).
+fn s3_phrases(json_text: &str) -> Result<Vec<String>, String> {
+    let qualified = qualified_phrases(json_text)?;
+    let root = parse_json(json_text)?;
+    let Some(Json::Arr(entries)) = root.get("phrases") else {
+        return Err("phrases json: no \"phrases\" array".into());
+    };
+    Ok(entries
+        .iter()
+        .filter(|entry| babble_clean(entry))
+        .filter_map(|entry| match entry.get("phrase") {
+            Some(Json::Str(s)) if qualified.contains(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect())
+}
+
 // ---------------------------------------------------------------------------------------------
 // Voices and synthesis (with the clip cache)
 // ---------------------------------------------------------------------------------------------
 
-#[derive(Clone, Copy)]
-struct Voice {
-    name: &'static str,
-    bundle: &'static str,
-    sid: i32,
-}
-
-const fn voice(name: &'static str, bundle: &'static str, sid: i32) -> Voice {
-    Voice { name, bundle, sid }
-}
-
-const TUNE_VOICES: [Voice; 5] = [
-    voice("en_US-ryan-medium", "vits-piper-en_US-ryan-medium", 0),
-    voice("en_US-kristin-medium", "vits-piper-en_US-kristin-medium", 0),
-    voice(
-        "en_US-hfc_male-medium",
-        "vits-piper-en_US-hfc_male-medium",
-        0,
-    ),
-    voice(
-        "en_US-libritts_r-medium",
-        "vits-piper-en_US-libritts_r-medium",
-        10,
-    ),
-    voice(
-        "en_US-libritts_r-medium",
-        "vits-piper-en_US-libritts_r-medium",
-        50,
-    ),
-];
-const TEST_VOICES: [Voice; 5] = [
-    voice("en_US-joe-medium", "vits-piper-en_US-joe-medium", 0),
-    voice(
-        "en_US-hfc_female-medium",
-        "vits-piper-en_US-hfc_female-medium",
-        0,
-    ),
-    voice("en_US-lessac-medium", "vits-piper-en_US-lessac-medium", 0),
-    voice(
-        "en_US-libritts_r-medium",
-        "vits-piper-en_US-libritts_r-medium",
-        120,
-    ),
-    voice(
-        "en_US-libritts_r-medium",
-        "vits-piper-en_US-libritts_r-medium",
-        300,
-    ),
-];
 const MAIN_VOICE: Voice = voice("en_US-amy-low", MAIN_BUNDLE, 0);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -382,28 +388,6 @@ fn scene_id_with_main_level(base_id: &str, main_db: i32) -> String {
     }
 }
 
-fn db_gain(db: f32) -> f32 {
-    10f32.powf(db / 20.0)
-}
-
-/// `clip` scaled so its voiced RMS is `target_db`.
-fn normalize_to(clip: &[f32], target_db: f32) -> Vec<f32> {
-    let current = rms_voiced_db(clip, SR);
-    if !current.is_finite() {
-        return clip.to_vec();
-    }
-    let gain = db_gain(target_db - current);
-    clip.iter().map(|x| x * gain).collect()
-}
-
-fn add_at(dst: &mut [f32], src: &[f32], at: usize) {
-    for (i, s) in src.iter().enumerate() {
-        if let Some(d) = dst.get_mut(at + i) {
-            *d += s;
-        }
-    }
-}
-
 struct Segment {
     start_ms: usize,
     end_ms: usize,
@@ -437,20 +421,6 @@ fn segment(
     }
 }
 
-/// Start of a babble sentence drawn at `pos` with `--babble-clear-ms` (`clear` samples): a start
-/// within `clear` before a turn's start (`turns`: main turn (start, end) in samples) moves to that
-/// turn's end, repeated until it sits in no such window. `clear == 0` returns `pos`.
-fn babble_clear_start(pos: usize, turns: &[(usize, usize)], clear: usize) -> usize {
-    let mut pos = pos;
-    while let Some(&(_, end)) = turns
-        .iter()
-        .find(|(start, _)| clear > 0 && start.saturating_sub(clear) <= pos && pos < *start)
-    {
-        pos = end;
-    }
-    pos
-}
-
 /// Placements of one babble track's drawn sentences (`starts`, clip `lens`, in samples): `Some`
 /// start per kept sentence (the drawn one, or a start moved by [`babble_clear_start`]), `None` for
 /// a moved sentence that no longer ends before the next drawn start (or `len`). One entry per
@@ -461,15 +431,17 @@ fn place_babble(
     len: usize,
     turns: &[(usize, usize)],
     clear: usize,
+    pull: bool,
 ) -> Vec<Option<usize>> {
     starts
         .iter()
         .zip(lens)
         .enumerate()
         .map(|(i, (&pos, &clip_len))| {
-            let start = babble_clear_start(pos, turns, clear);
-            if start == pos {
-                return Some(pos);
+            let start = babble_clear_start(pos, turns, clear, pull);
+            if start <= pos {
+                // Unmoved, or pulled earlier: it still ends before the next drawn start.
+                return Some(start);
             }
             let next = starts.get(i + 1).copied().unwrap_or(len).min(len);
             (start + clip_len <= next).then_some(start)
@@ -491,6 +463,7 @@ fn babble(
     len: usize,
     turns: &[(usize, usize)],
     clear: usize,
+    pull: bool,
 ) -> Result<(Vec<f32>, Vec<Segment>), String> {
     let candidates: Vec<Voice> = pool
         .iter()
@@ -518,7 +491,7 @@ fn babble(
         }
         let starts: Vec<usize> = drawn.iter().map(|d| d.0).collect();
         let lens: Vec<usize> = drawn.iter().map(|d| d.2.len()).collect();
-        let placements = place_babble(&starts, &lens, len, turns, clear);
+        let placements = place_babble(&starts, &lens, len, turns, clear, pull);
         for ((drawn_at, text, clip), placed) in drawn.iter().zip(placements) {
             let Some(pos) = placed else {
                 eprintln!(
@@ -531,7 +504,8 @@ fn babble(
             };
             if pos != *drawn_at {
                 eprintln!(
-                    "babble-clear: pushed {} {:?} from {} ms to {} ms",
+                    "babble-clear: {} {} {:?} from {} ms to {} ms",
+                    if pos < *drawn_at { "pulled" } else { "pushed" },
                     voice.name,
                     text,
                     to_ms(*drawn_at),
@@ -587,6 +561,8 @@ struct Ctx {
     synth: Synth,
     sentences: Vec<String>,
     phrases: Vec<String>,
+    /// Caller phrases of the S3 conversations ([`s3_phrases`]): qualified and babble-clean.
+    s3_phrases: Vec<String>,
     longs: Vec<String>,
     out: PathBuf,
     scenes: Vec<Scene>,
@@ -598,6 +574,46 @@ struct Ctx {
     bystander_db: i32,
     /// `--babble-clear-ms`: S3 babble keeps clear of this window before each main turn (0 = off).
     babble_clear_ms: usize,
+    /// `--babble-clear-pull`: a start in that window moves to just before it, not to the turn end.
+    babble_clear_pull: bool,
+    /// `--long-bystanders`: the first this many S3 bystander turns use `long_background`.
+    long_bystanders: usize,
+    /// `--long-bystander-db`: level of the long-pool bystander turns re the main voice.
+    long_bystander_db: i32,
+    long_background: Vec<String>,
+}
+
+/// Level (dB re the main voice) of the `index`-th S3 bystander turn: `long_db` for the turns that
+/// read the long pool (same condition as [`bystander_text`]), `short_db` for the rest.
+fn bystander_rel_db(
+    index: usize,
+    long_bystanders: usize,
+    long_pool_len: usize,
+    short_db: i32,
+    long_db: i32,
+) -> i32 {
+    if index < long_bystanders && long_pool_len > 0 {
+        long_db
+    } else {
+        short_db
+    }
+}
+
+/// Text of the `index`-th S3 bystander turn (0-based) for the turn's `drawn` index into the short
+/// pool: the first `long_bystanders` turns read the long pool at `drawn % long.len()`, the rest the
+/// short pool at `drawn`. The draw happens either way, so the seed stream does not change.
+fn bystander_text(
+    index: usize,
+    drawn: usize,
+    long_bystanders: usize,
+    short: &[String],
+    long: &[String],
+) -> String {
+    if index < long_bystanders && !long.is_empty() {
+        long[drawn % long.len()].clone()
+    } else {
+        short[drawn].clone()
+    }
 }
 
 impl Ctx {
@@ -690,6 +706,7 @@ impl Ctx {
             total,
             &[],
             0,
+            false,
         )?;
         scale_babble(&mut bab, MAIN_REF_DB + level_db as f32);
         let mut mix = bab;
@@ -778,6 +795,7 @@ impl Ctx {
             total,
             &[],
             0,
+            false,
         )?;
         scale_babble(&mut bab, MAIN_REF_DB + BABBLE_UNDER_DB as f32);
         let mut mix = bab;
@@ -832,7 +850,7 @@ impl Ctx {
         let seed = scene_seed(&base_id);
         let mut rng = Rng::new(seed);
         let qualified: Vec<String> = self
-            .phrases
+            .s3_phrases
             .iter()
             .filter(|p| p.split_whitespace().count() <= 12)
             .cloned()
@@ -860,6 +878,7 @@ impl Ctx {
             });
         }
         let enroll_end = pos;
+        let mut bystander_index = 0usize;
         for turn in 0..turns {
             if turn % 2 == 0 {
                 let text = texts.main_turns[turn / 2].clone();
@@ -873,10 +892,25 @@ impl Ctx {
                     segment: seg,
                 });
             } else {
-                let text = self.sentences[rng.below(self.sentences.len())].clone();
+                let drawn = rng.below(self.sentences.len());
+                let text = bystander_text(
+                    bystander_index,
+                    drawn,
+                    self.long_bystanders,
+                    &self.sentences,
+                    &self.long_background,
+                );
+                let rel_db = bystander_rel_db(
+                    bystander_index,
+                    self.long_bystanders,
+                    self.long_background.len(),
+                    self.bystander_db,
+                    self.long_bystander_db,
+                );
+                bystander_index += 1;
                 let clip = normalize_to(
                     &self.synth.clip(&bystander, &text)?,
-                    bystander_level_db(main_db, self.bystander_db),
+                    bystander_level_db(main_db, rel_db),
                 );
                 let seg = segment("bystander", &bystander, &text, pos, clip.len(), false);
                 let start = pos;
@@ -903,6 +937,7 @@ impl Ctx {
             total,
             &main_turns,
             ms(self.babble_clear_ms),
+            self.babble_clear_pull,
         )?;
         // One level for the whole babble track first, then a piecewise gain: -20 dB until the
         // enrollment ends, the scene level after it, with a 100 ms linear ramp between.
@@ -1154,6 +1189,19 @@ struct Args {
     only: Vec<String>,
     bystander_db: i32,
     babble_clear_ms: usize,
+    babble_clear_pull: bool,
+    long_bystanders: usize,
+    /// `--long-bystander-db`; `None` uses `bystander_db`.
+    long_bystander_db: Option<i32>,
+}
+
+/// Parses a bystander level flag value: an integer dB between -40 and 0.
+fn parse_bystander_db(name: &str, text: &str) -> Result<i32, String> {
+    let db: i32 = text.parse().map_err(|e| format!("{name} {text:?}: {e}"))?;
+    if !(-40..=0).contains(&db) {
+        return Err(format!("{name} {db}: must be between -40 and 0"));
+    }
+    Ok(db)
 }
 
 fn parse_main_levels(text: &str) -> Result<Vec<i32>, String> {
@@ -1186,6 +1234,9 @@ fn parse_args() -> Result<Args, String> {
     let mut only = Vec::new();
     let mut bystander_db = 0i32;
     let mut babble_clear_ms = 0usize;
+    let mut babble_clear_pull = false;
+    let mut long_bystanders = 0usize;
+    let mut long_bystander_db = None;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = |name: &str| -> Result<PathBuf, String> {
@@ -1212,20 +1263,24 @@ fn parse_args() -> Result<Args, String> {
             }
             "--bystander-db" => {
                 let text = value("--bystander-db")?.to_string_lossy().into_owned();
-                bystander_db = text
-                    .parse()
-                    .map_err(|e| format!("--bystander-db {text:?}: {e}"))?;
-                if !(-40..=0).contains(&bystander_db) {
-                    return Err(format!(
-                        "--bystander-db {bystander_db}: must be between -40 and 0"
-                    ));
-                }
+                bystander_db = parse_bystander_db("--bystander-db", &text)?;
+            }
+            "--long-bystander-db" => {
+                let text = value("--long-bystander-db")?.to_string_lossy().into_owned();
+                long_bystander_db = Some(parse_bystander_db("--long-bystander-db", &text)?);
             }
             "--babble-clear-ms" => {
                 let text = value("--babble-clear-ms")?.to_string_lossy().into_owned();
                 babble_clear_ms = text
                     .parse()
                     .map_err(|e| format!("--babble-clear-ms {text:?}: {e}"))?;
+            }
+            "--babble-clear-pull" => babble_clear_pull = true,
+            "--long-bystanders" => {
+                let text = value("--long-bystanders")?.to_string_lossy().into_owned();
+                long_bystanders = text
+                    .parse()
+                    .map_err(|e| format!("--long-bystanders {text:?}: {e}"))?;
             }
             "--only" => only.push(value("--only")?.to_string_lossy().into_owned()),
             other => return Err(format!("unknown argument {other}")),
@@ -1244,6 +1299,9 @@ fn parse_args() -> Result<Args, String> {
         only,
         bystander_db,
         babble_clear_ms,
+        babble_clear_pull,
+        long_bystanders,
+        long_bystander_db,
     })
 }
 
@@ -1252,6 +1310,7 @@ fn run() -> Result<(), String> {
     let phrases_text = fs::read_to_string(&args.phrases)
         .map_err(|e| format!("read {}: {e}", args.phrases.display()))?;
     let phrases = qualified_phrases(&phrases_text)?;
+    let s3_phrases = s3_phrases(&phrases_text)?;
     let sentences: Vec<String> = BACKGROUND
         .lines()
         .map(str::trim)
@@ -1286,6 +1345,7 @@ fn run() -> Result<(), String> {
         },
         sentences,
         phrases,
+        s3_phrases,
         longs: lines_of(LONG),
         out: args.out.clone(),
         scenes: Vec::new(),
@@ -1293,6 +1353,10 @@ fn run() -> Result<(), String> {
         only: args.only.clone(),
         bystander_db: args.bystander_db,
         babble_clear_ms: args.babble_clear_ms,
+        babble_clear_pull: args.babble_clear_pull,
+        long_bystanders: args.long_bystanders,
+        long_bystander_db: args.long_bystander_db.unwrap_or(args.bystander_db),
+        long_background: lines_of(LONG_BACKGROUND),
     };
 
     let sets = [Set::Tune, Set::Test];
@@ -1494,10 +1558,10 @@ mod tests {
             pos += clip + ms(rng.range(150, 400));
         }
         // Off: every drawn start kept as is.
-        let off = place_babble(&starts, &lens, len, &turns, 0);
+        let off = place_babble(&starts, &lens, len, &turns, 0, false);
         assert_eq!(off, starts.iter().map(|&s| Some(s)).collect::<Vec<_>>());
         // On: one entry per draw (the draws do not change), no start in [turnStart - n, turnStart).
-        let on = place_babble(&starts, &lens, len, &turns, clear);
+        let on = place_babble(&starts, &lens, len, &turns, clear, false);
         assert_eq!(on.len(), starts.len());
         for (i, placed) in on.iter().enumerate() {
             let in_window = |p: usize| turns.iter().any(|&(t, _)| t - clear <= p && p < t);
@@ -1525,11 +1589,84 @@ mod tests {
             "the fixture must exercise at least one moved or dropped start"
         );
         // Direct cases: in the window → turn end; just outside → unchanged; chained windows.
-        assert_eq!(babble_clear_start(ms(4500), &turns, clear), ms(7000));
-        assert_eq!(babble_clear_start(ms(3999), &turns, clear), ms(3999));
-        assert_eq!(babble_clear_start(ms(5000), &turns, clear), ms(5000));
+        assert_eq!(babble_clear_start(ms(4500), &turns, clear, false), ms(7000));
+        assert_eq!(babble_clear_start(ms(3999), &turns, clear, false), ms(3999));
+        assert_eq!(babble_clear_start(ms(5000), &turns, clear, false), ms(5000));
         let chained = [(ms(1000), ms(2000)), (ms(2500), ms(4000))];
-        assert_eq!(babble_clear_start(ms(500), &chained, clear), ms(4000));
+        assert_eq!(
+            babble_clear_start(ms(500), &chained, clear, false),
+            ms(4000)
+        );
+    }
+
+    #[test]
+    fn babble_clear_pull_moves_starts_before_the_window_and_keeps_every_draw() {
+        let clear = ms(1000);
+        let turns = [
+            (ms(5000), ms(7000)),
+            (ms(9500), ms(11000)),
+            (ms(14000), ms(16000)),
+        ];
+        let turns_before = turns;
+        let mut rng = Rng::new(11);
+        let len = ms(20_000);
+        let (mut starts, mut lens) = (Vec::new(), Vec::new());
+        let mut pos = rng.range(0, ms(300));
+        while pos < len {
+            let clip = ms(rng.range(1500, 3000));
+            starts.push(pos);
+            lens.push(clip);
+            pos += clip + ms(rng.range(150, 400));
+        }
+        let in_window = |p: usize| turns.iter().any(|&(t, _)| t - clear <= p && p < t);
+        let on = place_babble(&starts, &lens, len, &turns, clear, true);
+        // Every draw is kept (nothing dropped), no start sits in a window, only window starts
+        // move, and they move earlier, to one sample before a window.
+        assert_eq!(on.len(), starts.len());
+        let mut moved = 0;
+        for (i, placed) in on.iter().enumerate() {
+            let p = placed.expect("pull never drops a sentence");
+            assert!(!in_window(p), "start {p} in a cleared window");
+            if p != starts[i] {
+                moved += 1;
+                assert!(in_window(starts[i]), "only starts in a window move");
+                assert!(p < starts[i], "pulled starts move earlier");
+                assert!(
+                    turns.iter().any(|&(t, _)| p + 1 == t - clear),
+                    "to just before a window"
+                );
+            }
+        }
+        assert!(
+            moved > 0,
+            "the fixture must exercise at least one pulled start"
+        );
+        // With clear = 0 there is no window, so pull moves nothing.
+        assert_eq!(
+            place_babble(&starts, &lens, len, &turns, 0, true),
+            starts.iter().map(|&s| Some(s)).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            turns, turns_before,
+            "turn positions never depend on the babble"
+        );
+        // Direct cases: in the window -> just before it; outside -> unchanged; chained windows
+        // keep pulling; a window that starts at 0 clamps to 0.
+        assert_eq!(
+            babble_clear_start(ms(4500), &turns, clear, true),
+            ms(4000) - 1
+        );
+        assert_eq!(babble_clear_start(ms(3999), &turns, clear, true), ms(3999));
+        assert_eq!(babble_clear_start(ms(5000), &turns, clear, true), ms(5000));
+        let chained = [(ms(1500), ms(2000)), (ms(2400), ms(4000))];
+        assert_eq!(
+            babble_clear_start(ms(2000), &chained, clear, true),
+            ms(500) - 1
+        );
+        assert_eq!(
+            babble_clear_start(ms(100), &[(ms(800), ms(900))], clear, true),
+            0
+        );
     }
 
     #[test]
@@ -1616,6 +1753,93 @@ mod tests {
                 "a background sentence and a long sentence share {word:?}"
             );
         }
+    }
+
+    #[test]
+    fn long_background_sentences_are_long_and_share_no_content_word_with_main_text() {
+        let longs_bg = lines_of(LONG_BACKGROUND);
+        assert_eq!(longs_bg.len(), 12);
+        let json = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../examples/voice-agent-local-sherpa/stt-phrase-qualification.json"),
+        )
+        .unwrap();
+        let words = |text: &str| -> Vec<String> {
+            text.to_lowercase()
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .filter(|w| !w.is_empty())
+                .map(str::to_string)
+                .collect()
+        };
+        let mut main: Vec<String> = qualified_phrases(&json)
+            .unwrap()
+            .iter()
+            .flat_map(|p| words(p))
+            .collect();
+        main.extend(lines_of(LONG).iter().flat_map(|l| words(l)));
+        for sentence in &longs_bg {
+            let n = words(sentence).len();
+            assert!(
+                (12..=20).contains(&n),
+                "{sentence:?} has {n} words, want 12-20"
+            );
+            for word in words(sentence).into_iter().filter(|w| w.len() >= 4) {
+                assert!(
+                    !main.contains(&word),
+                    "{sentence:?} shares {word:?} with a main phrase or a long sentence"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bystander_text_uses_the_long_pool_for_the_first_n_turns_only() {
+        let short: Vec<String> = (0..40).map(|i| format!("s{i}")).collect();
+        let long: Vec<String> = (0..12).map(|i| format!("l{i}")).collect();
+        // N = 0: always the drawn short sentence (byte-identical scenes).
+        for index in 0..8 {
+            assert_eq!(bystander_text(index, 25, 0, &short, &long), "s25");
+        }
+        // N = 2: turns 0 and 1 read the long pool at drawn % 12, later turns the short pool.
+        assert_eq!(bystander_text(0, 25, 2, &short, &long), "l1");
+        assert_eq!(bystander_text(1, 7, 2, &short, &long), "l7");
+        assert_eq!(bystander_text(2, 25, 2, &short, &long), "s25");
+        // An empty long pool falls back to the short one.
+        assert_eq!(bystander_text(0, 3, 2, &short, &[]), "s3");
+    }
+
+    #[test]
+    fn long_bystander_db_sets_the_level_of_the_long_pool_turns_only() {
+        // Without the flag the long level equals --bystander-db: every turn -15 (byte-identical).
+        for index in 0..8 {
+            assert_eq!(bystander_rel_db(index, 2, 12, -15, -15), -15);
+        }
+        // --long-bystander-db -6 with --long-bystanders 2: turns 0 and 1 at -6, the rest -15.
+        assert_eq!(bystander_rel_db(0, 2, 12, -15, -6), -6);
+        assert_eq!(bystander_rel_db(1, 2, 12, -15, -6), -6);
+        assert_eq!(bystander_rel_db(2, 2, 12, -15, -6), -15);
+        assert_eq!(bystander_rel_db(7, 2, 12, -15, -6), -15);
+        // No long turns, or an empty long pool (short text): the short level.
+        assert_eq!(bystander_rel_db(0, 0, 12, -15, -6), -15);
+        assert_eq!(bystander_rel_db(0, 2, 0, -15, -6), -15);
+        // Absolute level at the CI main level -26: -32 dBFS long, -41 dBFS short.
+        assert_eq!(
+            bystander_level_db(-26, bystander_rel_db(0, 2, 12, -15, -6)),
+            -32.0
+        );
+        assert_eq!(
+            bystander_level_db(-26, bystander_rel_db(2, 2, 12, -15, -6)),
+            -41.0
+        );
+    }
+
+    #[test]
+    fn bystander_db_flags_parse_and_reject_out_of_range() {
+        assert_eq!(parse_bystander_db("--long-bystander-db", "-6"), Ok(-6));
+        assert_eq!(parse_bystander_db("--bystander-db", "0"), Ok(0));
+        assert!(parse_bystander_db("--long-bystander-db", "3").is_err());
+        assert!(parse_bystander_db("--long-bystander-db", "-41").is_err());
+        assert!(parse_bystander_db("--long-bystander-db", "x").is_err());
     }
 
     #[test]
@@ -1733,5 +1957,74 @@ mod tests {
         );
         assert!(parse_main_levels("-50").is_err());
         assert!(parse_main_levels("loud").is_err());
+    }
+
+    fn babble_entry(phrase: &str, levels: &[(i32, u32, u32)]) -> String {
+        let levels = levels
+            .iter()
+            .map(|(db, n, misses)| format!("{{\"callerDb\":{db},\"n\":{n},\"misses\":{misses}}}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "{{\"phrase\":\"{phrase}\",\"n\":3000,\"below075\":0,\"keywordMissing\":null,\"babble\":{{\"relDb\":-15,\"levels\":[{levels}]}}}}"
+        )
+    }
+
+    #[test]
+    fn s3_phrases_need_a_clean_babble_sweep_at_both_levels() {
+        let entries = [
+            babble_entry("clean", &[(-20, 1000, 0), (-26, 1000, 0)]),
+            babble_entry("miss at 26", &[(-20, 1000, 0), (-26, 1000, 1)]),
+            babble_entry("999 rolls", &[(-20, 999, 0), (-26, 1000, 0)]),
+            babble_entry("only 20", &[(-20, 1000, 0)]),
+            "{\"phrase\":\"no babble\",\"n\":3000,\"below075\":0,\"keywordMissing\":null}".to_string(),
+            "{\"phrase\":\"wrong rel\",\"n\":3000,\"below075\":0,\"keywordMissing\":null,\"babble\":{\"relDb\":-20,\"levels\":[{\"callerDb\":-20,\"n\":1000,\"misses\":0},{\"callerDb\":-26,\"n\":1000,\"misses\":0}]}}".to_string(),
+            // Babble-clean but not clean-qualified: never a caller phrase.
+            "{\"phrase\":\"unqualified\",\"n\":3000,\"below075\":2,\"keywordMissing\":null,\"babble\":{\"relDb\":-15,\"levels\":[{\"callerDb\":-20,\"n\":1000,\"misses\":0},{\"callerDb\":-26,\"n\":1000,\"misses\":0}]}}".to_string(),
+        ];
+        let json = format!("{{\"phrases\":[{}]}}", entries.join(","));
+        assert_eq!(s3_phrases(&json).unwrap(), vec!["clean".to_string()]);
+    }
+
+    /// Guard (`test.wrong-oracle`, STT vocabulary): every caller phrase the noisy-bystander scene
+    /// (`s3_test_m15`, the texts `s3_test_m15_l26` shares) judges by transcript has a clean babble
+    /// sweep in the checked-in `stt-phrase-qualification.json`: >= 1000 rolls at -20 and -26 dBFS,
+    /// babble -15 dB, zero misses.
+    #[test]
+    fn noisy_bystander_scene_judges_only_babble_clean_phrases() {
+        let json = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../examples/voice-agent-local-sherpa/stt-phrase-qualification.json"),
+        )
+        .unwrap();
+        let root = parse_json(&json).unwrap();
+        let Some(Json::Arr(entries)) = root.get("phrases") else {
+            panic!("no phrases array");
+        };
+        let clean = |text: &str| {
+            entries.iter().any(|e| {
+                matches!(e.get("phrase"), Some(Json::Str(p)) if p == text) && babble_clean(e)
+            })
+        };
+        // Same draws as `Ctx::conversation_at` (16 turns: 8 caller turns).
+        let qualified: Vec<String> = s3_phrases(&json)
+            .unwrap()
+            .into_iter()
+            .filter(|p| p.split_whitespace().count() <= 12)
+            .collect();
+        let mut rng = Rng::new(scene_seed("s3_test_m15"));
+        let texts = plan_s3_texts(&mut rng, &qualified, &lines_of(LONG), 8).unwrap();
+        let judged: Vec<&String> = texts
+            .main_turns
+            .iter()
+            .filter(|t| segment_kind("main", t) == "qualified")
+            .collect();
+        assert_eq!(judged.len(), 4, "{judged:?}");
+        for text in judged {
+            assert!(
+                clean(text),
+                "{text:?} is judged over babble without a clean babble sweep"
+            );
+        }
     }
 }

@@ -9,11 +9,28 @@
 # at -26 dBFS), with every turn gap raised to 2.5 s so the agent's default end-of-turn (1.5 s
 # finalize + VAD hangover) closes each turn before the next speaker starts, and no babble sentence
 # starts within 1 s before a caller turn (otherwise VAD opens on babble and the 1.5 s speaker check
-# rejects the caller). Scenes are never committed.
+# rejects the caller). --babble-clear-pull moves such a sentence to start just before that 1 s
+# window instead of after the caller turn (or dropping it): dropped sentences left babble-free holes,
+# the adaptive VAD noise floor (70th percentile over 3 s) fell to silence, and the babble plus the
+# next bystander turn then held the VAD open into the next caller turn. --long-bystanders 2 gives
+# two bystander turns per scene a 17-19 word sentence (4-6 s), so at least one bystander per pass
+# stays VAD-open past the speaker gate's 1500 ms minimum check (short 7-10 word sentences often
+# ended as unknown/short in both passes: vacuous pass). --long-bystander-db -6 plays those two long
+# turns at -6 dB re the caller (the other bystander turns stay at -15 dB): at -15 dB over the babble
+# the adaptive VAD treated the long bystanders as noise and never opened, so the gate never scored
+# them; at -6 dB the VAD opens and the gate has to reject them. Scenes are never committed.
 #
 # Idempotent: skips when manifest.json exists and .speaker-fixtures-args (written after a successful
-# generation) matches the generator args. The speaker model is downloaded only when missing (the CI
+# generation) matches the generator args plus the sha256 of stt-phrase-qualification.json (the
+# scene's caller phrases are its babble-clean entries). The speaker model is downloaded only when missing (the CI
 # test image ships it under /opt/sherpa-models/speaker, linked by ensure-sherpa-models.sh).
+#
+# SPEAKER_FIXTURES_REROLL=1 (sherpa-e2e-stress.yml input reroll_fixtures): ignore the stamp and
+# generate with a fresh, empty clip cache, so every run (every stress iteration) plays a new Piper
+# roll, as fresh CI containers do. Once per process tree: the call exports
+# SPEAKER_FIXTURES_REROLLED=1, so the second call in the same iteration (run-sherpa-example-ci.sh,
+# then run-sherpa-roundtrip-e2e.sh) reuses that roll. The stamp is removed, not written, so the next
+# normal run regenerates.
 #
 # Requires ROOT (repo root). Optional: CI_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC (default 900).
 
@@ -28,11 +45,21 @@ ensure_speaker_fixtures() {
   local args=(
     --models "$ex/.models/speaker" --main-tts "$ex/.models/vits-piper-en_US-amy-low"
     --phrases "$ex/stt-phrase-qualification.json" --out "$out"
-    --main-levels -26 --min-turn-gap-ms 2500 --bystander-db -15 --babble-clear-ms 1000 --only s3_test_m15
+    --main-levels -26 --min-turn-gap-ms 2500 --bystander-db -15 --babble-clear-ms 1000 --babble-clear-pull --long-bystanders 2 --long-bystander-db -6
+    --only s3_test_m15
   )
-  local want="${args[*]}"
+  # The stamp also carries the phrase table's hash: S3 caller phrases are the babble-clean entries
+  # of stt-phrase-qualification.json, so a new babble sweep result changes the scenes.
+  local phrases_sha
+  phrases_sha="$(shasum -a 256 "$ex/stt-phrase-qualification.json" 2>/dev/null | cut -d' ' -f1)"
+  local want="${args[*]} phrases-sha256=${phrases_sha:-missing}"
 
-  if [[ -s "$out/manifest.json" && -f "$stamp" && "$(cat "$stamp")" == "$want" ]]; then
+  local reroll="${SPEAKER_FIXTURES_REROLL:-0}"
+  if [[ "$reroll" == "1" && "${SPEAKER_FIXTURES_REROLLED:-0}" == "1" && -s "$out/manifest.json" ]]; then
+    echo "==> noisy-bystander scenes already re-rolled in this run ($out)"
+    return 0
+  fi
+  if [[ "$reroll" != "1" && -s "$out/manifest.json" && -f "$stamp" && "$(cat "$stamp")" == "$want" ]]; then
     echo "==> noisy-bystander scenes up to date ($out)"
     return 0
   fi
@@ -43,10 +70,22 @@ ensure_speaker_fixtures() {
       "sherpa download-speaker" -- npm run download-speaker --workspace="$workspace" || return 1
   fi
   rm -f "$stamp"
+  local cache_dir="" rc=0
+  if [[ "$reroll" == "1" ]]; then
+    cache_dir="$(mktemp -d)"
+    args+=(--cache "$cache_dir")
+    echo "==> SPEAKER_FIXTURES_REROLL=1: fresh Piper roll (empty cache $cache_dir)"
+  fi
   bash "$ci_step" --timeout "$timeout" \
     "sherpa speaker_fixtures" -- \
     cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- "${args[@]}" \
-    || return 1
+    || rc=1
+  [[ -n "$cache_dir" ]] && rm -rf "$cache_dir"
+  [[ "$rc" -eq 0 ]] || return 1
   [[ -s "$out/manifest.json" ]] || { echo "speaker_fixtures wrote no $out/manifest.json" >&2; return 1; }
-  printf '%s' "$want" >"$stamp"
+  if [[ "$reroll" == "1" ]]; then
+    export SPEAKER_FIXTURES_REROLLED=1
+  else
+    printf '%s' "$want" >"$stamp"
+  fi
 }

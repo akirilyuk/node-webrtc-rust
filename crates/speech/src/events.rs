@@ -152,6 +152,14 @@ pub struct SpeechEvent {
     pub interrupted: Option<bool>,
     /// `user_speech_final` with the speaker gate on: `caller` | `other` | `unknown`.
     pub speaker: Option<String>,
+    /// `user_speech_final` with `speaker: "unknown"`: why (`short` | `timeout` | `error` |
+    /// `not_enrolled` | `no_embedding` | `no_check`). Absent for `caller` / `other` and without
+    /// the gate.
+    pub speaker_unknown_reason: Option<String>,
+    /// `user_speech_final` with the speaker gate on: `true` when the utterance's first check said
+    /// `other` and a second check (re-check) was scored before the final. `speaker` then carries
+    /// the combined verdict (`caller` only when the re-check said caller). Absent otherwise.
+    pub speaker_rechecked: Option<bool>,
 }
 
 impl SpeechEvent {
@@ -186,6 +194,8 @@ impl SpeechEvent {
             synthesis_complete: None,
             interrupted: None,
             speaker: None,
+            speaker_unknown_reason: None,
+            speaker_rechecked: None,
         }
     }
 
@@ -276,6 +286,18 @@ impl SpeechEvent {
         Self::base(SpeechEventKind::UserSpeechPartial)
             .with_utterance_id(utterance_id)
             .with_text(text)
+    }
+
+    /// Marks a final whose speaker verdict includes a re-check (`speaker_rechecked: true`).
+    pub fn with_speaker_rechecked(mut self) -> Self {
+        self.speaker_rechecked = Some(true);
+        self
+    }
+
+    /// Sets `speaker_unknown_reason` on a final whose speaker is `unknown` (see `speaker_gate::UNKNOWN_*`).
+    pub fn with_speaker_unknown_reason(mut self, reason: &str) -> Self {
+        self.speaker_unknown_reason = Some(reason.to_string());
+        self
     }
 
     /// Tags a final with the speaker-gate verdict (`caller` | `other` | `unknown`).

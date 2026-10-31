@@ -5,10 +5,10 @@
 
 import { readFileSync } from 'fs'
 
-import { SPEECH_EVENT_TYPE } from '@node-webrtc-rust/sdk/voice'
+import { SPEECH_EVENT_TYPE, speakerRecheckBargeEarliestMs } from '@node-webrtc-rust/sdk/voice'
 
 import { DEFAULT_BARGE_PHRASE_MIN_SIMILARITY } from './roundtrip-barge-in-helpers.js'
-import { wordSimilarity } from './roundtrip-counting.js'
+import { normalizeForCompare, wordSimilarity } from './roundtrip-counting.js'
 
 /** Product default of `speakerGate.checkSpeechMs` (G1): the verdict needs this much speech. */
 export const CHECK_SPEECH_MS = 1500
@@ -19,11 +19,22 @@ export const CHECK_SPEECH_MS = 1500
 export const MIN_STT_PARTIAL_TOKENS = 2
 /** A barge-in may come at most this long after the later of the verdict and the qualifying partial. */
 export const BARGE_SLACK_MS = 300
-/** Absolute cap on barge-in delay after the caller's `user_speaking_start`. */
+/**
+ * Absolute cap on barge-in delay after the caller's `user_speaking_start`, for turns decided by
+ * the first check. A turn whose final carries `speakerRechecked: true` is bounded by
+ * {@link expectedBargeAtMs} alone (verdict at start + 2 × checkSpeechMs).
+ */
 export const BARGE_ABS_CAP_MS = 3000
 export const BYSTANDER_RELATIVE_DB = -15
 export const QUIET_CALLER_DBFS = -26
 export const WARMUP_S = 0.6
+/**
+ * Anti-vacuous rule: a pass needs at least one bystander turn whose final is `other` (and that
+ * did not barge in), so the gate demonstrably scored a bystander. The scene's bystanders sit 15 dB
+ * under the caller, and how many of them open the VAD varies per run, so the oracle requires one
+ * checked `other` bystander, not a count.
+ */
+export const MIN_OTHER_BYSTANDERS = 1
 
 export interface Turn {
   role: 'main' | 'bystander'
@@ -39,6 +50,10 @@ export interface Seen {
   text?: string
   utteranceId?: string
   speaker?: string
+  /** `user_speech_final` with `speaker: 'unknown'`: why (product field `speakerUnknownReason`). */
+  speakerUnknownReason?: string
+  /** `user_speech_final`: a re-check after a first `other` verdict decided it (product field). */
+  speakerRechecked?: boolean
 }
 
 /**
@@ -51,14 +66,30 @@ export function sttPartialTokenCount(text: string): number {
 
 /**
  * When a caller's barge-in is due, from events the product emits for that utterance: the later of
- * speech start + checkSpeechMs (speaker verdict) and the first `user_speech_partial` on the same
- * `utteranceId` with at least {@link MIN_STT_PARTIAL_TOKENS} tokens (`requireSttPartial`).
+ * the speaker verdict and the first `user_speech_partial` on the same `utteranceId` with at least
+ * {@link MIN_STT_PARTIAL_TOKENS} tokens (`requireSttPartial`). The verdict is speech start +
+ * checkSpeechMs, or, when the utterance's final says `speakerRechecked: true`, speech start +
+ * `speakerRecheckBargeEarliestMs(checkSpeechMs)` (the product's re-check bound).
  * `undefined` when the utterance never had a qualifying partial.
  */
 export function expectedBargeAtMs(start: Seen, seen: Seen[]): number | undefined {
   const partial = qualifyingPartial(start, seen)
   if (partial == null) return undefined
-  return Math.max(start.atMs + CHECK_SPEECH_MS, partial.atMs)
+  return Math.max(start.atMs + verdictAfterMs(start, seen), partial.atMs)
+}
+
+/** True when the start's utterance final reports a re-check (product field `speakerRechecked`). */
+export function isRechecked(start: Seen, seen: Seen[]): boolean {
+  return seen.some(
+    (e) =>
+      e.type === SPEECH_EVENT_TYPE.userSpeechFinal &&
+      e.utteranceId === start.utteranceId &&
+      e.speakerRechecked === true,
+  )
+}
+
+function verdictAfterMs(start: Seen, seen: Seen[]): number {
+  return isRechecked(start, seen) ? speakerRecheckBargeEarliestMs(CHECK_SPEECH_MS) : CHECK_SPEECH_MS
 }
 
 /** First `user_speech_partial` on the start's `utteranceId` with enough tokens for a barge-in. */
@@ -112,10 +143,54 @@ export const FIRST_SLOT_LEAD_MS = 300
  * `user_speaking_start` inside the turn's slot. Slots split each gap between two turns in the
  * middle, because the VAD can open in the babble shortly before a voice starts. A turn whose
  * audio merged into the previous utterance gets none. Everything after this step pairs events by
- * `utteranceId`, never by time.
+ * `utteranceId`, never by time. Merged caller utterances are re-paired by
+ * {@link pairTurnUtterances}.
  */
 export function matchTurnUtterances(turns: Turn[], seen: Seen[]): (Seen | undefined)[] {
-  const starts = seen.filter(
+  return pairTurnUtterances(turns, seen).starts
+}
+
+/**
+ * End of an utterance's speech: its `user_speaking_end`, else its `user_speech_final` (the product
+ * emits both on the same `utteranceId`). `undefined` when neither arrived.
+ */
+export function utteranceEndMs(utteranceId: string, seen: Seen[]): number | undefined {
+  const end = seen.find(
+    (e) => e.type === SPEECH_EVENT_TYPE.userSpeakingEnd && e.utteranceId === utteranceId,
+  )
+  if (end != null) return end.atMs
+  return seen.find(
+    (e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal && e.utteranceId === utteranceId,
+  )?.atMs
+}
+
+/**
+ * Slot matching ({@link matchTurnUtterances}) plus one re-pairing that keys off product facts
+ * (`oracle-relies-only-on-promised-order`): when the VAD opens in a bystander slot and the
+ * utterance runs on into the next caller turn, the product re-checks it and its final says
+ * `speakerRechecked: true`, `speaker: 'caller'`. Such an utterance is the caller's turn, not the
+ * bystander's, when all of these hold:
+ *
+ * - it was matched to a bystander turn and its final is re-checked `caller`;
+ * - the next caller turn has no utterance of its own;
+ * - its span covers that caller turn's scene start: speech start strictly before, and speech end
+ *   (`user_speaking_end`, else the final) strictly after. An utterance that ends exactly at the
+ *   caller's scene start holds no caller speech and stays with the bystander (zero gap);
+ * - the re-check window reaches the caller's scene start: caller start strictly before speech
+ *   start + `speakerRecheckBargeEarliestMs(checkSpeechMs)`. The product scores the re-check on
+ *   speech [start + checkSpeechMs, start + 2 × checkSpeechMs], so a window that ends before the
+ *   caller starts held only bystander or babble audio, and its `caller` verdict is a bystander
+ *   false upgrade, not the caller's turn.
+ *
+ * The bystander turn then has no utterance; the caller turn index goes into `merged`. Anything
+ * else keeps its slot pairing, so a re-checked `caller` that never reaches a caller turn still
+ * fails as a bystander barge-in.
+ */
+export function pairTurnUtterances(
+  turns: Turn[],
+  seen: Seen[],
+): { starts: (Seen | undefined)[]; merged: Set<number> } {
+  const allStarts = seen.filter(
     (e) => e.type === SPEECH_EVENT_TYPE.userSpeakingStart && e.utteranceId != null,
   )
   const used = new Set<string>()
@@ -124,13 +199,53 @@ export function matchTurnUtterances(turns: Turn[], seen: Seen[]): (Seen | undefi
     if (i >= turns.length) return Number.POSITIVE_INFINITY
     return (turns[i - 1]!.endMs + turns[i]!.startMs) / 2
   }
-  return turns.map((_turn, i) => {
+  const starts = turns.map((_turn, i) => {
     const from = boundary(i)
     const to = boundary(i + 1)
-    const start = starts.find((e) => !used.has(e.utteranceId!) && e.atMs >= from && e.atMs < to)
+    const start = allStarts.find((e) => !used.has(e.utteranceId!) && e.atMs >= from && e.atMs < to)
     if (start != null) used.add(start.utteranceId!)
     return start
   })
+  const merged = new Set<number>()
+  turns.forEach((turn, i) => {
+    const start = starts[i]
+    if (turn.role !== 'bystander' || start?.utteranceId == null) return
+    const final = seen.find(
+      (e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal && e.utteranceId === start.utteranceId,
+    )
+    if (final?.speaker !== 'caller' || final.speakerRechecked !== true) return
+    const j = turns.findIndex((t, k) => k > i && t.role === 'main')
+    if (j < 0 || starts[j] != null) return
+    const callerStartMs = turns[j]!.startMs
+    const endMs = utteranceEndMs(start.utteranceId, seen)
+    if (endMs == null || !(start.atMs < callerStartMs && endMs > callerStartMs)) return
+    if (callerStartMs >= start.atMs + speakerRecheckBargeEarliestMs(CHECK_SPEECH_MS)) return
+    starts[j] = start
+    starts[i] = undefined
+    merged.add(j)
+  })
+  return { starts, merged }
+}
+
+/**
+ * The scene's similarity oracle ({@link wordSimilarity}) on the best contiguous window of the
+ * recognized words, as long as the caller phrase. A merged utterance's transcript also holds the
+ * babble or bystander words heard before the caller; only the caller's words are judged, and
+ * they must appear together, not scattered. Same threshold, no aliases.
+ */
+export function callerWindowSimilarity(callerText: string, recognized: string): number {
+  const n = normalizeForCompare(callerText)
+    .split(' ')
+    .filter((w) => w.length > 0).length
+  const words = normalizeForCompare(recognized)
+    .split(' ')
+    .filter((w) => w.length > 0)
+  if (n === 0 || words.length <= n) return wordSimilarity(callerText, recognized)
+  let best = 0
+  for (let k = 0; k + n <= words.length; k += 1) {
+    best = Math.max(best, wordSimilarity(callerText, words.slice(k, k + n).join(' ')))
+  }
+  return best
 }
 
 /** Pure evaluation of one pass; exported for the evaluator unit test. */
@@ -157,7 +272,7 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
       failures.push(`${label}: barge_in at ${b.atMs} ms without utteranceId`)
   }
   const bargesOf = (id: string): Seen[] => barges.filter((b) => b.utteranceId === id)
-  const starts = matchTurnUtterances(turns, seen)
+  const { starts, merged } = pairTurnUtterances(turns, seen)
   let bystandersHeard = 0
   turns.forEach((turn, i) => {
     const tag = `${label} turn ${i} (${turn.role} ${turn.kind} "${turn.text.slice(0, 30)}")`
@@ -165,14 +280,22 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
     const id = start?.utteranceId
     const final = id != null ? finals.get(id) : undefined
     if (turn.role === 'bystander') {
-      if (id != null && bargesOf(id).length > 0) {
+      // Documented behaviour of minCheckSpeechMs (1500) with suppressShortBargeIn off: an utterance
+      // with less speech is not scored (`unknown`, reason `short`) and its barge-in is released at
+      // its end. Any other unknown, or an unknown without a reason, is a failure.
+      const shortUnknown = final?.speaker === 'unknown' && final.speakerUnknownReason === 'short'
+      if (id != null && bargesOf(id).length > 0 && !shortUnknown) {
         failures.push(`${tag}: barge_in for the bystander utterance ${id}`)
       }
       if (final != null) {
-        if (final.speaker !== 'other') {
-          failures.push(`${tag}: final speaker ${String(final.speaker)}, expected other`)
+        if (final.speaker === 'other') {
+          if (id == null || bargesOf(id).length === 0) bystandersHeard += 1
+        } else if (shortUnknown) {
+          console.log(`${tag}: too short to check (unknown, reason short)`)
         } else {
-          bystandersHeard += 1
+          failures.push(
+            `${tag}: final speaker ${String(final.speaker)}${final.speakerUnknownReason != null ? ` (reason ${final.speakerUnknownReason})` : ''}, expected other`,
+          )
         }
       }
       return
@@ -180,6 +303,12 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
     if (start == null || id == null) {
       failures.push(`${tag}: caller speech start not detected`)
       return
+    }
+    const isMerged = merged.has(i)
+    if (isMerged) {
+      console.log(
+        `${tag}: merged utterance ${id} (started ${start.atMs} ms, before the caller at ${turn.startMs} ms; final re-checked caller)`,
+      )
     }
     const barge = bargesOf(id)[0]
     if (barge == null) {
@@ -205,7 +334,14 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
           `${tag}: barge-in ${barge.atMs - expected} ms after expected (max of verdict and qualifying partial) > ${BARGE_SLACK_MS}`,
         )
       }
-      if (delay > BARGE_ABS_CAP_MS) {
+      // A merged utterance started before the caller spoke: a barge-in before the caller's scene
+      // start was released on the bystander or babble alone.
+      if (isMerged && barge.atMs <= turn.startMs) {
+        failures.push(
+          `${tag}: barge-in at ${barge.atMs} ms on merged utterance ${id}, not after the caller's scene start ${turn.startMs} ms`,
+        )
+      }
+      if (delay > BARGE_ABS_CAP_MS && !isRechecked(start, seen)) {
         failures.push(`${tag}: barge-in ${delay} ms after speech start > cap ${BARGE_ABS_CAP_MS}`)
       }
     }
@@ -217,16 +353,22 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
       failures.push(`${tag}: final speaker ${String(final.speaker)}, expected caller`)
     }
     if (turn.kind === 'qualified') {
-      const sim = wordSimilarity(turn.text, final.text ?? '')
-      console.log(`${tag}: recognized "${final.text ?? ''}" similarity ${sim.toFixed(2)}`)
+      const sim = isMerged
+        ? callerWindowSimilarity(turn.text, final.text ?? '')
+        : wordSimilarity(turn.text, final.text ?? '')
+      console.log(
+        `${tag}: recognized "${final.text ?? ''}" similarity ${sim.toFixed(2)}${isMerged ? ' (best caller-length window)' : ''}`,
+      )
       if (sim < DEFAULT_BARGE_PHRASE_MIN_SIMILARITY) {
         failures.push(`${tag}: recognized "${final.text ?? ''}" similarity ${sim.toFixed(2)}`)
       }
     }
   })
   console.log(`${label}: bystander finals tagged other: ${bystandersHeard}`)
-  if (bystandersHeard === 0) {
-    failures.push(`${label}: no bystander utterance was detected and tagged other (vacuous pass)`)
+  if (bystandersHeard < MIN_OTHER_BYSTANDERS) {
+    failures.push(
+      `${label}: only ${bystandersHeard} bystander utterance(s) tagged other without a barge-in, need at least ${MIN_OTHER_BYSTANDERS} (vacuous pass)`,
+    )
   }
   return failures
 }

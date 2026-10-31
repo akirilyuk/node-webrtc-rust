@@ -605,3 +605,129 @@ pub fn word_similarity(input: &str, recognized: &str) -> f64 {
         .count();
     hits as f64 / words.len() as f64
 }
+
+// ---------------------------------------------------------------------------------------------
+// Scene mixing (shared by `speaker_fixtures` and `phrase_sweep --babble`)
+// ---------------------------------------------------------------------------------------------
+
+/// Seeded randomness (splitmix64), shared by `speaker_fixtures` and `phrase_sweep --babble`.
+pub struct Rng(u64);
+
+impl Rng {
+    pub fn new(seed: u64) -> Self {
+        Self(seed)
+    }
+    pub fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    pub fn below(&mut self, n: usize) -> usize {
+        (self.next_u64() % n as u64) as usize
+    }
+    /// Uniform in `lo..=hi`.
+    pub fn range(&mut self, lo: usize, hi: usize) -> usize {
+        lo + self.below(hi - lo + 1)
+    }
+}
+
+/// A Piper voice: bundle dir name and speaker id.
+#[derive(Clone, Copy)]
+pub struct Voice {
+    pub name: &'static str,
+    pub bundle: &'static str,
+    pub sid: i32,
+}
+
+pub const fn voice(name: &'static str, bundle: &'static str, sid: i32) -> Voice {
+    Voice { name, bundle, sid }
+}
+
+/// Background voices `speaker_fixtures` tunes thresholds on.
+pub const TUNE_VOICES: [Voice; 5] = [
+    voice("en_US-ryan-medium", "vits-piper-en_US-ryan-medium", 0),
+    voice("en_US-kristin-medium", "vits-piper-en_US-kristin-medium", 0),
+    voice(
+        "en_US-hfc_male-medium",
+        "vits-piper-en_US-hfc_male-medium",
+        0,
+    ),
+    voice(
+        "en_US-libritts_r-medium",
+        "vits-piper-en_US-libritts_r-medium",
+        10,
+    ),
+    voice(
+        "en_US-libritts_r-medium",
+        "vits-piper-en_US-libritts_r-medium",
+        50,
+    ),
+];
+/// Background voices of the test scenes (the noisy-bystander roundtrip plays `s3_test_*`).
+pub const TEST_VOICES: [Voice; 5] = [
+    voice("en_US-joe-medium", "vits-piper-en_US-joe-medium", 0),
+    voice(
+        "en_US-hfc_female-medium",
+        "vits-piper-en_US-hfc_female-medium",
+        0,
+    ),
+    voice("en_US-lessac-medium", "vits-piper-en_US-lessac-medium", 0),
+    voice(
+        "en_US-libritts_r-medium",
+        "vits-piper-en_US-libritts_r-medium",
+        120,
+    ),
+    voice(
+        "en_US-libritts_r-medium",
+        "vits-piper-en_US-libritts_r-medium",
+        300,
+    ),
+];
+pub fn db_gain(db: f32) -> f32 {
+    10f32.powf(db / 20.0)
+}
+
+/// `clip` scaled so its voiced RMS is `target_db`.
+pub fn normalize_to(clip: &[f32], target_db: f32) -> Vec<f32> {
+    let current = rms_voiced_db(clip, SAMPLE_RATE);
+    if !current.is_finite() {
+        return clip.to_vec();
+    }
+    let gain = db_gain(target_db - current);
+    clip.iter().map(|x| x * gain).collect()
+}
+
+pub fn add_at(dst: &mut [f32], src: &[f32], at: usize) {
+    for (i, s) in src.iter().enumerate() {
+        if let Some(d) = dst.get_mut(at + i) {
+            *d += s;
+        }
+    }
+}
+
+/// Start of a babble sentence drawn at `pos` with `--babble-clear-ms` (`clear` samples): a start
+/// within `clear` before a turn's start (`turns`: main turn (start, end) in samples) moves to that
+/// turn's end, repeated until it sits in no such window. `clear == 0` returns `pos`.
+///
+/// `pull`: the start moves to one sample before that window instead (repeated the same way, so it
+/// only moves earlier and ends).
+pub fn babble_clear_start(pos: usize, turns: &[(usize, usize)], clear: usize, pull: bool) -> usize {
+    let mut pos = pos;
+    while let Some(&(start, end)) = turns
+        .iter()
+        .find(|(start, _)| clear > 0 && start.saturating_sub(clear) <= pos && pos < *start)
+    {
+        if pull {
+            let window = start.saturating_sub(clear);
+            if window == 0 {
+                return 0;
+            }
+            pos = window - 1;
+        } else {
+            pos = end;
+        }
+    }
+    pos
+}

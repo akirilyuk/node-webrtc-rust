@@ -8,22 +8,28 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.15.0] - 2026-10-29
+## [0.15.0] - 2026-10-30
 
 ### Added
 
 - **speech / bindings / sdk:** adaptive energy VAD, opt-in with `vad.provider: 'adaptive'`. The energy VAD stays the default. Defaults: `noiseMarginDb` 6, `useSpeechLevel` true, `stuckActiveMs` 8000.
-- **speech / bindings / sdk:** opt-in caller speaker gate (TitaNet-small via sherpa-onnx). The first speech of a caller is enrolled, and later utterances are checked against it. Defaults: `checkSpeechMs` 1500, `threshold` 0.459, `minCheckSpeechMs` 1000.
+- **speech / bindings / sdk:** opt-in caller speaker gate (TitaNet-small via sherpa-onnx). The first speech of a caller is enrolled, and later utterances are checked against it. Defaults: `checkSpeechMs` 1500, `threshold` 0.459, `minCheckSpeechMs` 1500 (genuine-caller false rejects on the test set: 11.7 % at 1.0 s, 3.1 % at 1.25 s, 0.8 % at 1.5 s; a shorter clip is not checked and stays `unknown`, so its barge-in goes through at the end of the phrase; see "Minimum check length" in `packages/sdk/VOICE-VAD-AND-BARGE-IN.md`).
   - Barge-in waits for the verdict, so a bystander does not interrupt the agent.
   - Finals carry `speaker`.
   - With `onMismatch: 'drop'`, a final from another speaker is dropped and a `user_speech_ignored` event is emitted.
   - `resetSpeakerEnrollment` clears the enrolled caller.
-  - Each utterance gets one check, and the first verdict is final.
+  - Each utterance gets one check; only an `other` verdict can be re-checked once (`recheckOnOther`).
   - Tested with bystanders 15 dB or more below the caller. A bystander about as loud as the caller can pass the check.
+- **speech / bindings / sdk:** `speakerGate.suppressShortBargeIn` (opt-in, default `false`): an utterance with less speech than `minCheckSpeechMs` suppresses its barge-in like `other`. Other `unknown` verdicts still fail open.
+- **speech / bindings / sdk:** `user_speech_final` carries `speakerUnknownReason` (`short`, `timeout`, `error`, `no_embedding`, `not_enrolled`, `no_check`) when `speaker` is `unknown`, so an app can tell "too short to check" from a failed check.
+- **speech / bindings / sdk:** `speakerGate.recheckOnOther` (default `true`): when an utterance's first check says `other` and the utterance keeps going, the next `checkSpeechMs` of speech is checked once more. A `caller` re-check releases the held barge-in (no earlier than `2 × checkSpeechMs` of speech, exported as `speakerRecheckBargeEarliestMs`) and labels the final `caller`; anything else keeps `other`. It never runs after a `caller` or `unknown` verdict. Finals carry `speakerRechecked: true` when a re-check was scored. This covers a TV or a colleague who talks right before the caller and runs into the caller's words.
+- **bench:** `speaker_bench --fixed-threshold <t> --recheck` adds the two-window (re-check) FAR on impostor segments long enough for two windows.
+- **bench:** `speaker_bench --checks <seconds,...>` sets the Part 1 check lengths, and `--fixed-threshold <t>` scores every length at one threshold (`part1_fixed.md`).
 - **speech / bindings / sdk:** `barge_in` carries the `utteranceId` of the interrupting utterance, so consumers can pair it with its utterance by id. It is unset for a manual flush and for the standalone VAD.
 
 ### Fixed
 
+- **speech:** with `gateStt`, a phrase that starts while the previous one is still finishing now reaches STT with the real audio just before it. Before, that lead-in arrived as silence and the recognizer could lose the first word ("excuse me" heard as "use me").
 - **speech:** all agent events (reply, speaking, cache hit, error) go through the ordered event bus. Before, they could overtake events queued behind a final that was waiting for its speaker verdict.
 - **mixer / conference / helpers:** the mix outbound (conference room, native and JS mix pumps) no longer writes a stalled listener's missed slots back to back. After a stall it writes at most 4 frames (the newest slots, which still carry audio) and resumes 20 ms pacing; skipped ticks stay counted in `listenerSkipped`.
 

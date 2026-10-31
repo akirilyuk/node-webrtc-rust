@@ -3,8 +3,11 @@
  *
  * One client leg plays a generated "conversation" test scene (`speaker_fixtures`, never committed):
  * two enrollment utterances of the caller, then alternating caller and bystander turns at least
- * 2.5 s apart. The bystander's voice is 15 dB below the caller (`--bystander-db -15`) and the
- * background babble is at the scene level, also 15 dB below the caller. No babble sentence starts
+ * 2.5 s apart. The bystander's voice is 15 dB below the caller (`--bystander-db -15`), except the
+ * first two bystander turns: long sentences at 6 dB below (`--long-bystanders 2
+ * --long-bystander-db -6`), loud enough to open the adaptive VAD over the babble, so each pass has
+ * bystander finals for the gate to label other. The background babble is at the scene level, 15 dB
+ * below the caller. No babble sentence starts
  * within 1 s before a caller turn (`--babble-clear-ms 1000`): other speech that starts less than
  * about 1 s before the caller can fall into the 1.5 s check and make it reject the caller, so the
  * barge-in is suppressed and the final is labelled other. The agent answers every
@@ -14,10 +17,13 @@
  *
  * Two passes, each with a fresh agent:
  *   1. caller at the default level (-20 dBFS);
- *   2. quiet caller at -26 dBFS (`_l26` scene), bystander and babble still -15 dB relative.
+ *   2. quiet caller at -26 dBFS (`_l26` scene), bystander and babble levels still relative to the caller.
  *
  * Per pass the script asserts:
  *   - no `barge_in` carries a bystander utterance's id, and its final (when detected) has `speaker: 'other'`;
+ *   - a bystander final `unknown` with `speakerUnknownReason: 'short'` (less speech than
+ *     minCheckSpeechMs) is accepted with its barge-in; any other unknown fails; at least 1
+ *     bystander turn per pass must be `other` without a barge-in (anti-vacuous);
  *   - every caller turn barges in, its final has `speaker: 'caller'`, and qualified phrases match
  *     the manifest text by the roundtrip oracle (`wordSimilarity`; long sentences are not judged);
  *   - the barge-in comes at most 300 ms after the later of speech start + checkSpeechMs and the
@@ -27,7 +33,8 @@
  *   cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
  *     --models .models/speaker --main-tts .models/vits-piper-en_US-amy-low \
  *     --phrases stt-phrase-qualification.json --out .models/speaker-fixtures --main-levels -26 \
- *     --min-turn-gap-ms 2500 --bystander-db -15 --babble-clear-ms 1000 --only s3_test_m15
+ *     --min-turn-gap-ms 2500 --bystander-db -15 --babble-clear-ms 1000 --babble-clear-pull \
+ *     --long-bystanders 2 --long-bystander-db -6 --only s3_test_m15
  * (CI does this in `scripts/ci/ensure-speaker-fixtures.sh`.)
  *
  * Run:
@@ -58,7 +65,7 @@ import {
   QUIET_CALLER_DBFS,
   WARMUP_S,
   evaluateTurns,
-  matchTurnUtterances,
+  pairTurnUtterances,
   MIN_STT_PARTIAL_TOKENS,
   readWavPcm,
   type Seen,
@@ -221,6 +228,8 @@ async function runPass(params: {
           text: event.text,
           utteranceId: event.utteranceId,
           speaker: event.speaker,
+          speakerUnknownReason: event.speakerUnknownReason,
+          speakerRechecked: event.speakerRechecked,
         })
       }
     } catch (error) {
@@ -236,10 +245,13 @@ async function runPass(params: {
   await listener.stop().catch(() => undefined)
   await cleanup().catch(() => undefined)
   // Diagnostics: scene clock vs the agent's first user_speaking_start per turn.
-  matchTurnUtterances(turns, seen).forEach((start, i) => {
+  // A merged turn's utterance started in the previous bystander slot (negative lag), see
+  // pairTurnUtterances.
+  const { starts, merged } = pairTurnUtterances(turns, seen)
+  starts.forEach((start, i) => {
     const firstStart = start?.atMs
     console.log(
-      `${label}: lag turn=${i} sceneStart=${turns[i]!.startMs} firstStart=${firstStart ?? 'none'} lagMs=${firstStart != null ? firstStart - turns[i]!.startMs : 'none'}`,
+      `${label}: lag turn=${i} sceneStart=${turns[i]!.startMs} firstStart=${firstStart ?? 'none'} lagMs=${firstStart != null ? firstStart - turns[i]!.startMs : 'none'}${merged.has(i) ? ' merged' : ''}`,
     )
   })
   return evaluateTurns(turns, seen, label)

@@ -7,6 +7,14 @@
 //!   --fixtures <speaker_fixtures out dir> --models <speaker dir> --stt-model <zipformer dir> \
 //!   --out <dir> [--vad-min-silence-ms <n>] \
 //!   [--enhance <denoiser models dir> [--pre raw,rnnoise,gtcrn,...] [--cost-seconds <n>] [--streams-seconds <n>]]
+//!   [--checks 0.5,1.0,1.5] [--fixed-threshold <t> [--recheck]]
+//!
+//! `--checks` replaces the Part 1 check lengths (seconds). `--fixed-threshold` runs Part 1 only and
+//! also scores every check length at that one threshold (FRR/FAR per set and level), written to
+//! `<out>/part1_fixed.md`; Parts 2 and 3 are skipped. `--recheck` adds, per check length, the
+//! FAR of the speaker gate's re-check (`recheckOnOther`) on impostor segments long enough for two
+//! windows: accepted when the first window scores at or above the threshold, or when it scores
+//! below and the second window `[check, 2 x check)` does (one row per set, levels pooled).
 //! ```
 //!
 //! Every Sherpa object is single-threaded (`num_threads: 1`); pin the process to one core
@@ -302,7 +310,7 @@ struct Embedder {
 }
 
 impl Embedder {
-    fn open(path: &Path) -> Result<Self, String> {
+    fn open(path: &Path, n_checks: usize) -> Result<Self, String> {
         let config = SpeakerEmbeddingExtractorConfig {
             model: Some(path.to_string_lossy().into_owned()),
             num_threads: 1,
@@ -318,7 +326,7 @@ impl Embedder {
         Ok(Self {
             id,
             extractor,
-            timings: vec![Vec::new(); CHECKS_S.len()],
+            timings: vec![Vec::new(); n_checks],
         })
     }
 
@@ -353,7 +361,7 @@ struct Item {
     level: Option<i32>,
     genuine: bool,
     ref_scene: usize,
-    /// Up to 1.5 s from the start of the segment.
+    /// Up to 3 s from the start of the segment (two 1.5 s windows for `--recheck`).
     clip: Vec<f32>,
 }
 
@@ -476,7 +484,9 @@ fn collect_items(fx: &mut Fixtures) -> Result<Vec<Item>, String> {
             }
             let audio = fx.audio16(scene)?;
             let from = (start_ms * 16).min(audio.len());
-            let to = (end_ms * 16).min(audio.len()).min(from + MAX_CHECK_SAMPLES);
+            let to = (end_ms * 16)
+                .min(audio.len())
+                .min(from + 2 * MAX_CHECK_SAMPLES);
             items.push(Item {
                 set,
                 level,
@@ -526,6 +536,87 @@ fn level_matches(row: &str, item: &Item) -> bool {
     row == "all"
         || item.level.is_none()
         || item.level.map(|l| l.to_string()).as_deref() == Some(row)
+}
+
+/// Part 1 at one fixed threshold: FRR (genuine rejected) and FAR (impostor accepted) per set and
+/// level row, as a markdown table.
+fn part1_fixed_table(
+    model: &str,
+    check_s: f32,
+    threshold: f32,
+    items: &[Item],
+    scores: &[Option<f32>],
+) -> String {
+    let pct = |v: Option<f64>| v.map_or("-".to_string(), |v| format!("{:.1} %", v * 100.0));
+    let mut md = format!(
+        "### {model} / {check_s} s at threshold {threshold}\n\n| set | level | n gen | FRR | n imp | FAR |\n|---|---|---|---|---|---|\n"
+    );
+    for (set, name) in [(Set::Tune, "tune"), (Set::Test, "test")] {
+        for row in LEVEL_ROWS {
+            let pick = |genuine: bool| -> Vec<f32> {
+                items
+                    .iter()
+                    .zip(scores)
+                    .filter(|(it, _)| {
+                        it.set == set && it.genuine == genuine && level_matches(row, it)
+                    })
+                    .filter_map(|(_, s)| *s)
+                    .collect()
+            };
+            let (g, i) = (pick(true), pick(false));
+            let (far, frr) = far_frr(&g, &i, threshold);
+            md.push_str(&format!(
+                "| {name} | {row} | {} | {} | {} | {} |\n",
+                g.len(),
+                pct(frr),
+                i.len(),
+                pct(far)
+            ));
+        }
+    }
+    md.push('\n');
+    md
+}
+
+/// Re-check FAR at a fixed threshold, on impostor segments with two full windows: one-window FAR
+/// (first window accepted) next to the two-window FAR (first or, after a reject, second window
+/// accepted), per set with levels pooled. Accept = score >= threshold, as in the product.
+fn recheck_far_table(
+    model: &str,
+    check_s: f32,
+    threshold: f32,
+    items: &[Item],
+    first_scores: &[Option<f32>],
+    second_scores: &[Option<f32>],
+) -> String {
+    let mut md = format!(
+        "### re-check FAR: {model} / {check_s} s windows at threshold {threshold}\n\n| set | n imp (>= 2 windows) | FAR 1 window | FAR 2 windows |\n|---|---|---|---|\n"
+    );
+    for (set, name) in [(Set::Tune, "tune"), (Set::Test, "test")] {
+        let (mut n, mut one, mut two) = (0_usize, 0_usize, 0_usize);
+        for ((it, a), b) in items.iter().zip(first_scores).zip(second_scores) {
+            let (Some(a), Some(b)) = (a, b) else {
+                continue;
+            };
+            if it.set != set || it.genuine {
+                continue;
+            }
+            n += 1;
+            let first_ok = *a >= threshold;
+            one += usize::from(first_ok);
+            two += usize::from(first_ok || *b >= threshold);
+        }
+        let pct = |k: usize| {
+            if n == 0 {
+                "-".to_string()
+            } else {
+                format!("{:.1} % ({k}/{n})", k as f64 * 100.0 / n as f64)
+            }
+        };
+        md.push_str(&format!("| {name} | {n} | {} | {} |\n", pct(one), pct(two)));
+    }
+    md.push('\n');
+    md
 }
 
 fn part1_rows(model: &str, check_s: f32, items: &[Item], scores: &[Option<f32>]) -> Vec<Part1Row> {
@@ -2339,6 +2430,12 @@ struct Args {
     cost_seconds: usize,
     /// Part 3 cost: seconds each streams-per-core step runs.
     streams_seconds: usize,
+    /// Part 1 check lengths in seconds (default [`CHECKS_S`]).
+    checks: Vec<f32>,
+    /// Part 1 only: also score every check length at this threshold, then stop.
+    fixed_threshold: Option<f32>,
+    /// With `fixed_threshold`: also the two-window (re-check) FAR on long impostor segments.
+    recheck: bool,
 }
 
 /// `precomputed:<name>=<dir>` -> `Some((name, dir))`; any other item -> `None`.
@@ -2364,6 +2461,9 @@ fn parse_args() -> Result<Args, String> {
     let mut pre: Vec<String> = ALL_PRE.iter().map(|p| (*p).to_string()).collect();
     let mut precomputed: Vec<(String, PathBuf)> = Vec::new();
     let (mut cost_seconds, mut streams_seconds) = (60usize, 10usize);
+    let mut checks: Vec<f32> = CHECKS_S.to_vec();
+    let mut fixed_threshold: Option<f32> = None;
+    let mut recheck = false;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
@@ -2425,6 +2525,28 @@ fn parse_args() -> Result<Args, String> {
                     .parse()
                     .map_err(|e| format!("--streams-seconds: {e}"))?
             }
+            "--checks" => {
+                checks = value("--checks")?
+                    .split(',')
+                    .map(|c| c.trim().parse::<f32>())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| format!("--checks: {e}"))?;
+                if checks.is_empty()
+                    || checks
+                        .iter()
+                        .any(|c| *c <= 0.0 || *c * SR as f32 > MAX_CHECK_SAMPLES as f32)
+                {
+                    return Err("--checks: each length must be > 0 and <= 1.5 s".to_string());
+                }
+            }
+            "--fixed-threshold" => {
+                fixed_threshold = Some(
+                    value("--fixed-threshold")?
+                        .parse()
+                        .map_err(|e| format!("--fixed-threshold: {e}"))?,
+                )
+            }
+            "--recheck" => recheck = true,
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -2441,6 +2563,9 @@ fn parse_args() -> Result<Args, String> {
         precomputed,
         cost_seconds,
         streams_seconds,
+        checks,
+        fixed_threshold,
+        recheck,
     })
 }
 
@@ -2487,8 +2612,9 @@ fn run() -> Result<(), String> {
     let mut p1_rows: Vec<Part1Row> = Vec::new();
     let mut real_rows: Vec<RealRow> = Vec::new();
     let mut ref_cache: HashMap<(usize, usize), Vec<f32>> = HashMap::new(); // (model, scene)
+    let mut fixed_md = String::new();
     for (m, path) in model_files.iter().enumerate() {
-        let mut emb = Embedder::open(path)?;
+        let mut emb = Embedder::open(path, args.checks.len())?;
         eprintln!("model {}", emb.id);
         let mut refs_needed: Vec<usize> = items.iter().map(|i| i.ref_scene).collect();
         refs_needed.sort_unstable();
@@ -2498,7 +2624,7 @@ fn run() -> Result<(), String> {
             let (e, _) = emb.embed(&enroll).ok_or("enrollment too short to embed")?;
             ref_cache.insert((m, scene), e);
         }
-        for (c, check_s) in CHECKS_S.iter().enumerate() {
+        for (c, check_s) in args.checks.iter().enumerate() {
             let mut scores = Vec::with_capacity(items.len());
             for item in &items {
                 let scored = emb.embed(first(&item.clip, check_samples(*check_s)));
@@ -2507,12 +2633,38 @@ fn run() -> Result<(), String> {
                     cosine(&ref_cache[&(m, item.ref_scene)], &e)
                 }));
             }
+            if let Some(t) = args.fixed_threshold {
+                fixed_md.push_str(&part1_fixed_table(&emb.id, *check_s, t, &items, &scores));
+                if args.recheck {
+                    let n = check_samples(*check_s);
+                    let mut second = Vec::with_capacity(items.len());
+                    for item in &items {
+                        second.push(if item.genuine || item.clip.len() < 2 * n {
+                            None
+                        } else {
+                            emb.embed(&item.clip[n..2 * n])
+                                .map(|(e, _)| cosine(&ref_cache[&(m, item.ref_scene)], &e))
+                        });
+                    }
+                    fixed_md.push_str(&recheck_far_table(
+                        &emb.id, *check_s, t, &items, &scores, &second,
+                    ));
+                }
+            }
             p1_rows.extend(part1_rows(&emb.id, *check_s, &items, &scores));
             if let Some(row) = real_voice_row(&emb, &args.models, *check_s)? {
                 real_rows.push(row);
             }
         }
         embedders.push(emb);
+    }
+
+    if args.fixed_threshold.is_some() {
+        let path = args.out.join("part1_fixed.md");
+        fs::write(&path, &fixed_md).map_err(|e| format!("write {}: {e}", path.display()))?;
+        eprint!("{fixed_md}");
+        eprintln!("--fixed-threshold: Part 1 only, wrote {}", path.display());
+        return Ok(());
     }
 
     // ---- Part 2 ----
@@ -2799,7 +2951,7 @@ fn run() -> Result<(), String> {
     json.push_str("    ],\n    \"compute_ms\": [\n");
     let mut timing_lines = Vec::new();
     for emb in &embedders {
-        for (c, check_s) in CHECKS_S.iter().enumerate() {
+        for (c, check_s) in args.checks.iter().enumerate() {
             let mut ms: Vec<f64> = emb.timings[c].iter().map(|s| s * 1000.0).collect();
             ms.sort_by(|a, b| a.total_cmp(b));
             timing_lines.push((
@@ -2883,7 +3035,7 @@ fn run() -> Result<(), String> {
     md.push_str("## Part 1: embedding level\n\n");
     md.push_str("Threshold, EER and FRR@FAR1% come from the tune set; the last two columns apply that threshold to the test set. Accept = score above threshold.\n\n");
     for emb in &embedders {
-        for check_s in CHECKS_S {
+        for &check_s in &args.checks {
             md.push_str(&format!("### {} / {} s\n\n", emb.id, check_s));
             md.push_str("| level | gen/imp tune | EER tune | FRR@FAR1% tune | threshold | gen/imp test | FRR test | FAR test |\n|---|---|---|---|---|---|---|---|\n");
             for r in p1_rows

@@ -307,8 +307,29 @@ export interface VoiceAgentConfig {
     enrollSpeechMs?: number
     /** Speech (ms) of an utterance used for one check. Default 1500. */
     checkSpeechMs?: number
-    /** Shorter clips are `unknown`. Default 1000. */
+    /**
+     * Clips with less speech than this (ms) are not scored: `speaker: 'unknown'`, fail open.
+     * Default 1500: genuine-caller false rejects were 11.7 % at 1.0 s, 3.1 % at 1.25 s and
+     * 0.8 % at 1.5 s (test set). Must not exceed `checkSpeechMs` (rejected at config time). See "Minimum check length" in VOICE-VAD-AND-BARGE-IN.md.
+     */
     minCheckSpeechMs?: number
+    /**
+     * Opt-in, default `false`. An utterance that ended with less speech than `minCheckSpeechMs`
+     * normally releases its deferred barge-in at its end. When `true` that barge-in is suppressed
+     * (as for `other`), for caller and bystander alike. Other `unknown` verdicts (not enrolled,
+     * check failed or timed out) still barge in. See "Minimum check length" in
+     * VOICE-VAD-AND-BARGE-IN.md.
+     */
+    suppressShortBargeIn?: boolean
+    /**
+     * Default `true`. When an utterance's first check says `other` and the utterance keeps going,
+     * the next `checkSpeechMs` of speech is checked once more. A `caller` re-check releases the
+     * held barge-in (no earlier than `2 × checkSpeechMs` of speech, see
+     * `speakerRecheckBargeEarliestMs`) and labels the final `caller` with `speakerRechecked: true`;
+     * any other result keeps `other`. Never runs after a `caller` or `unknown` verdict. `false`
+     * keeps one check per utterance. See "Re-check after other" in VOICE-VAD-AND-BARGE-IN.md.
+     */
+    recheckOnOther?: boolean
     /** `'flag'` (default) keeps the final with `speaker: 'other'`; `'drop'` emits `user_speech_ignored`. */
     onMismatch?: 'flag' | 'drop'
     /** Bound (ms) on one check and on a final waiting for its verdict. Default 500. */
@@ -528,6 +549,25 @@ export interface SpeechEvent {
   interrupted?: boolean
   /** `user_speech_final` with `speakerGate` on: who spoke. */
   speaker?: 'caller' | 'other' | 'unknown'
+  /**
+   * `user_speech_final` with `speaker: 'unknown'`: why the utterance was not scored. `'short'`: less
+   * speech than `minCheckSpeechMs` (too short to check); `'timeout'` / `'error'` / `'no_embedding'`:
+   * the check failed; `'not_enrolled'`: no reference voice yet; `'no_check'`: no check was sent.
+   * Absent for `caller` / `other`. See "Minimum check length" in VOICE-VAD-AND-BARGE-IN.md.
+   */
+  speakerUnknownReason?:
+    | 'short'
+    | 'timeout'
+    | 'error'
+    | 'not_enrolled'
+    | 'no_embedding'
+    | 'no_check'
+  /**
+   * `user_speech_final` with `speakerGate` on: `true` when the first check said `other` and a
+   * re-check (`recheckOnOther`) was scored before the final; `speaker` is then `caller` if the
+   * re-check heard the caller, else `other`. Absent otherwise.
+   */
+  speakerRechecked?: boolean
 }
 
 /** `languageId.timing` values. */

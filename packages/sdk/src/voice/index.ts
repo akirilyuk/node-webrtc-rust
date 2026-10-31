@@ -24,6 +24,8 @@ export { SPEECH_EVENT_TYPE } from './types.js'
 
 /** VAD presets — prefer {@link VOICE_AGENT_VAD_PRESET} for production bots. */
 export { DEFAULT_VOICE_AGENT_VAD, VOICE_AGENT_VAD_PRESET } from './defaults.js'
+/** Speaker gate re-check timing (see `speakerGate.recheckOnOther`). */
+export { SPEAKER_GATE_RECHECK_WINDOWS, speakerRecheckBargeEarliestMs } from './defaults.js'
 
 /** `VOICE_DEBUG` helpers for TypeScript-side logging. */
 export { isVoiceDebugEnabled, voiceDebugLog } from './debug.js'

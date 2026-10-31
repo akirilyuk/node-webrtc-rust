@@ -8,6 +8,12 @@
 //! (`rt.stale-event-by-key`). Every wait is bounded (`infra.unbounded-external-wait`), and a
 //! timeout fails open (`unknown`): a stuck gate must never mute the real caller.
 //!
+//! One re-check (`recheck_on_other`, default on): when the first verdict is `other` and the
+//! utterance keeps going, the next `check_speech_ms` of speech is scored once more. The re-check
+//! can only upgrade `other` to `caller`; it never runs after a `caller` or `unknown` verdict, and
+//! it never downgrades one. This covers a bystander (TV, colleague) who opens the VAD just before
+//! the caller and runs into the caller's words without a pause.
+//!
 //! Embeddings, the reference vector and PCM are never logged, emitted or exported. Scores appear
 //! only in `VOICE_DEBUG` output, as a number.
 
@@ -34,6 +40,18 @@ const ENDED_CAP: usize = 4;
 /// Pending channel messages above which a backlog warning is logged (once per episode).
 const BACKLOG_WARN: usize = 8;
 
+/// Check windows an utterance can be scored on: the first check plus one re-check after an
+/// `other` verdict ([`SpeakerGateConfig::recheck_on_other`]).
+pub const RECHECK_WINDOWS: u32 = 2;
+
+/// Earliest speech time (ms of collected speech in the utterance) at which a barge-in released by
+/// a re-check can fire: the end of the re-check window, `RECHECK_WINDOWS × check_speech_ms`
+/// (first window end + `check_speech_ms`). The SDK mirrors it as `speakerRecheckBargeEarliestMs`
+/// (`packages/sdk/src/voice/defaults.ts`), which the noisy-bystander roundtrip oracle uses.
+pub fn recheck_barge_earliest_ms(check_speech_ms: u32) -> u32 {
+    check_speech_ms.saturating_mul(RECHECK_WINDOWS)
+}
+
 /// Who spoke an utterance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -59,7 +77,27 @@ pub struct Verdict {
     pub key: u64,
     pub outcome: Outcome,
     pub timed_out: bool,
+    /// Why the verdict is `Unknown` (`None` for caller/other): see [`UNKNOWN_SHORT`] and the
+    /// other `UNKNOWN_*` values. Only `short` is suppressed by `suppress_short_barge_in`.
+    pub reason: Option<&'static str>,
+    /// True for the result of the re-check (second window). Only `Caller` from a re-check is
+    /// stored; any other re-check result leaves the first `other` verdict in place.
+    pub recheck: bool,
 }
+
+/// `speakerUnknownReason` values (the final's `speaker` is `unknown`).
+/// No reference voice yet.
+pub const UNKNOWN_NOT_ENROLLED: &str = "not_enrolled";
+/// Less speech than `min_check_speech_ms`: the utterance was not scored.
+pub const UNKNOWN_SHORT: &str = "short";
+/// The embedding call exceeded `verify_timeout_ms`, or the final stopped waiting for the verdict.
+pub const UNKNOWN_TIMEOUT: &str = "timeout";
+/// The embedding call failed.
+pub const UNKNOWN_ERROR: &str = "error";
+/// The embedder returned no embedding, or the score could not be computed.
+pub const UNKNOWN_NO_EMBEDDING: &str = "no_embedding";
+/// Gate enrolled, but no check was sent for the utterance and no verdict exists.
+pub const UNKNOWN_NO_CHECK: &str = "no_check";
 
 /// What a barge-in attempt for utterance `key` should do right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,11 +114,13 @@ enum Msg {
     Enroll {
         pcm: Vec<u8>,
     },
-    /// `speech_bytes` is the clip without the pre-roll.
+    /// `speech_bytes` is the clip without the pre-roll. `recheck`: the second window after an
+    /// `other` verdict.
     Check {
         key: u64,
         pcm: Vec<u8>,
         speech_bytes: usize,
+        recheck: bool,
     },
     Reset,
 }
@@ -88,7 +128,15 @@ enum Msg {
 #[derive(Default)]
 struct Book {
     verdicts: VecDeque<(u64, Outcome)>,
+    /// Why each `Unknown` verdict is unknown (see [`Verdict::reason`]).
+    reasons: VecDeque<(u64, &'static str)>,
     sent: VecDeque<u64>,
+    /// Keys whose re-check went out.
+    rechecks_sent: VecDeque<u64>,
+    /// Keys whose re-check settled (any result).
+    rechecks_done: VecDeque<u64>,
+    /// Keys whose final read its verdict: no re-check starts after that.
+    closed: VecDeque<u64>,
 }
 
 struct Shared {
@@ -118,6 +166,10 @@ struct Cur {
     /// Pre-roll bytes at the head of `buf`; they do not count as speech.
     pre: usize,
     sent: bool,
+    /// Offset in `buf` where the re-check window starts.
+    recheck_from: usize,
+    /// The re-check went out, or can no longer start for this segment.
+    rechecked: bool,
 }
 
 #[derive(Default)]
@@ -242,7 +294,11 @@ impl SpeakerGate {
 
     fn cap_bytes(&self) -> usize {
         let ms = if self.is_enrolled() {
-            self.cfg.check_speech_ms
+            if self.cfg.recheck_on_other {
+                recheck_barge_earliest_ms(self.cfg.check_speech_ms)
+            } else {
+                self.cfg.check_speech_ms
+            }
         } else {
             self.cfg.check_speech_ms.max(self.cfg.enroll_speech_ms)
         };
@@ -256,9 +312,10 @@ impl SpeakerGate {
     /// SpeechStart of utterance `key`; `frame` is the onset frame (16 kHz mono s16le).
     /// A second start for the same key (brief gap) continues the same utterance.
     ///
-    /// One check per utterance key: the first verdict is final. A segment that joins a key whose
-    /// check already went out (pending or settled) does not send another check, so a speaker who
-    /// joins the utterance during the gate hold cannot relabel it.
+    /// One check per utterance key, plus at most one re-check after an `other` verdict. A segment
+    /// that joins a key whose check already went out (pending or settled) does not send another
+    /// first check, so a speaker who joins the utterance during the gate hold cannot relabel a
+    /// `caller` or `unknown` verdict; only an `other` verdict can be re-checked, once.
     pub fn begin(&self, key: u64, frame: &[u8]) {
         let mut feed = lock(&self.feed);
         if feed.cur.as_ref().is_some_and(|c| c.key == key) {
@@ -278,17 +335,25 @@ impl SpeakerGate {
         let cur = match resumed {
             Some((k, buf)) => Cur {
                 key: k,
+                recheck_from: buf.len(),
                 buf,
                 pre: 0,
                 sent: true,
+                rechecked: self.recheck_sent_or_closed(k),
             },
             None => {
                 let buf = std::mem::take(&mut feed.ring);
+                let pre = buf.len();
+                let sent = self.check_sent(key);
                 Cur {
                     key,
-                    pre: buf.len(),
+                    pre,
                     buf,
-                    sent: self.check_sent(key),
+                    sent,
+                    // A segment that joins a key whose check already went out re-checks its own
+                    // first `check_speech_ms`; otherwise the window follows the first check.
+                    recheck_from: if sent { pre } else { pre + self.check_bytes() },
+                    rechecked: self.recheck_sent_or_closed(key),
                 }
             }
         };
@@ -315,7 +380,22 @@ impl SpeakerGate {
                     let speech = cur.buf.len() - cur.pre;
                     if !cur.sent && speech >= check {
                         cur.sent = true;
-                        to_send = Some((cur.key, cur.buf[..cur.pre + check].to_vec(), check));
+                        to_send =
+                            Some((cur.key, cur.buf[..cur.pre + check].to_vec(), check, false));
+                    } else if self.cfg.recheck_on_other
+                        && cur.sent
+                        && !cur.rechecked
+                        && cur.buf.len() >= cur.recheck_from + check
+                        && self.is_enrolled()
+                        && self.recheck_due(cur.key)
+                    {
+                        cur.rechecked = true;
+                        // Marked under the feed lock, so a final or barge decision never sees the
+                        // window full but the re-check unsent.
+                        push_capped(&mut lock(&self.shared.book).rechecks_sent, cur.key);
+                        let from = cur.recheck_from.saturating_sub(PRE_ROLL_MS * BYTES_PER_MS);
+                        let pcm = cur.buf[from..cur.recheck_from + check].to_vec();
+                        to_send = Some((cur.key, pcm, check, true));
                     }
                 }
                 None => {
@@ -328,12 +408,17 @@ impl SpeakerGate {
                 }
             }
         }
-        if let Some((key, pcm, speech_bytes)) = to_send {
-            self.mark_sent(key);
+        if let Some((key, pcm, speech_bytes, recheck)) = to_send {
+            if recheck {
+                eprintln!("[speaker-gate] info: speaker gate re-check sent key={key}");
+            } else {
+                self.mark_sent(key);
+            }
             self.send(Msg::Check {
                 key,
                 pcm,
                 speech_bytes,
+                recheck,
             });
         }
     }
@@ -359,7 +444,15 @@ impl SpeakerGate {
                 key: cur.key,
                 pcm: cur.buf[..cur.pre + speech].to_vec(),
                 speech_bytes: speech,
+                recheck: false,
             });
+        } else if self.cfg.recheck_on_other
+            && !cur.rechecked
+            && self.outcome_for(cur.key) == Some(Outcome::Other)
+        {
+            // Ended before the re-check window filled: the `other` verdict stands and the barge-in
+            // held for the re-check is dropped.
+            feed.pending_barge.remove(&cur.key);
         }
         if !self.is_enrolled() {
             // Kept for enrollment: voiced PCM only, without the pre-roll.
@@ -386,15 +479,134 @@ impl SpeakerGate {
         lock(&self.shared.book).sent.contains(&key)
     }
 
+    fn recheck_sent_or_closed(&self, key: u64) -> bool {
+        let book = lock(&self.shared.book);
+        book.rechecks_sent.contains(&key) || book.closed.contains(&key)
+    }
+
+    /// The stored verdict of `key` is `other`, its final has not read it, and no re-check went out.
+    fn recheck_due(&self, key: u64) -> bool {
+        let book = lock(&self.shared.book);
+        book.verdicts
+            .iter()
+            .rev()
+            .find(|(k, _)| *k == key)
+            .map(|(_, o)| *o)
+            == Some(Outcome::Other)
+            && !book.closed.contains(&key)
+            && !book.rechecks_sent.contains(&key)
+    }
+
+    fn recheck_in_flight(&self, key: u64) -> bool {
+        let book = lock(&self.shared.book);
+        book.rechecks_sent.contains(&key) && !book.rechecks_done.contains(&key)
+    }
+
+    /// A re-check of `key` is in flight, or can still start (the utterance is live, its window
+    /// not yet sent, its final not read). Caller holds the feed lock.
+    fn recheck_open_locked(&self, feed: &Feed, key: u64) -> bool {
+        if !self.cfg.recheck_on_other {
+            return false;
+        }
+        if self.recheck_in_flight(key) {
+            return true;
+        }
+        feed.cur
+            .as_ref()
+            .is_some_and(|c| c.key == key && c.sent && !c.rechecked)
+            && !self.recheck_sent_or_closed(key)
+    }
+
+    /// After a first `other` verdict whose barge-in was pending: keep it pending when a re-check
+    /// can still decide it (atomically with SpeechEnd, which drops it).
+    pub fn hold_for_recheck(&self, key: u64) -> bool {
+        let mut feed = lock(&self.feed);
+        if self.recheck_open_locked(&feed, key) {
+            feed.pending_barge.insert(key);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The final of `key` is reading its verdict: no re-check starts after this (an in-flight one
+    /// is still awaited).
+    pub fn close_recheck(&self, key: u64) {
+        let mut feed = lock(&self.feed);
+        if let Some(cur) = feed.cur.as_mut().filter(|c| c.key == key) {
+            cur.rechecked = true;
+        }
+        let mut book = lock(&self.shared.book);
+        if !book.closed.contains(&key) {
+            push_capped(&mut book.closed, key);
+        }
+    }
+
+    /// True when a re-check of `key` settled (`speakerRechecked` on the final).
+    pub fn rechecked(&self, key: u64) -> bool {
+        lock(&self.shared.book).rechecks_done.contains(&key)
+    }
+
     /// Decide a barge-in attempt for the live utterance `key`.
     pub fn barge_decision(&self, key: u64) -> BargeDecision {
         if !self.is_enrolled() {
             return BargeDecision::Proceed;
         }
         match self.outcome_for(key) {
-            Some(Outcome::Other) => BargeDecision::Suppress,
+            Some(Outcome::Other) => {
+                if self.recheck_open_locked(&lock(&self.feed), key) {
+                    BargeDecision::Defer
+                } else {
+                    BargeDecision::Suppress
+                }
+            }
+            Some(Outcome::Unknown)
+                if self.cfg.suppress_short_barge_in
+                    && self.stored_unknown_reason(key) == Some(UNKNOWN_SHORT) =>
+            {
+                BargeDecision::Suppress
+            }
             Some(_) => BargeDecision::Proceed,
             None => BargeDecision::Defer,
+        }
+    }
+
+    /// True when `verdict` vetoes the barge-in of its utterance: `other`, or (opt-in
+    /// `suppress_short_barge_in`) `unknown` because the speech was below `min_check_speech_ms`.
+    /// Every other `unknown` fails open.
+    /// A re-check releases the barge-in only when it says `caller`; any other re-check result
+    /// (including `unknown`) keeps the first `other` verdict's veto.
+    pub fn vetoes_barge(&self, verdict: &Verdict) -> bool {
+        if verdict.recheck {
+            return verdict.outcome != Outcome::Caller;
+        }
+        verdict.outcome == Outcome::Other
+            || (self.cfg.suppress_short_barge_in
+                && verdict.outcome == Outcome::Unknown
+                && verdict.reason == Some(UNKNOWN_SHORT))
+    }
+
+    fn stored_unknown_reason(&self, key: u64) -> Option<&'static str> {
+        lock(&self.shared.book)
+            .reasons
+            .iter()
+            .rev()
+            .find(|(k, _)| *k == key)
+            .map(|(_, r)| *r)
+    }
+
+    /// `speakerUnknownReason` for the final of `key` whose outcome is `Unknown`.
+    pub fn unknown_reason(&self, key: u64) -> &'static str {
+        if let Some(r) = self.stored_unknown_reason(key) {
+            return r;
+        }
+        if !self.is_enrolled() {
+            UNKNOWN_NOT_ENROLLED
+        } else if self.check_sent(key) {
+            // The final stopped waiting before the verdict arrived.
+            UNKNOWN_TIMEOUT
+        } else {
+            UNKNOWN_NO_CHECK
         }
     }
 
@@ -408,17 +620,20 @@ impl SpeakerGate {
     }
 
     /// The verdict a final of `key` can carry right now: the stored verdict, or `Unknown` when no
-    /// check was sent. `None` while a sent check has not settled (use [`Self::await_outcome`]
-    /// off the frame path).
+    /// check was sent. `None` while a sent check or re-check has not settled (use
+    /// [`Self::await_outcome`] off the frame path).
     pub fn settled_outcome(&self, key: u64) -> Option<Outcome> {
         if !self.check_sent(key) {
             return Some(self.outcome_for(key).unwrap_or(Outcome::Unknown));
         }
+        if self.recheck_in_flight(key) {
+            return None;
+        }
         self.outcome_for(key)
     }
 
-    /// Verdict for the final of `key`: waits at most `verify_timeout_ms` for a check that was
-    /// sent but has not settled, then `Unknown`.
+    /// Verdict for the final of `key`: waits at most `verify_timeout_ms` for a check (or re-check)
+    /// that was sent but has not settled, then the stored verdict or `Unknown`.
     pub async fn await_outcome(&self, key: u64) -> Outcome {
         if !self.check_sent(key) {
             return self.outcome_for(key).unwrap_or(Outcome::Unknown);
@@ -430,7 +645,9 @@ impl SpeakerGate {
             tokio::pin!(notified);
             notified.as_mut().enable();
             if let Some(o) = self.outcome_for(key) {
-                return o;
+                if !self.recheck_in_flight(key) {
+                    return o;
+                }
             }
             let left = deadline.saturating_sub(started.elapsed());
             if left.is_zero() || tokio::time::timeout(left, notified).await.is_err() {
@@ -544,45 +761,67 @@ async fn run(
                 key,
                 pcm,
                 speech_bytes,
+                recheck,
             } => {
                 let started = Instant::now();
-                let (outcome, timed_out) = match reference.as_ref() {
-                    None => (Outcome::Unknown, false),
-                    Some(_) if speech_bytes < min_check_bytes => (Outcome::Unknown, false),
+                let (outcome, timed_out, reason) = match reference.as_ref() {
+                    None => (Outcome::Unknown, false, Some(UNKNOWN_NOT_ENROLLED)),
+                    Some(_) if speech_bytes < min_check_bytes => {
+                        (Outcome::Unknown, false, Some(UNKNOWN_SHORT))
+                    }
                     Some(reference) => match embed_bounded(&embedder, pcm, verify).await {
                         Ok(Some(v)) => match cosine(reference, &v) {
                             Some(score) => {
                                 crate::agent::voice_debug(format!(
-                                    "speaker gate score key={key} score={score:.3}"
+                                    "speaker gate score key={key} score={score:.3} recheck={recheck}"
                                 ));
                                 if score >= cfg.threshold {
-                                    (Outcome::Caller, false)
+                                    (Outcome::Caller, false, None)
                                 } else {
-                                    (Outcome::Other, false)
+                                    (Outcome::Other, false, None)
                                 }
                             }
-                            None => (Outcome::Unknown, false),
+                            None => (Outcome::Unknown, false, Some(UNKNOWN_NO_EMBEDDING)),
                         },
-                        Ok(None) => (Outcome::Unknown, false),
+                        Ok(None) => (Outcome::Unknown, false, Some(UNKNOWN_NO_EMBEDDING)),
                         Err(EmbedFail::Timeout) => {
                             let elapsed_ms = started.elapsed().as_millis();
                             shared.warn(format!(
                                 "speaker gate verify timeout key={key} elapsed_ms={elapsed_ms}"
                             ));
-                            (Outcome::Unknown, true)
+                            (Outcome::Unknown, true, Some(UNKNOWN_TIMEOUT))
                         }
-                        Err(EmbedFail::Error) => (Outcome::Unknown, false),
+                        Err(EmbedFail::Error) => (Outcome::Unknown, false, Some(UNKNOWN_ERROR)),
                     },
                 };
                 {
                     let mut book = lock(&shared.book);
-                    push_capped(&mut book.verdicts, (key, outcome));
+                    if recheck {
+                        // Upgrade only: `other` -> `caller`. Anything else keeps `other`.
+                        if outcome == Outcome::Caller {
+                            push_capped(&mut book.verdicts, (key, outcome));
+                        }
+                        push_capped(&mut book.rechecks_done, key);
+                    } else {
+                        push_capped(&mut book.verdicts, (key, outcome));
+                        if let Some(r) = reason {
+                            push_capped(&mut book.reasons, (key, r));
+                        }
+                    }
+                }
+                if recheck {
+                    eprintln!(
+                        "[speaker-gate] info: speaker gate re-check key={key} outcome={}",
+                        outcome.as_str()
+                    );
                 }
                 shared.notify.notify_waiters();
                 on_verdict(Verdict {
                     key,
                     outcome,
                     timed_out,
+                    reason,
+                    recheck,
                 });
             }
         }
@@ -620,6 +859,281 @@ mod tests {
         let pcm = enrolled.expect("enroll message");
         assert_eq!(pcm.len(), 5 * 640);
         assert!(pcm.iter().all(|b| *b == 2), "pre-roll bytes in enrollment");
+    }
+
+    // ---- re-check (recheck_on_other) ----------------------------------------------------------
+
+    const FRAME: usize = 640; // 20 ms of 16 kHz mono s16le
+
+    fn enrolled_gate(recheck: bool) -> Arc<SpeakerGate> {
+        let gate = SpeakerGate::new(SpeakerGateConfig {
+            enabled: true,
+            model_path: Some("m.onnx".into()),
+            check_speech_ms: 200,
+            min_check_speech_ms: 100,
+            recheck_on_other: recheck,
+            ..SpeakerGateConfig::default()
+        });
+        gate.shared.enrolled.store(true, Ordering::SeqCst);
+        gate
+    }
+
+    fn store(gate: &SpeakerGate, key: u64, outcome: Outcome) {
+        push_capped(&mut lock(&gate.shared.book).verdicts, (key, outcome));
+    }
+
+    /// (key, pcm bytes, speech bytes, recheck) of every check sent so far.
+    fn checks(rx: &mut UnboundedReceiver<Msg>) -> Vec<(u64, usize, usize, bool)> {
+        let mut out = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            if let Msg::Check {
+                key,
+                pcm,
+                speech_bytes,
+                recheck,
+            } = msg
+            {
+                out.push((key, pcm.len(), speech_bytes, recheck));
+            }
+        }
+        out
+    }
+
+    /// Pre-roll, then `begin` plus `speech_frames - 1` frames (the onset frame counts as speech).
+    fn start(gate: &SpeakerGate, key: u64, speech_frames: usize) {
+        for _ in 0..15 {
+            gate.push_frame(&[1_u8; FRAME]);
+        }
+        gate.begin(key, &[2_u8; FRAME]);
+        for _ in 1..speech_frames {
+            gate.push_frame(&[2_u8; FRAME]);
+        }
+    }
+
+    /// The frame count is the clock: the re-check goes out exactly when the collected speech
+    /// reaches `recheck_barge_earliest_ms(check_speech_ms)`, never a frame earlier.
+    #[test]
+    fn recheck_goes_out_at_the_named_bound() {
+        assert_eq!(recheck_barge_earliest_ms(1500), 3000);
+        assert_eq!(
+            recheck_barge_earliest_ms(SpeakerGateConfig::default().check_speech_ms),
+            3000
+        );
+        assert!(SpeakerGateConfig::default().recheck_on_other);
+        let gate = enrolled_gate(true);
+        let mut rx = lock(&gate.rx).take().unwrap();
+        start(&gate, 1, 10);
+        assert_eq!(checks(&mut rx), vec![(1, 300 * 32 + 6400, 6400, false)]);
+        store(&gate, 1, Outcome::Other);
+        let bound_frames = (recheck_barge_earliest_ms(200) / 20) as usize;
+        for _ in 10..bound_frames - 1 {
+            gate.push_frame(&[3_u8; FRAME]);
+        }
+        assert!(checks(&mut rx).is_empty(), "no re-check before the bound");
+        assert_eq!(gate.barge_decision(1), BargeDecision::Defer);
+        gate.push_frame(&[3_u8; FRAME]);
+        // Second window (6400 bytes) with 300 ms of pre-roll taken from the first window.
+        assert_eq!(checks(&mut rx), vec![(1, 300 * 32 + 6400, 6400, true)]);
+        assert_eq!(
+            gate.settled_outcome(1),
+            None,
+            "final waits for the re-check"
+        );
+        for _ in 0..40 {
+            gate.push_frame(&[3_u8; FRAME]);
+        }
+        gate.end_utterance();
+        assert!(checks(&mut rx).is_empty(), "at most one re-check per key");
+    }
+
+    #[test]
+    fn caller_or_unknown_first_verdict_is_never_rechecked() {
+        for outcome in [Outcome::Caller, Outcome::Unknown] {
+            let gate = enrolled_gate(true);
+            let mut rx = lock(&gate.rx).take().unwrap();
+            start(&gate, 1, 10);
+            store(&gate, 1, outcome);
+            for _ in 0..40 {
+                gate.push_frame(&[3_u8; FRAME]);
+            }
+            gate.end_utterance();
+            let sent = checks(&mut rx);
+            assert_eq!(sent.len(), 1, "{outcome:?}: exactly one check");
+            assert!(!sent[0].3);
+            assert_eq!(gate.settled_outcome(1), Some(outcome));
+        }
+    }
+
+    #[test]
+    fn recheck_off_is_one_check_with_the_old_cap() {
+        let gate = enrolled_gate(false);
+        let mut rx = lock(&gate.rx).take().unwrap();
+        start(&gate, 1, 10);
+        store(&gate, 1, Outcome::Other);
+        for _ in 0..40 {
+            gate.push_frame(&[3_u8; FRAME]);
+        }
+        {
+            let feed = lock(&gate.feed);
+            let cur = feed.cur.as_ref().unwrap();
+            assert_eq!(cur.buf.len() - cur.pre, 6400, "buffer capped at one window");
+        }
+        assert_eq!(gate.barge_decision(1), BargeDecision::Suppress);
+        gate.end_utterance();
+        assert_eq!(checks(&mut rx).len(), 1);
+    }
+
+    #[test]
+    fn utterance_ending_before_the_window_keeps_other_and_drops_the_held_barge() {
+        let gate = enrolled_gate(true);
+        let mut rx = lock(&gate.rx).take().unwrap();
+        start(&gate, 1, 10);
+        store(&gate, 1, Outcome::Other);
+        gate.set_pending_barge(1);
+        assert!(gate.take_pending_barge(1));
+        assert!(
+            gate.hold_for_recheck(1),
+            "live utterance: held for the re-check"
+        );
+        for _ in 0..5 {
+            gate.push_frame(&[3_u8; FRAME]);
+        }
+        gate.end_utterance();
+        assert_eq!(checks(&mut rx).len(), 1, "no re-check");
+        assert!(
+            !gate.take_pending_barge(1),
+            "held barge-in dropped at SpeechEnd"
+        );
+        assert_eq!(gate.barge_decision(1), BargeDecision::Suppress);
+        assert_eq!(gate.settled_outcome(1), Some(Outcome::Other));
+        assert!(!gate.rechecked(1));
+    }
+
+    #[test]
+    fn a_final_that_read_its_verdict_blocks_a_later_recheck() {
+        let gate = enrolled_gate(true);
+        let mut rx = lock(&gate.rx).take().unwrap();
+        start(&gate, 1, 10);
+        store(&gate, 1, Outcome::Other);
+        gate.close_recheck(1);
+        for _ in 0..20 {
+            gate.push_frame(&[3_u8; FRAME]);
+        }
+        assert_eq!(checks(&mut rx).len(), 1);
+        assert_eq!(gate.settled_outcome(1), Some(Outcome::Other));
+        assert!(!gate.hold_for_recheck(1));
+    }
+
+    /// One scripted embedding: optionally held until the notify fires.
+    type Step = (Option<Arc<Notify>>, Vec<f32>);
+
+    struct SeqEmbedder {
+        queue: Mutex<VecDeque<Step>>,
+    }
+
+    #[async_trait::async_trait]
+    impl SpeakerEmbedder for SeqEmbedder {
+        async fn embed(
+            &self,
+            _pcm: Bytes,
+            _rate: u32,
+        ) -> crate::error::SpeechResult<Option<Vec<f32>>> {
+            let next = lock(&self.queue).pop_front();
+            let Some((wait, v)) = next else {
+                return Ok(None);
+            };
+            if let Some(n) = wait {
+                n.notified().await;
+            }
+            Ok(Some(v))
+        }
+    }
+
+    /// A re-check result for utterance A that lands after A's final read its verdict and B is
+    /// live is applied to A's key only: B's verdict and B's held barge-in are untouched, and the
+    /// result never downgrades anything (`rt.stale-event-by-key`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stale_recheck_result_never_touches_the_next_utterance() {
+        let caller = vec![1.0_f32, 0.0];
+        let other = vec![0.0_f32, 1.0];
+        let release = Arc::new(Notify::new());
+        let gate = SpeakerGate::new(SpeakerGateConfig {
+            enabled: true,
+            model_path: Some("m.onnx".into()),
+            enroll_speech_ms: 100,
+            check_speech_ms: 200,
+            min_check_speech_ms: 100,
+            verify_timeout_ms: 5000,
+            ..SpeakerGateConfig::default()
+        });
+        let verdicts: Arc<Mutex<Vec<Verdict>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&verdicts);
+        gate.spawn(
+            Box::new(SeqEmbedder {
+                queue: Mutex::new(VecDeque::from(vec![
+                    (None, caller.clone()),                       // enrollment
+                    (None, other.clone()),                        // A: first check
+                    (Some(Arc::clone(&release)), caller.clone()), // A: re-check, held
+                    (None, caller.clone()),                       // B: first check
+                ])),
+            }),
+            Box::new(move |v| lock(&sink).push(v)),
+        );
+        gate.send(Msg::Enroll {
+            pcm: vec![0_u8; 100 * BYTES_PER_MS],
+        });
+        let wait = |n: usize| {
+            let verdicts = Arc::clone(&verdicts);
+            async move {
+                for _ in 0..500 {
+                    if lock(&verdicts).len() >= n {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                panic!("verdict {n} never arrived");
+            }
+        };
+        for _ in 0..500 {
+            if gate.is_enrolled() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(gate.is_enrolled());
+        start(&gate, 1, 10);
+        wait(1).await;
+        assert_eq!(gate.outcome_for(1), Some(Outcome::Other));
+        for _ in 0..10 {
+            gate.push_frame(&[3_u8; FRAME]);
+        }
+        assert_eq!(gate.settled_outcome(1), None, "A's re-check in flight");
+        // A's final stops waiting (its bound passed) and reads `other`; B starts and is held.
+        gate.close_recheck(1);
+        gate.end_utterance();
+        start(&gate, 2, 10);
+        gate.set_pending_barge(2);
+        release.notify_one();
+        wait(3).await;
+        let got = lock(&verdicts).clone();
+        assert_eq!(
+            got.iter()
+                .map(|v| (v.key, v.outcome, v.recheck))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, Outcome::Other, false),
+                (1, Outcome::Caller, true),
+                (2, Outcome::Caller, false),
+            ]
+        );
+        assert!(!gate.take_pending_barge(1), "nothing held for A");
+        assert!(
+            gate.take_pending_barge(2),
+            "B's held barge-in untouched by A's result"
+        );
+        assert_eq!(gate.outcome_for(2), Some(Outcome::Caller));
+        assert!(gate.rechecked(1));
+        assert!(!gate.rechecked(2));
     }
 
     #[test]

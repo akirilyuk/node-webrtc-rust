@@ -8,9 +8,11 @@
  * --long-bystander-db -6`), loud enough to open the adaptive VAD over the babble, so each pass has
  * bystander finals for the gate to label other. The background babble is at the scene level, 15 dB
  * below the caller. No babble sentence starts
- * within 1 s before a caller turn (`--babble-clear-ms 1000`): other speech that starts less than
- * about 1 s before the caller can fall into the 1.5 s check and make it reject the caller, so the
- * barge-in is suppressed and the final is labelled other. The agent answers every
+ * within 1 s before a caller turn (`--babble-clear-ms 1000`). That is below the 1.6 s VAD end
+ * silence on purpose: babble and bystanders merge into caller utterances, the case the speaker
+ * gate's further windows (`recheckMaxWindows`) must catch. Merged utterances are paired by
+ * `utteranceId` and `speakerCheckWindows` (see the helpers); lockstep test
+ * `roundtrip-noisy-bystander-clear.test.ts`. The agent answers every
  * `user_speech_final` with a long reply, like an app, so every turn starts during playback.
  * `barge_in` is paired with turns by `utteranceId`: each turn takes the first `user_speaking_start`
  * inside its scene slot, everything else goes by id.
@@ -26,8 +28,12 @@
  *     bystander turn per pass must be `other` without a barge-in (anti-vacuous);
  *   - every caller turn barges in, its final has `speaker: 'caller'`, and qualified phrases match
  *     the manifest text by the roundtrip oracle (`wordSimilarity`; long sentences are not judged);
- *   - the barge-in comes at most 300 ms after the later of speech start + checkSpeechMs and the
- *     first partial with >= minSttPartialTokens tokens on that utterance; at most 3 s after start.
+ *   - the barge-in comes at most 300 ms after the later of the verdict (speech start + checkSpeechMs,
+ *     or + `speakerCheckWindows` x checkSpeechMs for a re-checked final) and the first partial with
+ *     >= minSttPartialTokens tokens on that utterance; at most 3 s after start when not re-checked.
+ *   - TEMPORARY (step B: split on speaker change; plan
+ *     development/node-webrtc-rust/plans/2026-10-31-speaker-gate-continuous-recheck.md step 5): a
+ *     caller turn covered by an earlier `caller` utterance is absorbed into it, at most 25 % of them.
  *
  * Needs the speaker assets (`npm run download-speaker`) and the scenes:
  *   cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
@@ -230,6 +236,7 @@ async function runPass(params: {
           speaker: event.speaker,
           speakerUnknownReason: event.speakerUnknownReason,
           speakerRechecked: event.speakerRechecked,
+          speakerCheckWindows: event.speakerCheckWindows,
         })
       }
     } catch (error) {

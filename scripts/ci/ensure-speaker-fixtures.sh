@@ -42,6 +42,11 @@ ensure_speaker_fixtures() {
   local ex="$root/examples/voice-agent-local-sherpa"
   local out="$ex/.models/speaker-fixtures"
   local stamp="$out/.speaker-fixtures-args"
+  # Babble clear (1000 ms) is below the VAD end silence (minSilenceDurationMs + speechPadMs = 1600 ms)
+  # on purpose: babble and bystanders merge into caller utterances, the case the speaker gate's
+  # further windows (recheckMaxWindows) must catch. Lockstep test:
+  # examples/voice-agent-local-sherpa/src/roundtrip-noisy-bystander-clear.test.ts. Plan:
+  # development/node-webrtc-rust/plans/2026-10-31-speaker-gate-continuous-recheck.md (chunk 3).
   local args=(
     --models "$ex/.models/speaker" --main-tts "$ex/.models/vits-piper-en_US-amy-low"
     --phrases "$ex/stt-phrase-qualification.json" --out "$out"

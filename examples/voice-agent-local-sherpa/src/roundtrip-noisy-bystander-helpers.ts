@@ -22,7 +22,7 @@ export const BARGE_SLACK_MS = 300
 /**
  * Absolute cap on barge-in delay after the caller's `user_speaking_start`, for turns decided by
  * the first check. A turn whose final carries `speakerRechecked: true` is bounded by
- * {@link expectedBargeAtMs} alone (verdict at start + 2 × checkSpeechMs).
+ * {@link expectedBargeAtMs} alone (verdict at start + `speakerCheckWindows` × checkSpeechMs).
  */
 export const BARGE_ABS_CAP_MS = 3000
 export const BYSTANDER_RELATIVE_DB = -15
@@ -54,7 +54,18 @@ export interface Seen {
   speakerUnknownReason?: string
   /** `user_speech_final`: a re-check after a first `other` verdict decided it (product field). */
   speakerRechecked?: boolean
+  /**
+   * `user_speech_final`: check windows scored for the utterance, the first included (product field
+   * `speakerCheckWindows`). A re-checked final must carry it; the oracle never defaults it.
+   */
+  speakerCheckWindows?: number
 }
+
+/** Plan of the temporary absorb rule ({@link pairTurnUtterances}). */
+export const ABSORB_PLAN =
+  'development/node-webrtc-rust/plans/2026-10-31-speaker-gate-continuous-recheck.md'
+/** The run fails when more than this share of caller turns is absorbed into an earlier utterance. */
+export const MAX_ABSORBED_SHARE = 0.25
 
 /**
  * Token count as the product counts it (`stt_partial_token_count` in crates/speech config.rs):
@@ -69,13 +80,16 @@ export function sttPartialTokenCount(text: string): number {
  * the speaker verdict and the first `user_speech_partial` on the same `utteranceId` with at least
  * {@link MIN_STT_PARTIAL_TOKENS} tokens (`requireSttPartial`). The verdict is speech start +
  * checkSpeechMs, or, when the utterance's final says `speakerRechecked: true`, speech start +
- * `speakerRecheckBargeEarliestMs(checkSpeechMs)` (the product's re-check bound).
- * `undefined` when the utterance never had a qualifying partial.
+ * `speakerRecheckBargeEarliestMs(checkSpeechMs, final.speakerCheckWindows)` (the deciding window).
+ * `undefined` when the utterance never had a qualifying partial, or when a re-checked final has no
+ * `speakerCheckWindows` (never defaulted; {@link evaluateTurns} reports it).
  */
 export function expectedBargeAtMs(start: Seen, seen: Seen[]): number | undefined {
   const partial = qualifyingPartial(start, seen)
   if (partial == null) return undefined
-  return Math.max(start.atMs + verdictAfterMs(start, seen), partial.atMs)
+  const verdictAfter = verdictAfterMs(start, seen)
+  if (verdictAfter == null) return undefined
+  return Math.max(start.atMs + verdictAfter, partial.atMs)
 }
 
 /** True when the start's utterance final reports a re-check (product field `speakerRechecked`). */
@@ -88,10 +102,27 @@ export function isRechecked(start: Seen, seen: Seen[]): boolean {
   )
 }
 
-function verdictAfterMs(start: Seen, seen: Seen[]): number {
-  return isRechecked(start, seen)
-    ? speakerRecheckBargeEarliestMs(CHECK_SPEECH_MS, 2)
-    : CHECK_SPEECH_MS
+/** Speech time until the verdict that releases the start's barge-in; `undefined` = no window count. */
+function verdictAfterMs(start: Seen, seen: Seen[]): number | undefined {
+  if (!isRechecked(start, seen)) return CHECK_SPEECH_MS
+  const windows = seen.find(
+    (e) =>
+      e.type === SPEECH_EVENT_TYPE.userSpeechFinal &&
+      e.utteranceId === start.utteranceId &&
+      e.speakerRechecked === true,
+  )?.speakerCheckWindows
+  return windows == null ? undefined : speakerRecheckBargeEarliestMs(CHECK_SPEECH_MS, windows)
+}
+
+/** True when the agent was speaking at `atMs`: its last speaking event up to then is a start. */
+function agentSpeakingAt(atMs: number, seen: Seen[]): boolean {
+  let speaking = false
+  for (const e of seen) {
+    if (e.atMs > atMs) break
+    if (e.type === SPEECH_EVENT_TYPE.agentSpeakingStart) speaking = true
+    else if (e.type === SPEECH_EVENT_TYPE.agentSpeakingEnd) speaking = false
+  }
+  return speaking
 }
 
 /** First `user_speech_partial` on the start's `utteranceId` with enough tokens for a barge-in. */
@@ -178,11 +209,18 @@ export function utteranceEndMs(utteranceId: string, seen: Seen[]): number | unde
  * - its span covers that caller turn's scene start: speech start strictly before, and speech end
  *   (`user_speaking_end`, else the final) strictly after. An utterance that ends exactly at the
  *   caller's scene start holds no caller speech and stays with the bystander (zero gap);
- * - the re-check window reaches the caller's scene start: caller start strictly before speech
- *   start + `speakerRecheckBargeEarliestMs(checkSpeechMs)`. The product scores the re-check on
- *   speech [start + checkSpeechMs, start + 2 × checkSpeechMs], so a window that ends before the
- *   caller starts held only bystander or babble audio, and its `caller` verdict is a bystander
- *   false upgrade, not the caller's turn.
+ * - the deciding window reaches the caller's scene start: caller start strictly before speech
+ *   start + `speakerRecheckBargeEarliestMs(checkSpeechMs, final.speakerCheckWindows)`. The product
+ *   scores window w on speech [start + (w - 1) × checkSpeechMs, start + w × checkSpeechMs], so a
+ *   deciding window that ends before the caller starts held only bystander or babble audio, and
+ *   its `caller` verdict is a bystander false upgrade, not the caller's turn. A re-checked final
+ *   without `speakerCheckWindows` is never paired (and {@link evaluateTurns} fails it).
+ *
+ * TEMPORARY (step B: split on speaker change), plan {@link ABSORB_PLAN} step 5: a final with
+ * verdict `caller` whose product span (`user_speaking_start` to `user_speaking_end` of its
+ * `utteranceId`, else the final) strictly covers a caller turn's scene start that no utterance
+ * claimed absorbs that turn (`absorbed`, turn index to the covering start). There is no VAD pause
+ * in the babble and no re-check after a first `caller` verdict. An `other` final never absorbs.
  *
  * The bystander turn then has no utterance; the caller turn index goes into `merged`. Anything
  * else keeps its slot pairing, so a re-checked `caller` that never reaches a caller turn still
@@ -191,7 +229,7 @@ export function utteranceEndMs(utteranceId: string, seen: Seen[]): number | unde
 export function pairTurnUtterances(
   turns: Turn[],
   seen: Seen[],
-): { starts: (Seen | undefined)[]; merged: Set<number> } {
+): { starts: (Seen | undefined)[]; merged: Set<number>; absorbed: Map<number, Seen> } {
   const allStarts = seen.filter(
     (e) => e.type === SPEECH_EVENT_TYPE.userSpeakingStart && e.utteranceId != null,
   )
@@ -221,12 +259,30 @@ export function pairTurnUtterances(
     const callerStartMs = turns[j]!.startMs
     const endMs = utteranceEndMs(start.utteranceId, seen)
     if (endMs == null || !(start.atMs < callerStartMs && endMs > callerStartMs)) return
-    if (callerStartMs >= start.atMs + speakerRecheckBargeEarliestMs(CHECK_SPEECH_MS, 2)) return
+    if (final.speakerCheckWindows == null) return
+    const decidedBy =
+      start.atMs + speakerRecheckBargeEarliestMs(CHECK_SPEECH_MS, final.speakerCheckWindows)
+    if (callerStartMs >= decidedBy) return
     starts[j] = start
     starts[i] = undefined
     merged.add(j)
   })
-  return { starts, merged }
+  // TEMPORARY (step B: split on speaker change) - see ABSORB_PLAN, step 5.
+  const absorbed = new Map<number, Seen>()
+  turns.forEach((turn, j) => {
+    if (turn.role !== 'main' || starts[j] != null) return
+    const cover = allStarts.find((s) => {
+      if (s.atMs >= turn.startMs) return false
+      const final = seen.find(
+        (e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal && e.utteranceId === s.utteranceId,
+      )
+      if (final?.speaker !== 'caller') return false
+      const endMs = utteranceEndMs(s.utteranceId!, seen)
+      return endMs != null && endMs > turn.startMs
+    })
+    if (cover != null) absorbed.set(j, cover)
+  })
+  return { starts, merged, absorbed }
 }
 
 /**
@@ -274,7 +330,16 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
       failures.push(`${label}: barge_in at ${b.atMs} ms without utteranceId`)
   }
   const bargesOf = (id: string): Seen[] => barges.filter((b) => b.utteranceId === id)
-  const { starts, merged } = pairTurnUtterances(turns, seen)
+  // A re-checked final must say how many windows decided it; the oracle never defaults it.
+  for (const f of finals.values()) {
+    if (f.speakerRechecked === true && f.speakerCheckWindows == null) {
+      failures.push(
+        `${label}: re-checked final has no speakerCheckWindows (utterance ${f.utteranceId})`,
+      )
+    }
+  }
+  const { starts, merged, absorbed } = pairTurnUtterances(turns, seen)
+  let absorbedCount = 0
   let bystandersHeard = 0
   turns.forEach((turn, i) => {
     const tag = `${label} turn ${i} (${turn.role} ${turn.kind} "${turn.text.slice(0, 30)}")`
@@ -303,7 +368,37 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
       return
     }
     if (start == null || id == null) {
-      failures.push(`${tag}: caller speech start not detected`)
+      // TEMPORARY (step B: split on speaker change) - see ABSORB_PLAN, step 5.
+      const cover = absorbed.get(i)
+      const coverId = cover?.utteranceId
+      const coverFinal = coverId != null ? finals.get(coverId) : undefined
+      if (cover == null || coverId == null || coverFinal == null) {
+        failures.push(`${tag}: caller speech start not detected`)
+        return
+      }
+      absorbedCount += 1
+      console.log(
+        `${tag}: absorbed into utterance ${coverId} (started ${cover.atMs} ms, final caller covers the scene start ${turn.startMs} ms)`,
+      )
+      if (
+        agentSpeakingAt(turn.startMs, seen) &&
+        !bargesOf(coverId).some((b) => b.atMs >= turn.startMs)
+      ) {
+        failures.push(
+          `${tag}: absorbed into ${coverId}, agent was speaking at the scene start ${turn.startMs} ms, no barge_in after it`,
+        )
+      }
+      if (turn.kind === 'qualified') {
+        const sim = callerWindowSimilarity(turn.text, coverFinal.text ?? '')
+        console.log(
+          `${tag}: recognized "${coverFinal.text ?? ''}" similarity ${sim.toFixed(2)} (absorbed, best caller-length window)`,
+        )
+        if (sim < DEFAULT_BARGE_PHRASE_MIN_SIMILARITY) {
+          failures.push(
+            `${tag}: absorbed into ${coverId}, recognized "${coverFinal.text ?? ''}" similarity ${sim.toFixed(2)}`,
+          )
+        }
+      }
       return
     }
     const isMerged = merged.has(i)
@@ -327,7 +422,9 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
       console.log(
         `${tag}: barge-in ${delay} ms after speech start, ${expected != null ? barge.atMs - expected : 'n/a'} ms after expected`,
       )
-      if (expected == null) {
+      if (expected == null && isRechecked(start, seen) && verdictAfterMs(start, seen) == null) {
+        // Reported once per final above.
+      } else if (expected == null) {
         failures.push(
           `${tag}: barge_in without a qualifying partial (>= ${MIN_STT_PARTIAL_TOKENS} tokens) on ${id}`,
         )
@@ -341,6 +438,13 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
       if (isMerged && barge.atMs <= turn.startMs) {
         failures.push(
           `${tag}: barge-in at ${barge.atMs} ms on merged utterance ${id}, not after the caller's scene start ${turn.startMs} ms`,
+        )
+      }
+      // A barge-in released by the deciding window cannot come before that window ends.
+      const decided = isRechecked(start, seen) ? verdictAfterMs(start, seen) : undefined
+      if (decided != null && delay < decided) {
+        failures.push(
+          `${tag}: barge-in ${delay} ms after speech start, before the deciding window ends at ${decided} ms`,
         )
       }
       if (delay > BARGE_ABS_CAP_MS && !isRechecked(start, seen)) {
@@ -366,6 +470,18 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
       }
     }
   })
+  const callerTurns = turns.filter((t) => t.role === 'main').length
+  if (absorbedCount > 0) {
+    console.log(
+      `${label}: caller turns absorbed into an earlier utterance: ${absorbedCount}/${callerTurns}`,
+    )
+  }
+  // TEMPORARY (step B: split on speaker change) - see ABSORB_PLAN, step 5.
+  if (callerTurns > 0 && absorbedCount / callerTurns > MAX_ABSORBED_SHARE) {
+    failures.push(
+      `${label}: ${absorbedCount} of ${callerTurns} caller turns absorbed into an earlier utterance, more than ${MAX_ABSORBED_SHARE * 100} %`,
+    )
+  }
   console.log(`${label}: bystander finals tagged other: ${bystandersHeard}`)
   if (bystandersHeard < MIN_OTHER_BYSTANDERS) {
     failures.push(

@@ -27,8 +27,8 @@ export const BARGE_SLACK_MS = 300
  */
 export const BARGE_EARLY_SLACK_MS = 50
 /**
- * Absolute cap on barge-in delay after the caller's `user_speaking_start`, for turns decided by
- * the first check. A turn whose final carries `speakerRechecked: true` is bounded by
+ * Absolute cap on barge-in delay after the caller's onset (the later of `user_speaking_start` and
+ * the scene turn's start), for turns decided by the first check. A turn whose final carries `speakerRechecked: true` is bounded by
  * {@link expectedBargeAtMs} alone (verdict at start + `speakerCheckWindows` × checkSpeechMs).
  */
 export const BARGE_ABS_CAP_MS = 3000
@@ -514,8 +514,13 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
           `${tag}: barge-in ${delay} ms after speech start, before the deciding window ends at ${decided} ms (slack ${BARGE_EARLY_SLACK_MS} ms)`,
         )
       }
-      if (delay > BARGE_ABS_CAP_MS && !isRechecked(start, seen)) {
-        failures.push(`${tag}: barge-in ${delay} ms after speech start > cap ${BARGE_ABS_CAP_MS}`)
+      // The VAD can open on babble or a bystander tail before the caller speaks, so speech start is
+      // not the caller's onset; the cap bounds the caller-perceived latency.
+      const capFrom = Math.max(start.atMs, turn.startMs)
+      if (barge.atMs - capFrom > BARGE_ABS_CAP_MS && !isRechecked(start, seen)) {
+        failures.push(
+          `${tag}: barge-in ${barge.atMs - capFrom} ms after the caller's onset (max of speech start and scene turn start) > cap ${BARGE_ABS_CAP_MS}`,
+        )
       }
     }
     if (final == null) {

@@ -259,6 +259,66 @@ describe('evaluateTurns', () => {
     expect(evaluateTurns(TURNS, seen, 'p').join('\n')).toMatch(/> cap 3000/)
   })
 
+  describe('absolute cap counts from the caller onset', () => {
+    const turn8: Turn = {
+      role: 'main',
+      startMs: 67_226,
+      endMs: 70_000,
+      text: 'charlie one two three',
+      kind: 'qualified',
+    }
+    const by: Turn = {
+      role: 'bystander',
+      startMs: 75_000,
+      endMs: 77_000,
+      text: 'weather',
+      kind: 'background',
+    }
+    const by0: Turn = { ...by, startMs: 58_000, endMs: 62_000 }
+    const scene = [by0, turn8, by]
+    const make = (startAt: number, partialAt: number, bargeAt: number, t: Turn = turn8): Seen[] =>
+      [
+        ev('user_speaking_start', 58_100, { utteranceId: 'b0' }),
+        ev('user_speech_final', 62_500, { utteranceId: 'b0', text: 'x', speaker: 'other' }),
+        ev('user_speaking_start', startAt, { utteranceId: 'c' }),
+        ev('user_speech_partial', partialAt, { utteranceId: 'c', text: 'charlie one' }),
+        ev('barge_in', bargeAt, { utteranceId: 'c' }),
+        ev('user_speech_final', Math.max(bargeAt, t.endMs) + 500, {
+          utteranceId: 'c',
+          text: t.text,
+          speaker: 'caller',
+        }),
+        ev('user_speaking_start', 75_100, { utteranceId: 'b' }),
+        ev('user_speech_final', 78_000, { utteranceId: 'b', text: 'x', speaker: 'other' }),
+      ].sort((a, b) => a.atMs - b.atMs)
+
+    it("the cap counts from the caller's onset when the VAD opened early", () => {
+      expect(evaluateTurns(scene, make(66_472, 69_545, 69_547), 'p')).toEqual([])
+    })
+
+    it("the cap still fails a slow barge after the caller's onset", () => {
+      expect(evaluateTurns(scene, make(66_472, 70_300, 70_302), 'p').join('\n')).toMatch(
+        /3076 ms after the caller's onset .* > cap 3000/,
+      )
+    })
+
+    it('speech start later than the turn start uses speech start', () => {
+      const t: Turn = { ...caller, startMs: 10_000, endMs: 14_000 }
+      const sc = [t, { ...by, startMs: 20_000, endMs: 22_000 }]
+      const seen = [
+        ev('user_speaking_start', 10_100, { utteranceId: 'c' }),
+        ev('user_speech_partial', 13_000, { utteranceId: 'c', text: 'please check' }),
+        ev('barge_in', 13_200, { utteranceId: 'c' }),
+        ev('user_speech_final', 14_500, { utteranceId: 'c', text: t.text, speaker: 'caller' }),
+        ev('user_speaking_start', 20_100, { utteranceId: 'b' }),
+        ev('user_speech_final', 22_500, { utteranceId: 'b', text: 'x', speaker: 'other' }),
+      ]
+      expect(evaluateTurns(sc, seen, 'p').join('\n')).toMatch(
+        /3100 ms after the caller's onset .* > cap 3000/,
+      )
+    })
+  })
+
   it('fails a bystander upgraded to caller by a re-check, with its barge-in', () => {
     const seen = [
       ...healthy().map((e) =>

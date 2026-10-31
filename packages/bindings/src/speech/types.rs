@@ -485,6 +485,7 @@ impl TryFrom<JsSpeakerGateConfig> for SpeakerGateConfig {
                 .suppress_short_barge_in
                 .unwrap_or(d.suppress_short_barge_in),
             recheck_on_other: value.recheck_on_other.unwrap_or(d.recheck_on_other),
+            recheck_max_windows: d.recheck_max_windows,
             on_mismatch,
             verify_timeout_ms: value.verify_timeout_ms.unwrap_or(d.verify_timeout_ms),
         })

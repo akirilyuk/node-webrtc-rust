@@ -3084,6 +3084,15 @@ impl VoiceAgent {
             .map_or_else(Vec::new, |g| g.warnings())
     }
 
+    /// Test hook: hold back verdict delivery while the verdicts stay stored (see
+    /// `SpeakerGate::park_verdict_delivery`).
+    #[doc(hidden)]
+    pub fn speaker_gate_park_verdicts(&self, on: bool) {
+        if let Some(g) = self.speaker_gate.as_ref() {
+            g.park_verdict_delivery(on);
+        }
+    }
+
     /// Applies one verdict to its own utterance only (`rt.stale-event-by-key`).
     async fn apply_speaker_verdict(&self, verdict: Verdict) {
         let Some(gate) = self.speaker_gate.as_ref() else {
@@ -3114,13 +3123,10 @@ impl VoiceAgent {
             return;
         }
         if gate.vetoes_barge(&verdict) {
-            if verdict.outcome == Outcome::Other
-                && !verdict.recheck
-                && gate.hold_for_recheck(verdict.key)
-            {
+            if verdict.outcome == Outcome::Other && gate.hold_for_recheck(verdict.key) {
                 eprintln!(
-                    "[speaker-gate] info: speaker gate holds barge-in for re-check key={}",
-                    verdict.key
+                    "[speaker-gate] info: speaker gate holds barge-in for re-check key={} window={}",
+                    verdict.key, verdict.window
                 );
                 return;
             }
@@ -3748,14 +3754,25 @@ impl VoiceAgent {
         outcome: Outcome,
         slot: Option<u64>,
     ) {
-        let drop_mismatch = self.inner.lock().await.config.speaker_gate.on_mismatch
-            == crate::config::SpeakerMismatchAction::Drop;
+        let (drop_mismatch, speaking_now) = {
+            let inner = self.inner.lock().await;
+            (
+                inner.config.speaker_gate.on_mismatch == crate::config::SpeakerMismatchAction::Drop,
+                inner.agent_speaking,
+            )
+        };
         let event = if outcome == Outcome::Other && drop_mismatch {
             SpeechEvent::user_speech_ignored(Some(record_id))
         } else {
             let mut event = event.with_speaker(outcome.as_str());
-            if self.speaker_gate.as_ref().is_some_and(|g| g.rechecked(key)) {
-                event = event.with_speaker_rechecked();
+            if let Some(gate) = self.speaker_gate.as_ref() {
+                if gate.rechecked(key) {
+                    event = event.with_speaker_rechecked();
+                }
+                let windows = gate.windows_scored(key);
+                if windows > 0 {
+                    event = event.with_speaker_check_windows(windows);
+                }
             }
             match (outcome, self.speaker_gate.as_ref()) {
                 (Outcome::Unknown, Some(gate)) => {
@@ -3769,11 +3786,13 @@ impl VoiceAgent {
             None => self.emit(event),
         }
         if let Some(gate) = self.speaker_gate.as_ref() {
-            if outcome == Outcome::Other {
-                // The final says `other`: a re-check result that lands later (the final stopped
-                // waiting) must not fire a barge-in for it (`rt.stale-event-by-key`).
+            if outcome == Outcome::Other || !speaking_now {
+                // The final says `other`, or the agent is not speaking any more: a re-check
+                // result that lands later (the final stopped waiting) must not fire a barge-in
+                // for it, not even into a later reply (`rt.stale-event-by-key`).
                 gate.take_pending_barge(key);
-            } else {
+            }
+            if outcome != Outcome::Other {
                 gate.enroll_utterance(key);
             }
         }

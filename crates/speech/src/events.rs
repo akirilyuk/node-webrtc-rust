@@ -160,6 +160,9 @@ pub struct SpeechEvent {
     /// `other` and a second check (re-check) was scored before the final. `speaker` then carries
     /// the combined verdict (`caller` only when the re-check said caller). Absent otherwise.
     pub speaker_rechecked: Option<bool>,
+    /// `user_speech_final` with the speaker gate on: windows the speaker gate scored before this
+    /// final (1 = first check only). Absent without the gate or when no window settled.
+    pub speaker_check_windows: Option<u32>,
 }
 
 impl SpeechEvent {
@@ -196,6 +199,7 @@ impl SpeechEvent {
             speaker: None,
             speaker_unknown_reason: None,
             speaker_rechecked: None,
+            speaker_check_windows: None,
         }
     }
 
@@ -291,6 +295,12 @@ impl SpeechEvent {
     /// Marks a final whose speaker verdict includes a re-check (`speaker_rechecked: true`).
     pub fn with_speaker_rechecked(mut self) -> Self {
         self.speaker_rechecked = Some(true);
+        self
+    }
+
+    /// Windows the speaker gate scored before this final (1 = first check only).
+    pub fn with_speaker_check_windows(mut self, n: u32) -> Self {
+        self.speaker_check_windows = Some(n);
         self
     }
 

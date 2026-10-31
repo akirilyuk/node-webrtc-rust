@@ -8,11 +8,13 @@
 //! (`rt.stale-event-by-key`). Every wait is bounded (`infra.unbounded-external-wait`), and a
 //! timeout fails open (`unknown`): a stuck gate must never mute the real caller.
 //!
-//! One re-check (`recheck_on_other`, default on): when the first verdict is `other` and the
-//! utterance keeps going, the next `check_speech_ms` of speech is scored once more. The re-check
-//! can only upgrade `other` to `caller`; it never runs after a `caller` or `unknown` verdict, and
-//! it never downgrades one. This covers a bystander (TV, colleague) who opens the VAD just before
-//! the caller and runs into the caller's words without a pause.
+//! Consecutive re-checks (`recheck_on_other`, default on): while the stored verdict is `other` and
+//! the utterance keeps going, every further `check_speech_ms` of speech is scored (the latest
+//! window), up to `recheck_max_windows` windows per utterance (the first check included; `2` is
+//! one re-check, `0` has no cap). A re-check can only upgrade `other` to `caller`; it never runs
+//! after a `caller` or `unknown` first verdict, and it never downgrades one. This covers a
+//! bystander (TV, colleague) who opens the VAD before the caller and runs into the caller's words
+//! without a pause. A window is cut only when the previous one has settled, never queued.
 //!
 //! Embeddings, the reference vector and PCM are never logged, emitted or exported. Scores appear
 //! only in `VOICE_DEBUG` output, as a number.
@@ -40,16 +42,16 @@ const ENDED_CAP: usize = 4;
 /// Pending channel messages above which a backlog warning is logged (once per episode).
 const BACKLOG_WARN: usize = 8;
 
-/// Check windows an utterance can be scored on: the first check plus one re-check after an
-/// `other` verdict ([`SpeakerGateConfig::recheck_on_other`]).
-pub const RECHECK_WINDOWS: u32 = 2;
+/// Default for [`SpeakerGateConfig::recheck_max_windows`]: windows scored per utterance, the first
+/// check included (12 s of speech with the default 1.5 s check).
+pub const DEFAULT_RECHECK_MAX_WINDOWS: u32 = 8;
 
-/// Earliest speech time (ms of collected speech in the utterance) at which a barge-in released by
-/// a re-check can fire: the end of the re-check window, `RECHECK_WINDOWS × check_speech_ms`
-/// (first window end + `check_speech_ms`). The SDK mirrors it as `speakerRecheckBargeEarliestMs`
+/// Earliest speech time (ms of speech in the utterance) at which a barge-in released by the
+/// `window`-th scored window (1 = first check) can fire. SDK mirror:
+/// `speakerRecheckBargeEarliestMs(checkSpeechMs, window)`
 /// (`packages/sdk/src/voice/defaults.ts`), which the noisy-bystander roundtrip oracle uses.
-pub fn recheck_barge_earliest_ms(check_speech_ms: u32) -> u32 {
-    check_speech_ms.saturating_mul(RECHECK_WINDOWS)
+pub fn recheck_barge_earliest_ms(check_speech_ms: u32, window: u32) -> u32 {
+    check_speech_ms.saturating_mul(window)
 }
 
 /// Who spoke an utterance.
@@ -80,9 +82,11 @@ pub struct Verdict {
     /// Why the verdict is `Unknown` (`None` for caller/other): see [`UNKNOWN_SHORT`] and the
     /// other `UNKNOWN_*` values. Only `short` is suppressed by `suppress_short_barge_in`.
     pub reason: Option<&'static str>,
-    /// True for the result of the re-check (second window). Only `Caller` from a re-check is
-    /// stored; any other re-check result leaves the first `other` verdict in place.
+    /// True for the result of a re-check (second window or later). Only `Caller` from a re-check
+    /// is stored; any other re-check result leaves the first `other` verdict in place.
     pub recheck: bool,
+    /// Which window this result scored (1 = first check).
+    pub window: u32,
 }
 
 /// `speakerUnknownReason` values (the final's `speaker` is `unknown`).
@@ -114,13 +118,14 @@ enum Msg {
     Enroll {
         pcm: Vec<u8>,
     },
-    /// `speech_bytes` is the clip without the pre-roll. `recheck`: the second window after an
-    /// `other` verdict.
+    /// `speech_bytes` is the clip without the pre-roll. `recheck`: a window after the first, sent
+    /// while the verdict is `other`. `window`: 1 for the first check.
     Check {
         key: u64,
         pcm: Vec<u8>,
         speech_bytes: usize,
         recheck: bool,
+        window: u32,
     },
     Reset,
 }
@@ -131,10 +136,10 @@ struct Book {
     /// Why each `Unknown` verdict is unknown (see [`Verdict::reason`]).
     reasons: VecDeque<(u64, &'static str)>,
     sent: VecDeque<u64>,
-    /// Keys whose re-check went out.
-    rechecks_sent: VecDeque<u64>,
-    /// Keys whose re-check settled (any result).
-    rechecks_done: VecDeque<u64>,
+    /// Keys with a re-check window in flight (removed when its result settles).
+    rechecks_in_flight: VecDeque<u64>,
+    /// Highest window settled per key (first check = 1).
+    windows_scored: VecDeque<(u64, u32)>,
     /// Keys whose final read its verdict: no re-check starts after that.
     closed: VecDeque<u64>,
 }
@@ -148,6 +153,9 @@ struct Shared {
     stale: std::sync::atomic::AtomicU64,
     /// Warn lines (metadata only), also printed to stderr. Test-visible via [`SpeakerGate::warnings`].
     warnings: Mutex<Vec<String>>,
+    /// Test hook: while set, the verifier stores verdicts but holds back `on_verdict`.
+    parked: AtomicBool,
+    park_release: Notify,
 }
 
 impl Shared {
@@ -166,10 +174,14 @@ struct Cur {
     /// Pre-roll bytes at the head of `buf`; they do not count as speech.
     pre: usize,
     sent: bool,
-    /// Offset in `buf` where the re-check window starts.
-    recheck_from: usize,
-    /// The re-check went out, or can no longer start for this segment.
-    rechecked: bool,
+    /// Windows sent for this key (0 before the first check, 1 after it).
+    windows_sent: u32,
+    /// Speech bytes of the utterance, never capped (`buf` may be trimmed). A segment that joins a
+    /// key whose windows already went out starts with credit for them, so its next window needs
+    /// `check_speech_ms` of its own speech.
+    speech_seen: usize,
+    /// The final read the verdict: no further window starts.
+    rechecks_closed: bool,
 }
 
 #[derive(Default)]
@@ -234,6 +246,8 @@ impl SpeakerGate {
                 backlog_logged: AtomicBool::new(false),
                 stale: std::sync::atomic::AtomicU64::new(0),
                 warnings: Mutex::new(Vec::new()),
+                parked: AtomicBool::new(false),
+                park_release: Notify::new(),
             }),
             feed: Mutex::new(Feed::default()),
         })
@@ -292,17 +306,40 @@ impl SpeakerGate {
         let _ = self.tx.send(msg);
     }
 
+    /// Test hook: while on, verdicts are stored (and waiters notified) but `on_verdict` waits;
+    /// turning it off releases the held delivery.
+    #[doc(hidden)]
+    pub fn park_verdict_delivery(&self, on: bool) {
+        self.shared.parked.store(on, Ordering::SeqCst);
+        if !on {
+            self.shared.park_release.notify_waiters();
+        }
+    }
+
+    /// Test hook: bytes currently buffered for the live utterance.
+    #[doc(hidden)]
+    pub fn live_buffer_bytes(&self) -> usize {
+        lock(&self.feed).cur.as_ref().map_or(0, |c| c.buf.len())
+    }
+
+    /// Enrolled with re-checks on: the buffer rolls (pre-roll plus the latest window) once the
+    /// first check went out.
+    fn rolling(&self) -> bool {
+        self.cfg.recheck_on_other && self.is_enrolled()
+    }
+
+    /// Cap on collected speech when the buffer does not roll.
     fn cap_bytes(&self) -> usize {
         let ms = if self.is_enrolled() {
-            if self.cfg.recheck_on_other {
-                recheck_barge_earliest_ms(self.cfg.check_speech_ms)
-            } else {
-                self.cfg.check_speech_ms
-            }
+            self.cfg.check_speech_ms
         } else {
             self.cfg.check_speech_ms.max(self.cfg.enroll_speech_ms)
         };
         ms as usize * BYTES_PER_MS
+    }
+
+    fn windows_remain(&self, windows_sent: u32) -> bool {
+        self.cfg.recheck_max_windows == 0 || windows_sent < self.cfg.recheck_max_windows
     }
 
     fn check_bytes(&self) -> usize {
@@ -312,10 +349,11 @@ impl SpeakerGate {
     /// SpeechStart of utterance `key`; `frame` is the onset frame (16 kHz mono s16le).
     /// A second start for the same key (brief gap) continues the same utterance.
     ///
-    /// One check per utterance key, plus at most one re-check after an `other` verdict. A segment
-    /// that joins a key whose check already went out (pending or settled) does not send another
-    /// first check, so a speaker who joins the utterance during the gate hold cannot relabel a
-    /// `caller` or `unknown` verdict; only an `other` verdict can be re-checked, once.
+    /// One first check per utterance key, plus consecutive re-checks while the verdict is `other`
+    /// (up to `recheck_max_windows`). A segment that joins a key whose check already went out
+    /// (pending or settled) does not send another first check, so a speaker who joins the
+    /// utterance during the gate hold cannot relabel a `caller` or `unknown` verdict; only an
+    /// `other` verdict can be re-checked.
     pub fn begin(&self, key: u64, frame: &[u8]) {
         let mut feed = lock(&self.feed);
         if feed.cur.as_ref().is_some_and(|c| c.key == key) {
@@ -332,28 +370,35 @@ impl SpeakerGate {
             .is_some_and(|(k, _)| *k == key)
             .then(|| feed.ended.pop_back())
             .flatten();
+        let check = self.check_bytes();
         let cur = match resumed {
-            Some((k, buf)) => Cur {
-                key: k,
-                recheck_from: buf.len(),
-                buf,
-                pre: 0,
-                sent: true,
-                rechecked: self.recheck_sent_or_closed(k),
-            },
+            Some((k, buf)) => {
+                let ws = self.windows_sent_for(k);
+                Cur {
+                    key: k,
+                    buf,
+                    pre: 0,
+                    sent: true,
+                    windows_sent: ws,
+                    speech_seen: ws as usize * check,
+                    rechecks_closed: self.recheck_closed(k),
+                }
+            }
             None => {
                 let buf = std::mem::take(&mut feed.ring);
                 let pre = buf.len();
                 let sent = self.check_sent(key);
+                let ws = if sent { self.windows_sent_for(key) } else { 0 };
                 Cur {
                     key,
                     pre,
                     buf,
                     sent,
-                    // A segment that joins a key whose check already went out re-checks its own
-                    // first `check_speech_ms`; otherwise the window follows the first check.
-                    recheck_from: if sent { pre } else { pre + self.check_bytes() },
-                    rechecked: self.recheck_sent_or_closed(key),
+                    windows_sent: ws,
+                    // A segment that joins a key whose windows already went out scores its own
+                    // next `check_speech_ms`; otherwise the window follows the first check.
+                    speech_seen: ws as usize * check,
+                    rechecks_closed: self.recheck_closed(key),
                 }
             }
         };
@@ -367,35 +412,51 @@ impl SpeakerGate {
     pub fn push_frame(&self, frame: &[u8]) {
         let cap = self.cap_bytes();
         let check = self.check_bytes();
+        let rolling = self.rolling();
+        let keep = PRE_ROLL_MS * BYTES_PER_MS + check;
         let mut to_send = None;
         {
             let mut feed = lock(&self.feed);
             match feed.cur.as_mut() {
                 Some(cur) => {
                     let speech = cur.buf.len() - cur.pre;
-                    if speech < cap {
+                    if rolling {
+                        cur.buf.extend_from_slice(frame);
+                    } else if speech < cap {
                         let room = cap - speech;
                         cur.buf.extend_from_slice(&frame[..frame.len().min(room)]);
                     }
-                    let speech = cur.buf.len() - cur.pre;
-                    if !cur.sent && speech >= check {
+                    cur.speech_seen += frame.len();
+                    if !cur.sent && cur.buf.len() - cur.pre >= check {
                         cur.sent = true;
-                        to_send =
-                            Some((cur.key, cur.buf[..cur.pre + check].to_vec(), check, false));
+                        cur.windows_sent = 1;
+                        to_send = Some((
+                            cur.key,
+                            cur.buf[..cur.pre + check].to_vec(),
+                            check,
+                            false,
+                            1,
+                        ));
                     } else if self.cfg.recheck_on_other
                         && cur.sent
-                        && !cur.rechecked
-                        && cur.buf.len() >= cur.recheck_from + check
+                        && !cur.rechecks_closed
+                        && self.windows_remain(cur.windows_sent)
+                        && cur.speech_seen >= (cur.windows_sent as usize + 1) * check
                         && self.is_enrolled()
                         && self.recheck_due(cur.key)
                     {
-                        cur.rechecked = true;
+                        cur.windows_sent += 1;
                         // Marked under the feed lock, so a final or barge decision never sees the
                         // window full but the re-check unsent.
-                        push_capped(&mut lock(&self.shared.book).rechecks_sent, cur.key);
-                        let from = cur.recheck_from.saturating_sub(PRE_ROLL_MS * BYTES_PER_MS);
-                        let pcm = cur.buf[from..cur.recheck_from + check].to_vec();
-                        to_send = Some((cur.key, pcm, check, true));
+                        push_capped(&mut lock(&self.shared.book).rechecks_in_flight, cur.key);
+                        let from = cur.buf.len().saturating_sub(keep);
+                        let pcm = cur.buf[from..].to_vec();
+                        to_send = Some((cur.key, pcm, check, true, cur.windows_sent));
+                    }
+                    if rolling && cur.sent && cur.buf.len() > keep {
+                        let n = cur.buf.len() - keep;
+                        cur.buf.drain(..n);
+                        cur.pre = 0;
                     }
                 }
                 None => {
@@ -408,9 +469,11 @@ impl SpeakerGate {
                 }
             }
         }
-        if let Some((key, pcm, speech_bytes, recheck)) = to_send {
+        if let Some((key, pcm, speech_bytes, recheck, window)) = to_send {
             if recheck {
-                eprintln!("[speaker-gate] info: speaker gate re-check sent key={key}");
+                eprintln!(
+                    "[speaker-gate] info: speaker gate re-check sent key={key} window={window}"
+                );
             } else {
                 self.mark_sent(key);
             }
@@ -419,6 +482,7 @@ impl SpeakerGate {
                 pcm,
                 speech_bytes,
                 recheck,
+                window,
             });
         }
     }
@@ -445,13 +509,15 @@ impl SpeakerGate {
                 pcm: cur.buf[..cur.pre + speech].to_vec(),
                 speech_bytes: speech,
                 recheck: false,
+                window: 1,
             });
         } else if self.cfg.recheck_on_other
-            && !cur.rechecked
             && self.outcome_for(cur.key) == Some(Outcome::Other)
+            && !self.recheck_in_flight(cur.key)
         {
-            // Ended before the re-check window filled: the `other` verdict stands and the barge-in
-            // held for the re-check is dropped.
+            // Ended with no re-check window in flight: the `other` verdict stands and the barge-in
+            // held for a further window is dropped. A window in flight keeps it (the final awaits
+            // that result).
             feed.pending_barge.remove(&cur.key);
         }
         if !self.is_enrolled() {
@@ -479,12 +545,24 @@ impl SpeakerGate {
         lock(&self.shared.book).sent.contains(&key)
     }
 
-    fn recheck_sent_or_closed(&self, key: u64) -> bool {
-        let book = lock(&self.shared.book);
-        book.rechecks_sent.contains(&key) || book.closed.contains(&key)
+    fn recheck_closed(&self, key: u64) -> bool {
+        lock(&self.shared.book).closed.contains(&key)
     }
 
-    /// The stored verdict of `key` is `other`, its final has not read it, and no re-check went out.
+    /// Windows sent for `key` so far: the first check plus every re-check settled or in flight.
+    fn windows_sent_for(&self, key: u64) -> u32 {
+        let book = lock(&self.shared.book);
+        let scored = book
+            .windows_scored
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map_or(0, |(_, w)| *w);
+        let flying = u32::from(book.rechecks_in_flight.contains(&key));
+        (scored + flying).max(u32::from(book.sent.contains(&key)))
+    }
+
+    /// The stored verdict of `key` is `other`, its final has not read it, and no re-check is in
+    /// flight.
     fn recheck_due(&self, key: u64) -> bool {
         let book = lock(&self.shared.book);
         book.verdicts
@@ -494,16 +572,15 @@ impl SpeakerGate {
             .map(|(_, o)| *o)
             == Some(Outcome::Other)
             && !book.closed.contains(&key)
-            && !book.rechecks_sent.contains(&key)
+            && !book.rechecks_in_flight.contains(&key)
     }
 
     fn recheck_in_flight(&self, key: u64) -> bool {
-        let book = lock(&self.shared.book);
-        book.rechecks_sent.contains(&key) && !book.rechecks_done.contains(&key)
+        lock(&self.shared.book).rechecks_in_flight.contains(&key)
     }
 
-    /// A re-check of `key` is in flight, or can still start (the utterance is live, its window
-    /// not yet sent, its final not read). Caller holds the feed lock.
+    /// A re-check of `key` is in flight, or can still start (the utterance is live, its cap not
+    /// reached, its final not read). Caller holds the feed lock.
     fn recheck_open_locked(&self, feed: &Feed, key: u64) -> bool {
         if !self.cfg.recheck_on_other {
             return false;
@@ -511,10 +588,9 @@ impl SpeakerGate {
         if self.recheck_in_flight(key) {
             return true;
         }
-        feed.cur
-            .as_ref()
-            .is_some_and(|c| c.key == key && c.sent && !c.rechecked)
-            && !self.recheck_sent_or_closed(key)
+        feed.cur.as_ref().is_some_and(|c| {
+            c.key == key && c.sent && !c.rechecks_closed && self.windows_remain(c.windows_sent)
+        }) && !self.recheck_closed(key)
     }
 
     /// After a first `other` verdict whose barge-in was pending: keep it pending when a re-check
@@ -534,7 +610,7 @@ impl SpeakerGate {
     pub fn close_recheck(&self, key: u64) {
         let mut feed = lock(&self.feed);
         if let Some(cur) = feed.cur.as_mut().filter(|c| c.key == key) {
-            cur.rechecked = true;
+            cur.rechecks_closed = true;
         }
         let mut book = lock(&self.shared.book);
         if !book.closed.contains(&key) {
@@ -544,7 +620,16 @@ impl SpeakerGate {
 
     /// True when a re-check of `key` settled (`speakerRechecked` on the final).
     pub fn rechecked(&self, key: u64) -> bool {
-        lock(&self.shared.book).rechecks_done.contains(&key)
+        self.windows_scored(key) >= 2
+    }
+
+    /// Windows of `key` scored so far (first check = 1; 0 when none settled).
+    pub fn windows_scored(&self, key: u64) -> u32 {
+        lock(&self.shared.book)
+            .windows_scored
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map_or(0, |(_, w)| *w)
     }
 
     /// Decide a barge-in attempt for the live utterance `key`.
@@ -762,6 +847,7 @@ async fn run(
                 pcm,
                 speech_bytes,
                 recheck,
+                window,
             } => {
                 let started = Instant::now();
                 let (outcome, timed_out, reason) = match reference.as_ref() {
@@ -801,27 +887,43 @@ async fn run(
                         if outcome == Outcome::Caller {
                             push_capped(&mut book.verdicts, (key, outcome));
                         }
-                        push_capped(&mut book.rechecks_done, key);
+                        book.rechecks_in_flight.retain(|k| *k != key);
                     } else {
                         push_capped(&mut book.verdicts, (key, outcome));
                         if let Some(r) = reason {
                             push_capped(&mut book.reasons, (key, r));
                         }
                     }
+                    if let Some(e) = book.windows_scored.iter_mut().find(|(k, _)| *k == key) {
+                        e.1 = e.1.max(window);
+                    } else {
+                        push_capped(&mut book.windows_scored, (key, window));
+                    }
                 }
                 if recheck {
                     eprintln!(
-                        "[speaker-gate] info: speaker gate re-check key={key} outcome={}",
+                        "[speaker-gate] info: speaker gate re-check key={key} window={window} outcome={}",
                         outcome.as_str()
                     );
                 }
                 shared.notify.notify_waiters();
+                // Test hook: hold the delivery (the verdict is stored and waiters are notified).
+                loop {
+                    let released = shared.park_release.notified();
+                    tokio::pin!(released);
+                    released.as_mut().enable();
+                    if !shared.parked.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    released.await;
+                }
                 on_verdict(Verdict {
                     key,
                     outcome,
                     timed_out,
                     reason,
                     recheck,
+                    window,
                 });
             }
         }
@@ -866,12 +968,17 @@ mod tests {
     const FRAME: usize = 640; // 20 ms of 16 kHz mono s16le
 
     fn enrolled_gate(recheck: bool) -> Arc<SpeakerGate> {
+        enrolled_gate_cap(recheck, 2)
+    }
+
+    fn enrolled_gate_cap(recheck: bool, cap: u32) -> Arc<SpeakerGate> {
         let gate = SpeakerGate::new(SpeakerGateConfig {
             enabled: true,
             model_path: Some("m.onnx".into()),
             check_speech_ms: 200,
             min_check_speech_ms: 100,
             recheck_on_other: recheck,
+            recheck_max_windows: cap,
             ..SpeakerGateConfig::default()
         });
         gate.shared.enrolled.store(true, Ordering::SeqCst);
@@ -891,6 +998,7 @@ mod tests {
                 pcm,
                 speech_bytes,
                 recheck,
+                ..
             } = msg
             {
                 out.push((key, pcm.len(), speech_bytes, recheck));
@@ -914,9 +1022,9 @@ mod tests {
     /// reaches `recheck_barge_earliest_ms(check_speech_ms)`, never a frame earlier.
     #[test]
     fn recheck_goes_out_at_the_named_bound() {
-        assert_eq!(recheck_barge_earliest_ms(1500), 3000);
+        assert_eq!(recheck_barge_earliest_ms(1500, 2), 3000);
         assert_eq!(
-            recheck_barge_earliest_ms(SpeakerGateConfig::default().check_speech_ms),
+            recheck_barge_earliest_ms(SpeakerGateConfig::default().check_speech_ms, 2),
             3000
         );
         assert!(SpeakerGateConfig::default().recheck_on_other);
@@ -925,7 +1033,7 @@ mod tests {
         start(&gate, 1, 10);
         assert_eq!(checks(&mut rx), vec![(1, 300 * 32 + 6400, 6400, false)]);
         store(&gate, 1, Outcome::Other);
-        let bound_frames = (recheck_barge_earliest_ms(200) / 20) as usize;
+        let bound_frames = (recheck_barge_earliest_ms(200, 2) / 20) as usize;
         for _ in 10..bound_frames - 1 {
             gate.push_frame(&[3_u8; FRAME]);
         }
@@ -944,6 +1052,90 @@ mod tests {
         }
         gate.end_utterance();
         assert!(checks(&mut rx).is_empty(), "at most one re-check per key");
+    }
+
+    #[test]
+    fn earliest_barge_ms_is_window_times_check() {
+        for w in 1..=8_u32 {
+            assert_eq!(recheck_barge_earliest_ms(1500, w), 1500 * w);
+        }
+    }
+
+    #[test]
+    fn recheck_max_windows_validation() {
+        let cfg = |on: bool, cap: u32| SpeakerGateConfig {
+            enabled: true,
+            model_path: Some("m.onnx".into()),
+            recheck_on_other: on,
+            recheck_max_windows: cap,
+            ..SpeakerGateConfig::default()
+        };
+        let e = cfg(true, 1).validate().unwrap_err();
+        assert!(e.contains("recheckMaxWindows"), "{e}");
+        for cap in [0, 2, 8] {
+            assert!(cfg(true, cap).validate().is_ok(), "cap {cap}");
+        }
+        assert!(cfg(false, 1).validate().is_ok(), "one check, re-check off");
+        assert_eq!(
+            SpeakerGateConfig::default().recheck_max_windows,
+            DEFAULT_RECHECK_MAX_WINDOWS
+        );
+    }
+
+    /// Each further window is cut at its own boundary (frame count is the clock), never while the
+    /// previous one is in flight, and never past the cap. The clip is pre-roll plus the latest
+    /// window.
+    #[test]
+    fn windows_are_cut_at_each_boundary_up_to_the_cap() {
+        let gate = enrolled_gate_cap(true, 4);
+        let mut rx = lock(&gate.rx).take().unwrap();
+        start(&gate, 1, 10);
+        assert_eq!(checks(&mut rx).len(), 1);
+        store(&gate, 1, Outcome::Other);
+        let mut cut_at = Vec::new();
+        for f in 10..80_usize {
+            gate.push_frame(&[3_u8; FRAME]);
+            for c in checks(&mut rx) {
+                assert_eq!(c, (1, 300 * 32 + 6400, 6400, true));
+                cut_at.push(f + 1);
+            }
+            if f == 22 {
+                // Window 2 still in flight at its successor's boundary: nothing is queued.
+                assert_eq!(cut_at, vec![20]);
+                lock(&gate.shared.book).rechecks_in_flight.clear();
+            }
+            if cut_at.len() < 3 && f > 22 && !lock(&gate.shared.book).rechecks_in_flight.is_empty()
+            {
+                lock(&gate.shared.book).rechecks_in_flight.clear();
+            }
+            if cut_at.len() == 3 {
+                lock(&gate.shared.book).rechecks_in_flight.clear();
+            }
+        }
+        // Window 2 at 20 frames; window 3 at 30 (the first boundary after window 2 settled at 23);
+        // window 4 at 40; the cap of 4 stops the rest.
+        assert_eq!(cut_at, vec![20, 30, 40]);
+    }
+
+    #[test]
+    fn long_other_utterance_keeps_the_buffer_bounded() {
+        let gate = enrolled_gate_cap(true, 0);
+        let mut rx = lock(&gate.rx).take().unwrap();
+        start(&gate, 1, 10);
+        store(&gate, 1, Outcome::Other);
+        let bound = (300 + 200) * 32 + FRAME;
+        let mut windows = 1;
+        // 150 windows of 200 ms.
+        for _ in 0..1500 {
+            gate.push_frame(&[3_u8; FRAME]);
+            assert!(gate.live_buffer_bytes() <= bound, "buffer grew");
+            let n = checks(&mut rx).len();
+            if n > 0 {
+                windows += n;
+                lock(&gate.shared.book).rechecks_in_flight.clear();
+            }
+        }
+        assert!(windows > 100, "no cap: windows keep being cut ({windows})");
     }
 
     #[test]

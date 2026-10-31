@@ -2249,13 +2249,11 @@ async fn end_utterance_then_speak_again(rig: &mut Rig) {
     rig.start_speaking_for(600).await;
 }
 
-/// The caller's window result is stored while the final waits for it, delivery of the verdict
-/// is parked and the agent speaks again: the final sends the barge-in itself, before the final,
-/// once. (Cause of the earlier "no final while speaking": the product finalizes only with an idle
-/// agent, `should_finalize_utterance`; a final emitted while speaking is one that waited for its
-/// verdict across a new reply.)
+/// The caller's window result is stored while the final waits for it, but the reply the barge-in
+/// was held against has ended and a new reply (R2) speaks when the final is emitted: the held
+/// barge-in is dropped, before and after the final (`rt.stale-event-by-key`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn caller_recheck_stored_before_the_final_while_speaking_barges_before_the_final() {
+async fn caller_recheck_after_its_playback_ended_never_barges_the_next_reply() {
     let mut cfg = cfg_cap(2);
     cfg.verify_timeout_ms = 5000;
     let mut rig = rig_with(agent_config(cfg)).await;
@@ -2282,7 +2280,6 @@ async fn caller_recheck_stored_before_the_final_while_speaking_barges_before_the
     end_utterance_then_speak_again(&mut rig).await;
     rig.drain();
     assert!(barges_since(&rig, base).is_empty(), "nothing fired yet");
-    // The result is stored, its delivery parked; the final wakes on the stored verdict.
     rig.agent.speaker_gate_park_verdicts(true);
     release.notify_one();
     let mut got_final = false;
@@ -2296,22 +2293,60 @@ async fn caller_recheck_stored_before_the_final_while_speaking_barges_before_the
     }
     assert!(got_final, "final emitted while delivery is parked");
     rig.agent.speaker_gate_park_verdicts(false);
-    sleep(Duration::from_millis(300)).await;
+    sleep(Duration::from_millis(500)).await;
     rig.drain();
-    let barges = barges_since(&rig, base);
-    assert_eq!(barges.len(), 1, "exactly one barge-in");
     let fin = last_final(&rig, base);
     assert_eq!(fin.speaker.as_deref(), Some("caller"));
-    assert_eq!(barges[0].utterance_id, fin.utterance_id);
-    let barge_at = rig.log[base..]
-        .iter()
-        .position(|e| e.kind == SpeechEventKind::BargeIn)
-        .unwrap();
-    let final_at = rig.log[base..]
-        .iter()
-        .position(|e| e.kind == SpeechEventKind::UserSpeechFinal)
-        .unwrap();
-    assert!(barge_at < final_at, "barge_in precedes its own final");
+    assert!(
+        barges_since(&rig, base).is_empty(),
+        "A's barge-in belongs to R1: nothing fires into R2, before or after the final"
+    );
+    rig.agent.stop().await.unwrap();
+}
+
+/// Delivery path: the held barge-in was raised during reply R1; R1 ends and R2 starts while A's
+/// utterance is still live (no final yet); the caller result then arrives: nothing fires.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn caller_recheck_after_playback_restarted_before_the_final_never_barges() {
+    let mut cfg = cfg_cap(2);
+    cfg.verify_timeout_ms = 5000;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    let base = rig.log.len();
+    let lens_before = rig.lens.lock().unwrap().len();
+    rig.start_speaking_for(600).await;
+    let release = Arc::new(Notify::new());
+    queue_checks(
+        &rig,
+        vec![
+            Behavior::Vector(OTHER.to_vec()),
+            Behavior::WaitFor(Arc::clone(&release), REF.to_vec()),
+        ],
+    );
+    rig.script.lock().unwrap().final_on_finalize = Some("caller over babble".into());
+    feed_until_queue_len(&rig, 0).await;
+    wait_hold(&rig).await;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while rig.lens.lock().unwrap().len() < lens_before + 2 {
+        assert!(Instant::now() < deadline, "second window never embedded");
+        sleep(Duration::from_millis(5)).await;
+    }
+    // R1 ends and R2 starts; A's utterance is still live.
+    rig.agent.flush_tts().await.unwrap();
+    assert!(
+        rig.wait_event(SpeechEventKind::AgentSpeakingEnd, 3000)
+            .await
+    );
+    rig.start_speaking_for(600).await;
+    rig.drain();
+    assert!(barges_since(&rig, base).is_empty(), "nothing fired yet");
+    release.notify_one();
+    sleep(Duration::from_millis(500)).await;
+    rig.drain();
+    assert!(
+        barges_since(&rig, base).is_empty(),
+        "the caller result belongs to R1: no barge-in into R2"
+    );
     rig.agent.stop().await.unwrap();
 }
 

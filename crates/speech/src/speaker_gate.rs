@@ -19,7 +19,7 @@
 //! Embeddings, the reference vector and PCM are never logged, emitted or exported. Scores appear
 //! only in `VOICE_DEBUG` output, as a number.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -194,7 +194,8 @@ struct Feed {
     /// Barge-ins deferred until their utterance's verdict, one per utterance key. Every check
     /// yields a verdict within the verifier's own timeout and that verdict removes its key, so
     /// it holds at most the live and closing utterances; `reset` clears it.
-    pending_barge: BTreeSet<u64>,
+    /// Utterance key -> playback epoch the barge-in was raised against.
+    pending_barge: BTreeMap<u64, u64>,
 }
 
 /// Per-agent speaker gate (feed side plus the handle to the verifier task).
@@ -604,10 +605,10 @@ impl SpeakerGate {
 
     /// After a first `other` verdict whose barge-in was pending: keep it pending when a re-check
     /// can still decide it (atomically with SpeechEnd, which drops it).
-    pub fn hold_for_recheck(&self, key: u64) -> bool {
+    pub fn hold_for_recheck(&self, key: u64, epoch: u64) -> bool {
         let mut feed = lock(&self.feed);
         if self.recheck_open_locked(&feed, key) {
-            feed.pending_barge.insert(key);
+            feed.pending_barge.insert(key, epoch);
             self.shared.holds.fetch_add(1, Ordering::SeqCst);
             true
         } else {
@@ -705,12 +706,12 @@ impl SpeakerGate {
         }
     }
 
-    pub fn set_pending_barge(&self, key: u64) {
-        lock(&self.feed).pending_barge.insert(key);
+    pub fn set_pending_barge(&self, key: u64, epoch: u64) {
+        lock(&self.feed).pending_barge.insert(key, epoch);
     }
 
     /// True (and cleared) when a barge-in for `key` waits for its verdict.
-    pub fn take_pending_barge(&self, key: u64) -> bool {
+    pub fn take_pending_barge(&self, key: u64) -> Option<u64> {
         lock(&self.feed).pending_barge.remove(&key)
     }
 
@@ -1191,10 +1192,10 @@ mod tests {
         let mut rx = lock(&gate.rx).take().unwrap();
         start(&gate, 1, 10);
         store(&gate, 1, Outcome::Other);
-        gate.set_pending_barge(1);
-        assert!(gate.take_pending_barge(1));
+        gate.set_pending_barge(1, 0);
+        assert!(gate.take_pending_barge(1).is_some());
         assert!(
-            gate.hold_for_recheck(1),
+            gate.hold_for_recheck(1, 0),
             "live utterance: held for the re-check"
         );
         for _ in 0..5 {
@@ -1203,7 +1204,7 @@ mod tests {
         gate.end_utterance();
         assert_eq!(checks(&mut rx).len(), 1, "no re-check");
         assert!(
-            !gate.take_pending_barge(1),
+            gate.take_pending_barge(1).is_none(),
             "held barge-in dropped at SpeechEnd"
         );
         assert_eq!(gate.barge_decision(1), BargeDecision::Suppress);
@@ -1223,7 +1224,7 @@ mod tests {
         }
         assert_eq!(checks(&mut rx).len(), 1);
         assert_eq!(gate.settled_outcome(1), Some(Outcome::Other));
-        assert!(!gate.hold_for_recheck(1));
+        assert!(!gate.hold_for_recheck(1, 0));
     }
 
     /// One scripted embedding: optionally held until the notify fires.
@@ -1314,7 +1315,7 @@ mod tests {
         gate.close_recheck(1);
         gate.end_utterance();
         start(&gate, 2, 10);
-        gate.set_pending_barge(2);
+        gate.set_pending_barge(2, 0);
         release.notify_one();
         wait(3).await;
         let got = lock(&verdicts).clone();
@@ -1328,9 +1329,9 @@ mod tests {
                 (2, Outcome::Caller, false),
             ]
         );
-        assert!(!gate.take_pending_barge(1), "nothing held for A");
+        assert!(gate.take_pending_barge(1).is_none(), "nothing held for A");
         assert!(
-            gate.take_pending_barge(2),
+            gate.take_pending_barge(2).is_some(),
             "B's held barge-in untouched by A's result"
         );
         assert_eq!(gate.outcome_for(2), Some(Outcome::Caller));

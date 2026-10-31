@@ -89,7 +89,9 @@ export function isRechecked(start: Seen, seen: Seen[]): boolean {
 }
 
 function verdictAfterMs(start: Seen, seen: Seen[]): number {
-  return isRechecked(start, seen) ? speakerRecheckBargeEarliestMs(CHECK_SPEECH_MS) : CHECK_SPEECH_MS
+  return isRechecked(start, seen)
+    ? speakerRecheckBargeEarliestMs(CHECK_SPEECH_MS, 2)
+    : CHECK_SPEECH_MS
 }
 
 /** First `user_speech_partial` on the start's `utteranceId` with enough tokens for a barge-in. */
@@ -219,7 +221,7 @@ export function pairTurnUtterances(
     const callerStartMs = turns[j]!.startMs
     const endMs = utteranceEndMs(start.utteranceId, seen)
     if (endMs == null || !(start.atMs < callerStartMs && endMs > callerStartMs)) return
-    if (callerStartMs >= start.atMs + speakerRecheckBargeEarliestMs(CHECK_SPEECH_MS)) return
+    if (callerStartMs >= start.atMs + speakerRecheckBargeEarliestMs(CHECK_SPEECH_MS, 2)) return
     starts[j] = start
     starts[i] = undefined
     merged.add(j)

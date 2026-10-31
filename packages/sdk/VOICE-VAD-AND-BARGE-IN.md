@@ -352,30 +352,57 @@ How it works:
 - **Check.** Each later utterance is compared with the enrolled voice using `checkSpeechMs` of its speech (default 1500 ms, `minCheckSpeechMs` 1500 ms). The cosine score must reach `threshold` (default 0.459, TitaNet-small). The check costs about 20 ms of CPU and runs off the audio path.
 - **Barge-in delay.** While the agent speaks and a voice is enrolled, a barge-in waits for the verdict. The caller therefore interrupts at the later of `checkSpeechMs` after they start speaking and the first partial with `minSttPartialTokens` tokens when `requireSttPartial` is on (the roundtrip asserts within 300 ms of that). A voice that does not match never barges in. Turn the gate off if you need instant barge-in.
 - **`flag` or `drop`.** `onMismatch: 'flag'` (default) keeps the final and sets `speaker: 'other'` on it. `'drop'` replaces it with `user_speech_ignored` (`reason: 'speaker_mismatch'`, no text). Clips shorter than `minCheckSpeechMs` (reason `short`), and any check that fails or exceeds `verifyTimeoutMs`, are `speaker: 'unknown'` and behave as without the gate, so a stuck gate never mutes the real caller.
-- **Re-check after `other`.** When the first check says `other` and the utterance keeps going, the gate checks the next `checkSpeechMs` of speech once more (`recheckOnOther`, default `true`). See [Re-check after other](#re-check-after-other-recheckonother).
+- **Re-check after `other`.** When the first check says `other` and the utterance keeps going, the gate keeps checking the next `checkSpeechMs` of speech, up to `recheckMaxWindows` windows (`recheckOnOther`, default `true`). See [Re-check after other](#re-check-after-other-recheckonother).
 - **Minimum check length.** `minCheckSpeechMs` defaults to 1500 ms. Shorter utterances are not scored and stay `unknown`; see [Minimum check length](#minimum-check-length-mincheckspeechms-why-1500-ms) for the numbers and the trade-off.
 - **`resetSpeakerEnrollment()`** forgets the voice, for example when another person takes over the line. The next utterances enroll again.
 
 Recommended with `vad.provider: 'adaptive'`. With the energy VAD, turns in background noise split into short pieces, which are more often `unknown`.
 
-Limit: a bystander about as loud as the caller can pass the check; the gate is tested with bystander turns 6 dB below the caller (the two long turns of the noisy-bystander roundtrip) and 15 dB below (the other turns), over babble. Turns from two people less than about 1.5 s apart end up in one transcript, labelled by the check of its first speaker, because the agent's end of turn waits that long for more speech. Other speech that opens the VAD up to about `checkSpeechMs` (1.5 s) before the caller and runs into the caller's words without a pause fills the first check window, so the first check says other. The re-check below covers that case once the caller has spoken for another `checkSpeechMs`; with `recheckOnOther: false` the barge-in stays suppressed and the final is labelled other.
+Limit: a bystander about as loud as the caller can pass the check; the gate is tested with bystander turns 6 dB below the caller (the two long turns of the noisy-bystander roundtrip) and 15 dB below (the other turns), over babble. Turns from two people less than about 1.5 s apart end up in one transcript, labelled by the check of its first speaker, because the agent's end of turn waits that long for more speech. Other speech that opens the VAD and runs into the caller's words without a pause fills the first check window, so the first check says other. The gate keeps re-checking while the verdict stays other, so other speech that leads the caller by up to about `(recheckMaxWindows − 2) × checkSpeechMs` (9 s with the defaults) no longer hides the caller. A longer lead still does, and `recheckMaxWindows: 0` removes the cap at the false-accept cost in the table below. With `recheckOnOther: false` the barge-in stays suppressed and the final is labelled other.
 
-### Re-check after other (`recheckOnOther`)
+### Re-check after other (`recheckOnOther`, `recheckMaxWindows`)
 
-A TV or a colleague talking right before the caller can open the VAD, and if the caller starts before that speech pauses, both end up in one utterance. The first 1.5 s window then holds mostly the other voice and scores `other`. Without a second look the caller would be ignored for that whole utterance.
+A TV or a colleague talking right before the caller can open the VAD, and if the caller starts before that speech pauses, both end up in one utterance. The first 1.5 s window then holds mostly the other voice and scores `other`. Without another look the caller would be ignored for that whole utterance.
 
-With `recheckOnOther` on (the default), the gate scores the next `checkSpeechMs` of the same utterance once, with the same model and threshold. The rules are narrow on purpose:
+With `recheckOnOther` on (the default), the gate scores the following windows of the same utterance, each `checkSpeechMs` of fresh speech with the same model and threshold, until one says `caller` or `recheckMaxWindows` windows have been scored (default 8, the first check included, so 12 s of speech with the defaults). `recheckMaxWindows: 2` gives the 0.15.0 behaviour of a single re-check, `0` removes the cap, and `1` is rejected (use `recheckOnOther: false`). The rules are narrow on purpose:
 
-- It runs only after a first verdict of `other`, at most once per utterance. A `caller` or `unknown` verdict is never re-checked, so a bystander who joins a caller's utterance cannot relabel it.
-- It can only turn `other` into `caller`. If it says `caller`, the held barge-in fires for that utterance (same `utteranceId`) and the final says `speaker: 'caller'`. If it says `other`, fails, or the utterance ends before the second window fills, the verdict stays `other` and there is no barge-in.
-- A re-checked barge-in comes no earlier than `2 × checkSpeechMs` of speech (3 s with the defaults). The SDK exports this bound as `speakerRecheckBargeEarliestMs(checkSpeechMs)`.
-- The final reports it: `speakerRechecked: true` whenever a re-check was scored before the final, with `speaker` set to the combined verdict.
+- Re-checking runs only while the verdict is `other`. A `caller` or `unknown` verdict is never re-checked, so a bystander who joins a caller's utterance cannot relabel it.
+- It can only turn `other` into `caller`. Once a window says `caller`, the held barge-in fires for that utterance (same `utteranceId`) and the final says `speaker: 'caller'`. If every window says `other`, a check fails, or the utterance ends before the next window fills, the verdict stays `other` and there is no barge-in.
+- A barge-in released by the n-th window comes no earlier than n × `checkSpeechMs` of speech (3 s for the second window and 12 s for the eighth, with the defaults). The final reports n as `speakerCheckWindows`, and the SDK exports the bound as `speakerRecheckBargeEarliestMs(checkSpeechMs, window)`. Every window counts, whether or not it reached the minimum check length, so `minCheckSpeechMs` does not shorten the bound.
+- The final reports `speakerRechecked: true` whenever a re-check was scored before it, with `speaker` set to the combined verdict.
 - A final waits for a re-check that is still running, bounded by `verifyTimeoutMs` like the first check. A final that has read its verdict stops any later re-check of its utterance. If the final stopped waiting (`verifyTimeoutMs`), it says `other` and a later re-check result never barges in.
-- The re-check starts only once the first verdict is in. If that verdict arrives after the utterance has ended (a slow or backlogged speaker model), no re-check runs, and the final stays `other` with no barge-in.
-- A re-check that finishes after the agent stopped speaking only labels the final (`speaker: 'caller'`, `speakerRechecked: true`). There is nothing left to interrupt, so there is no `barge_in`.
-- The `2 × checkSpeechMs` bound holds for the defaults, where `minCheckSpeechMs` equals `checkSpeechMs`. With `minCheckSpeechMs` below `checkSpeechMs`, an utterance that ends after a short first check and then resumes on the same utterance (a brief pause inside the gate hold) re-checks the first `checkSpeechMs` of the resumed segment, so its barge-in can come earlier than `2 × checkSpeechMs` after the utterance started.
+- The next window starts only once the previous verdict is in. If a verdict arrives after the utterance has ended (a slow or backlogged speaker model), no further window runs, and the final stays `other` with no barge-in.
+- A barge-in held for a re-check fires only into the reply that was playing when it was held. If that reply has ended, or a new one has started, the held barge-in is dropped, because it no longer has anything to interrupt. A caller verdict that lands after the agent stopped speaking only labels the final (`speaker: 'caller'`, `speakerRechecked: true`) and sends no `barge_in`.
+- A held barge-in always arrives before the final of its own utterance, never after it.
+- A first check that times out fails open: the verdict is `unknown` (reason `timeout`), not `other`, so the barge-in is not suppressed and no re-check follows.
 
-The cost is exposure: a long bystander utterance gets two chances to pass instead of one. Measured 2026-10-30 (TitaNet-small, threshold 0.459, `speaker_bench --fixed-threshold 0.459 --recheck`): on bystander segments long enough for two 1.5 s windows, the re-check accepted none that the first check had rejected (tune: 1 of 14 accepted with one window, 1 of 14 with two; test: 0 of 3 with either). That sample is small, so treat the extra exposure as unmeasured rather than zero; the one-window FAR over all bystander clips is 2.2 % (tune) and 0.0 % (test). Set `recheckOnOther: false` to keep exactly one check per utterance.
+The cost is exposure: a long bystander utterance gets one more chance to pass for every extra window. We measured it on long streams of bystander speech and babble, stitched from four scenes, about 16 s each, with the voice changing every 4 s (TitaNet-small, threshold 0.459, `speaker_bench --long-other`, 2026-10-31, pooled n = 480). The false-accept rate (FAR) of consecutive windows by seconds of other speech:
+
+| other speech | windows | FAR    |
+| ------------ | ------- | ------ |
+| 1.5 s        | 1       | 0.21 % |
+| 3 s (0.15.0) | 2       | 0.42 % |
+| 6 s          | 4       | 1.25 % |
+| 9 s          | 6       | 1.46 % |
+| 12 s         | 8       | 2.29 % |
+| 15 s         | 10      | 3.33 % |
+
+That is about 0.2 points per extra window. The cap trades this against how long a lead the gate forgives, because each window is all-or-nothing on it. Caller recall after other speech that leads by k seconds (test set, n = 96):
+
+| caller starts after | cap 2 (0.15.0) | cap 4 | cap 6 | cap 8 (default) |
+| ------------------- | -------------- | ----- | ----- | --------------- |
+| 1 s                 | 78 %           | 79 %  | 79 %  | 79 %            |
+| 2 s                 | 45 %           | 89 %  | 89 %  | 89 %            |
+| 3 s                 | 0 %            | 95 %  | 95 %  | 95 %            |
+| 4 s                 | 0 %            | 77 %  | 78 %  | 78 %            |
+| 6 s                 | 0 %            | 0 %   | 91 %  | 91 %            |
+| 9 s                 | 0 %            | 0 %   | 0 %   | 92 %            |
+
+The 1 s row stops at 79 % partly because some caller clips are too short for any window to end after the onset. Treat the numbers with care: each stitched stream changes voice every 4 s, so one bystander voice that sounds close to the caller would be accepted more often than the table says, and the four references are the same voice at four levels, so the trials are correlated and the effective sample is smaller than 480.
+
+Overlap does not change much. With the other speech mixed in under the caller for 1 s, 3 s or the whole clip, recall moves by at most about 3 points. A bystander at recording level (the raw recordings' scale, not matched to the caller) talking over the caller costs 0 to 3 points at a cap of 6 or more, and early false accepts do not depend on the overlap. That is a bystander at recording level, not one measured as equally loud as the caller.
+
+A sliding scheme (a check every 500 ms) recalls 92 to 97 % with 1.0 to 1.5 s latency, but needs about three times the windows for the same lead and has a false-accept rate three to six times higher, so the gate uses consecutive windows. Embedding one 1.8 s clip takes 19 ms at the median (35 ms at p99) on one thread; a 17 s utterance with the default cap costs 0.15 s of CPU in total. Set `recheckOnOther: false` to keep exactly one check per utterance.
 
 ### Minimum check length (`minCheckSpeechMs`): why 1500 ms
 

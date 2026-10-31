@@ -452,8 +452,11 @@ pub struct JsSpeakerGateConfig {
     pub check_speech_ms: Option<u32>,
     pub min_check_speech_ms: Option<u32>,
     pub suppress_short_barge_in: Option<bool>,
-    /// Re-check an utterance once when its first check says `other` (default true).
+    /// Keep re-checking an utterance while its verdict is `other` (default true).
     pub recheck_on_other: Option<bool>,
+    /// Windows scored per utterance, the first check included (default 8). `0` = no cap; `1` is
+    /// rejected by the gate.
+    pub recheck_max_windows: Option<u32>,
     /// `flag` (default) | `drop`.
     pub on_mismatch: Option<String>,
     pub verify_timeout_ms: Option<u32>,
@@ -485,7 +488,7 @@ impl TryFrom<JsSpeakerGateConfig> for SpeakerGateConfig {
                 .suppress_short_barge_in
                 .unwrap_or(d.suppress_short_barge_in),
             recheck_on_other: value.recheck_on_other.unwrap_or(d.recheck_on_other),
-            recheck_max_windows: d.recheck_max_windows,
+            recheck_max_windows: value.recheck_max_windows.unwrap_or(d.recheck_max_windows),
             on_mismatch,
             verify_timeout_ms: value.verify_timeout_ms.unwrap_or(d.verify_timeout_ms),
         })
@@ -544,6 +547,21 @@ mod speaker_gate_config_from_tests {
         .try_into()
         .unwrap();
         assert!(!off.recheck_on_other);
+    }
+
+    #[test]
+    fn recheck_max_windows_defaults_8_and_maps_through() {
+        let d: SpeakerGateConfig = JsSpeakerGateConfig::default().try_into().unwrap();
+        assert_eq!(d.recheck_max_windows, 8);
+        for n in [2u32, 0] {
+            let c: SpeakerGateConfig = JsSpeakerGateConfig {
+                recheck_max_windows: Some(n),
+                ..Default::default()
+            }
+            .try_into()
+            .unwrap();
+            assert_eq!(c.recheck_max_windows, n);
+        }
     }
 
     #[test]
@@ -884,6 +902,8 @@ pub struct JsSpeechEvent {
     pub speaker_unknown_reason: Option<String>,
     /// `user_speech_final`: `true` when a re-check after a first `other` verdict was scored.
     pub speaker_rechecked: Option<bool>,
+    /// `user_speech_final` with the speaker gate on: check windows scored for the utterance.
+    pub speaker_check_windows: Option<u32>,
 }
 
 #[napi(string_enum)]

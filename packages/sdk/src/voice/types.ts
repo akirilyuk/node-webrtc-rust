@@ -322,14 +322,21 @@ export interface VoiceAgentConfig {
      */
     suppressShortBargeIn?: boolean
     /**
-     * Default `true`. When an utterance's first check says `other` and the utterance keeps going,
-     * the next `checkSpeechMs` of speech is checked once more. A `caller` re-check releases the
-     * held barge-in (no earlier than `2 × checkSpeechMs` of speech, see
-     * `speakerRecheckBargeEarliestMs`) and labels the final `caller` with `speakerRechecked: true`;
-     * any other result keeps `other`. Never runs after a `caller` or `unknown` verdict. `false`
+     * Default `true`. While an utterance's verdict is `other` and the utterance keeps going, each
+     * next `checkSpeechMs` of speech is checked again, up to `recheckMaxWindows` windows. A
+     * `caller` window releases the held barge-in (no earlier than n × `checkSpeechMs` of speech
+     * for the n-th window, see `speakerRecheckBargeEarliestMs`) and labels the final `caller`
+     * with `speakerRechecked: true`. Never runs after a `caller` or `unknown` verdict. `false`
      * keeps one check per utterance. See "Re-check after other" in VOICE-VAD-AND-BARGE-IN.md.
      */
     recheckOnOther?: boolean
+    /**
+     * Default 8. Windows scored per utterance while the verdict stays `other`, the first check
+     * included (8 windows = 12 s of speech with the default `checkSpeechMs`). `2` is the 0.15.0
+     * behaviour (one re-check). `0` removes the cap. `1` is rejected (use `recheckOnOther: false`).
+     * Ignored when `recheckOnOther` is `false`.
+     */
+    recheckMaxWindows?: number
     /** `'flag'` (default) keeps the final with `speaker: 'other'`; `'drop'` emits `user_speech_ignored`. */
     onMismatch?: 'flag' | 'drop'
     /** Bound (ms) on one check and on a final waiting for its verdict. Default 500. */
@@ -568,6 +575,12 @@ export interface SpeechEvent {
    * re-check heard the caller, else `other`. Absent otherwise.
    */
   speakerRechecked?: boolean
+  /**
+   * `user_speech_final` with `speakerGate` on: check windows scored for the utterance (1 = the
+   * first check only). A barge-in released by the n-th window came no earlier than
+   * n × `checkSpeechMs` of speech (`speakerRecheckBargeEarliestMs`).
+   */
+  speakerCheckWindows?: number
 }
 
 /** `languageId.timing` values. */

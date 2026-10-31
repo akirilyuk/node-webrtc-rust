@@ -66,7 +66,6 @@ const BABBLE_CALLER_LEVELS: [i32; 2] = [-20, -26];
 const BABBLE_REL_DB: i32 = -15;
 /// `--babble`: no babble sentence starts within this many ms before the caller
 /// (`--babble-clear-ms 1000 --babble-clear-pull` in `scripts/ci/ensure-speaker-fixtures.sh`).
-// Stays 1000 although the CI scene now clears 2000 ms: a phrase qualified at the closer, harder clear stays valid.
 const BABBLE_CLEAR_MS: usize = 1000;
 /// `--babble`: the noisy-bystander roundtrip judges a caller turn with
 /// `DEFAULT_BARGE_PHRASE_MIN_SIMILARITY` (`roundtrip-noisy-bystander-helpers.ts`); a roll below it

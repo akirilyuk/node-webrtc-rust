@@ -42,14 +42,10 @@ ensure_speaker_fixtures() {
   local ex="$root/examples/voice-agent-local-sherpa"
   local out="$ex/.models/speaker-fixtures"
   local stamp="$out/.speaker-fixtures-args"
-  # --babble-clear-ms must exceed the VAD preset's end silence (minSilenceDurationMs + speechPadMs,
-  # about 1600 ms): with less babble-free time before a turn, babble keeps the VAD open and the
-  # caller turn is stitched onto earlier speech. Lockstep guard: roundtrip-noisy-bystander-clear.test.ts
-  # in examples/voice-agent-local-sherpa reads the value below.
   local args=(
     --models "$ex/.models/speaker" --main-tts "$ex/.models/vits-piper-en_US-amy-low"
     --phrases "$ex/stt-phrase-qualification.json" --out "$out"
-    --main-levels -26 --min-turn-gap-ms 2500 --bystander-db -15 --babble-clear-ms 2000 --babble-clear-pull --long-bystanders 2 --long-bystander-db -6
+    --main-levels -26 --min-turn-gap-ms 2500 --bystander-db -15 --babble-clear-ms 1000 --babble-clear-pull --long-bystanders 2 --long-bystander-db -6
     --only s3_test_m15
   )
   # The stamp also carries the phrase table's hash: S3 caller phrases are the babble-clean entries

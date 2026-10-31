@@ -253,6 +253,12 @@ pub trait TtsProvider: Send + Sync {
         None
     }
 
+    /// The text this provider actually synthesizes for `normalized`, used as the phrase-cache key
+    /// text.
+    fn phrase_cache_text<'a>(&self, normalized: &'a str) -> std::borrow::Cow<'a, str> {
+        std::borrow::Cow::Borrowed(normalized)
+    }
+
     /// Fully synthesize `text` and return all PCM chunks (legacy / cache-friendly path).
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>>;
 

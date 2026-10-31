@@ -346,6 +346,10 @@ impl TtsProvider for CachingTtsProvider {
         self.last_hit.lock().ok().and_then(|mut g| g.take())
     }
 
+    fn phrase_cache_text<'a>(&self, normalized: &'a str) -> std::borrow::Cow<'a, str> {
+        self.inner.phrase_cache_text(normalized)
+    }
+
     async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
         self.synthesize_progressive(text, None).await
     }
@@ -375,7 +379,11 @@ impl TtsProvider for CachingTtsProvider {
             });
         }
         let project_id = self.current_project_id();
-        let key = PhraseKey::new(&self.config, &project_id, &normalized);
+        let key = PhraseKey::new(
+            &self.config,
+            &project_id,
+            &self.inner.phrase_cache_text(&normalized),
+        );
         let attrs = SherpaTtsMetricAttrs::from_tts_config(&self.config, &project_id);
 
         if let Some(chunk) = self.cache.get(&key) {
@@ -667,6 +675,55 @@ mod tests {
         assert_eq!(state.calls.load(Ordering::SeqCst), 1);
         assert_eq!(total(&first), total(&second));
         assert_eq!(second.len(), 1);
+    }
+
+    /// Merges a short opener in its cache text, like the Kitten Sherpa provider.
+    struct MergingFake(Box<dyn TtsProvider>);
+
+    #[async_trait]
+    impl TtsProvider for MergingFake {
+        fn vendor_name(&self) -> &'static str {
+            "merging-fake"
+        }
+
+        fn phrase_cache_text<'a>(&self, normalized: &'a str) -> std::borrow::Cow<'a, str> {
+            crate::tts_text::merge_short_opener(normalized)
+        }
+
+        async fn synthesize(&self, text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
+            self.0.synthesize(text).await
+        }
+    }
+
+    #[tokio::test]
+    async fn key_text_is_the_providers_cache_text() {
+        let (fake, state) = Fake::boxed(4_000);
+        let cache = big_cache();
+        let config = cfg(TtsVendor::LocalSherpa, "a");
+        let tts = wrapper(Box::new(MergingFake(fake)), &config, &cache);
+        tts.synthesize("Hi! Ask me anything.").await.unwrap();
+        tts.synthesize("Hi, ask me anything.").await.unwrap();
+        assert_eq!(state.calls.load(Ordering::SeqCst), 1, "second is a hit");
+        assert!(cache
+            .get(&PhraseKey::new(&config, "", "Hi, ask me anything."))
+            .is_some());
+        assert!(cache
+            .get(&PhraseKey::new(&config, "", "Hi! Ask me anything."))
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn default_cache_text_is_the_normalized_caller_text() {
+        let (inner, state) = Fake::boxed(4_000);
+        let cache = big_cache();
+        let config = cfg(TtsVendor::LocalSherpa, "a");
+        let tts = wrapper(inner, &config, &cache);
+        tts.synthesize("Hi! Ask me anything.").await.unwrap();
+        tts.synthesize("Hi, ask me anything.").await.unwrap();
+        assert_eq!(state.calls.load(Ordering::SeqCst), 2);
+        assert!(cache
+            .get(&PhraseKey::new(&config, "", "Hi! Ask me anything."))
+            .is_some());
     }
 
     #[tokio::test]

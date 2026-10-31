@@ -2224,3 +2224,143 @@ async fn recheck_timeout_then_caller_barges_once() {
 async fn recheck_failure_then_caller_barges_once() {
     recheck_unknown_then_caller(Behavior::Fail).await;
 }
+
+/// Waits (3 s bound) until a final waits for its speaker verdict off the step lock.
+async fn wait_final_pending(rig: &Rig) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while rig.agent.speaker_gate_finals_pending() < 1 {
+        assert!(Instant::now() < deadline, "no final waits for its verdict");
+        sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// The agent stops speaking (playback ends) and the utterance closes: a final cannot be produced
+/// while the agent speaks (`should_finalize_utterance` needs an idle agent), so the final starts
+/// waiting for its verdict, and the agent speaks again before the verdict arrives.
+async fn end_utterance_then_speak_again(rig: &mut Rig) {
+    rig.feed(&silent_stereo_frame(), 30).await;
+    rig.agent.flush_tts().await.unwrap();
+    assert!(
+        rig.wait_event(SpeechEventKind::AgentSpeakingEnd, 3000)
+            .await
+    );
+    rig.feed(&silent_stereo_frame(), 30).await;
+    wait_final_pending(rig).await;
+    rig.start_speaking_for(600).await;
+}
+
+/// The caller's window result is stored while the final waits for it, delivery of the verdict
+/// is parked and the agent speaks again: the final sends the barge-in itself, before the final,
+/// once. (Cause of the earlier "no final while speaking": the product finalizes only with an idle
+/// agent, `should_finalize_utterance`; a final emitted while speaking is one that waited for its
+/// verdict across a new reply.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn caller_recheck_stored_before_the_final_while_speaking_barges_before_the_final() {
+    let mut cfg = cfg_cap(2);
+    cfg.verify_timeout_ms = 5000;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    let base = rig.log.len();
+    let lens_before = rig.lens.lock().unwrap().len();
+    rig.start_speaking_for(600).await;
+    let release = Arc::new(Notify::new());
+    queue_checks(
+        &rig,
+        vec![
+            Behavior::Vector(OTHER.to_vec()),
+            Behavior::WaitFor(Arc::clone(&release), REF.to_vec()),
+        ],
+    );
+    rig.script.lock().unwrap().final_on_finalize = Some("caller over babble".into());
+    feed_until_queue_len(&rig, 0).await;
+    wait_hold(&rig).await;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while rig.lens.lock().unwrap().len() < lens_before + 2 {
+        assert!(Instant::now() < deadline, "second window never embedded");
+        sleep(Duration::from_millis(5)).await;
+    }
+    end_utterance_then_speak_again(&mut rig).await;
+    rig.drain();
+    assert!(barges_since(&rig, base).is_empty(), "nothing fired yet");
+    // The result is stored, its delivery parked; the final wakes on the stored verdict.
+    rig.agent.speaker_gate_park_verdicts(true);
+    release.notify_one();
+    let mut got_final = false;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline && !got_final {
+        rig.drain();
+        got_final = rig.log[base..]
+            .iter()
+            .any(|e| e.kind == SpeechEventKind::UserSpeechFinal);
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert!(got_final, "final emitted while delivery is parked");
+    rig.agent.speaker_gate_park_verdicts(false);
+    sleep(Duration::from_millis(300)).await;
+    rig.drain();
+    let barges = barges_since(&rig, base);
+    assert_eq!(barges.len(), 1, "exactly one barge-in");
+    let fin = last_final(&rig, base);
+    assert_eq!(fin.speaker.as_deref(), Some("caller"));
+    assert_eq!(barges[0].utterance_id, fin.utterance_id);
+    let barge_at = rig.log[base..]
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::BargeIn)
+        .unwrap();
+    let final_at = rig.log[base..]
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::UserSpeechFinal)
+        .unwrap();
+    assert!(barge_at < final_at, "barge_in precedes its own final");
+    rig.agent.stop().await.unwrap();
+}
+
+/// A window that times out at the final: the final reports what the product stores (`other`, the
+/// first verdict stands) and the held barge-in is dropped, so nothing fires before or after it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recheck_unknown_at_the_final_drops_the_held_barge() {
+    let mut cfg = cfg_cap(DEFAULT_RECHECK_MAX_WINDOWS);
+    cfg.verify_timeout_ms = 300;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    let base = rig.log.len();
+    rig.start_speaking_for(600).await;
+    queue_checks(
+        &rig,
+        vec![Behavior::Vector(OTHER.to_vec()), Behavior::Pending],
+    );
+    rig.script.lock().unwrap().final_on_finalize = Some("babble".into());
+    feed_until_queue_len(&rig, 0).await;
+    wait_hold(&rig).await;
+    end_utterance_then_speak_again(&mut rig).await;
+    // The Pending embed times out: the re-check result is unknown, the stored verdict stays other.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !rig
+        .agent
+        .speaker_gate_warnings()
+        .iter()
+        .any(|w| w.contains("verify timeout"))
+    {
+        assert!(Instant::now() < deadline, "embed never timed out");
+        sleep(Duration::from_millis(10)).await;
+    }
+    let mut got_final = false;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline && !got_final {
+        rig.drain();
+        got_final = rig.log[base..]
+            .iter()
+            .any(|e| e.kind == SpeechEventKind::UserSpeechFinal);
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert!(got_final);
+    sleep(Duration::from_millis(500)).await;
+    rig.drain();
+    let fin = last_final(&rig, base);
+    assert_eq!(fin.speaker.as_deref(), Some("other"));
+    assert!(
+        barges_since(&rig, base).is_empty(),
+        "no barge-in before or after the final, while the agent speaks again"
+    );
+    rig.agent.stop().await.unwrap();
+}

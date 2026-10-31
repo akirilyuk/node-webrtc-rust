@@ -3179,6 +3179,12 @@ impl VoiceAgent {
         self.cancel_pending_tts_synthesis().await;
     }
 
+    /// Test hook: finals currently waiting for their speaker verdict.
+    #[doc(hidden)]
+    pub fn speaker_gate_finals_pending(&self) -> u64 {
+        self.speaker_finals_pending.load(Ordering::SeqCst)
+    }
+
     /// Test hook: how often the gate held a barge-in for a further window.
     #[doc(hidden)]
     pub fn speaker_gate_hold_count(&self) -> u64 {
@@ -3803,9 +3809,10 @@ impl VoiceAgent {
             }
         };
         // A barge-in held for this utterance is settled here, by the final that read the verdict
-        // (`one-send-path-per-unit`, `contract.event-order`): `other` or an idle agent drops it
-        // (a later re-check result must not fire into the next reply, `rt.stale-event-by-key`);
-        // a `caller` final with the agent still speaking sends it before the final.
+        // (`one-send-path-per-unit`, `contract.event-order`): `other`, `unknown` or an idle agent
+        // drops it (a later result must not fire after the final or into the next reply,
+        // `rt.stale-event-by-key`); a `caller` final with the agent still speaking sends it
+        // before the final.
         let mut fire_barge = false;
         if let Some(gate) = self.speaker_gate.as_ref() {
             match outcome {
@@ -3818,9 +3825,7 @@ impl VoiceAgent {
                     }
                 }
                 Outcome::Unknown => {
-                    if !speaking_now {
-                        gate.take_pending_barge(key);
-                    }
+                    gate.take_pending_barge(key);
                 }
             }
         }

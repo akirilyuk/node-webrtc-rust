@@ -27,6 +27,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **speech:** all agent events (reply, speaking, cache hit, error) go through the ordered event bus. Before, they could overtake events queued behind a final that was waiting for its speaker verdict.
 - **mixer / conference / helpers:** the mix outbound (conference room, native and JS mix pumps) no longer writes a stalled listener's missed slots back to back. After a stall it writes at most 4 frames (the newest slots, which still carry audio) and resumes 20 ms pacing; skipped ticks stay counted in `listenerSkipped`.
 - **examples (Sherpa roundtrip):** `start:roundtrip-utterance-timing` no longer fails with "user_speech_final arrived 1 ms before user_speaking_end" when both events arrive during post-TTS silence. The harness now records their arrival times instead of stamping final and then end when playback finishes. Library event order is unchanged.
+- **speech:** Kitten TTS: a lone one-word opener of up to 6 letters at the start of an utterance (`Hi!`, `Sure!`, `Hello.`) is merged into the next sentence for the engine (`Hi, ask …`), so it is no longer rendered near-silent. Only the engine input and the phrase-cache key change; captions and history keep the original text. Piper and Kokoro voices are unchanged. Measurements: `docs/tts-opener-sweep-2026-10-31.md`.
 
 ## [0.14.0] - 2026-10-28
 

@@ -153,7 +153,7 @@ $H --label speaker-bench -- cargo run --release -p node-webrtc-rust-vendor-sherp
 
 The other voices' bundles are read from the parent of `--models` (`--voices-root` overrides it).
 
-`--model-filter <text>` keeps only the embedding models whose file stem contains the text. `--fixed-threshold <t> --long-other` skips Parts 1 to 3 and writes `long_other.md` / `long_other.json`: per-window FAR of non-caller speech, FAR over long other-speech streams (4 bystander speech unions, about 16 s), caller recall after k s of other speech, and embed cost, for the `consecutive` re-check scheme (windows end at 1x, 2x, 3x the check) and a `sliding-500` scheme (hop 500 ms), with window caps N. Use it with `--checks 1.5`.
+`--model-filter <text>` keeps only the embedding models whose file stem contains the text. `--fixed-threshold <t> --long-other` skips Parts 1 to 3 and writes `long_other.md` / `long_other.json`: per-window FAR of non-caller speech, FAR over long other-speech streams (4 bystander speech unions, about 16 s), caller recall after k s of other speech, and embed cost, for the `consecutive` re-check scheme (windows end at 1x, 2x, 3x the check) and a `sliding-500` scheme (hop 500 ms), with window caps N. Use it with `--checks 1.5`. `--overlap-gain <list>` (linear gains of the other speech over the caller start, or `level` = 10^(level_db/20), default `level`) and `--overlaps-ms <list>` (default `0,1000`; `full` = the whole caller clip) add rows to table C, e.g. `--overlap-gain level,0.5,1.0 --overlaps-ms 0,1000,3000,full`.
 
 ## Run it on the EU runner
 

@@ -2438,6 +2438,10 @@ struct Args {
     recheck: bool,
     /// With `fixed_threshold`: long other-speech FAR, caller recall and cost per re-check scheme.
     long_other: bool,
+    /// With `long_other`: gains of the other speech over the caller start (table C).
+    overlap_gains: Vec<GainSpec>,
+    /// With `long_other`: overlaps of the other speech over the caller start (table C).
+    overlaps: Vec<OverlapSpec>,
     /// Only embedding models whose file stem contains this text.
     model_filter: Option<String>,
 }
@@ -2469,6 +2473,8 @@ fn parse_args() -> Result<Args, String> {
     let mut fixed_threshold: Option<f32> = None;
     let mut recheck = false;
     let mut long_other = false;
+    let mut overlap_gains: Vec<GainSpec> = vec![GainSpec::Level];
+    let mut overlaps: Vec<OverlapSpec> = DEFAULT_OVERLAPS.to_vec();
     let mut model_filter: Option<String> = None;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -2554,6 +2560,8 @@ fn parse_args() -> Result<Args, String> {
             }
             "--recheck" => recheck = true,
             "--long-other" => long_other = true,
+            "--overlap-gain" => overlap_gains = parse_gains(&value("--overlap-gain")?)?,
+            "--overlaps-ms" => overlaps = parse_overlaps(&value("--overlaps-ms")?)?,
             "--model-filter" => model_filter = Some(value("--model-filter")?),
             other => return Err(format!("unknown argument {other}")),
         }
@@ -2578,6 +2586,8 @@ fn parse_args() -> Result<Args, String> {
         fixed_threshold,
         recheck,
         long_other,
+        overlap_gains,
+        overlaps,
         model_filter,
     })
 }
@@ -3166,8 +3176,127 @@ const STREAM_UNIONS: usize = 4;
 const EXPOSURES_S: [f32; 8] = [1.5, 3.0, 4.5, 6.0, 7.5, 9.0, 12.0, 15.0];
 /// Seconds of other speech before the caller starts (table C).
 const RECALL_K_S: [f32; 6] = [1.0, 2.0, 3.0, 4.0, 6.0, 9.0];
-/// Milliseconds the other speech runs over the start of the caller (table C).
-const RECALL_OVERLAP_MS: [usize; 2] = [0, 1000];
+/// Default overlaps (`--overlaps-ms`): ms the other speech runs over the start of the caller.
+const DEFAULT_OVERLAPS: [OverlapSpec; 2] = [OverlapSpec::Ms(0), OverlapSpec::Ms(1000)];
+
+/// How long the other speech runs over the start of the caller (table C).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum OverlapSpec {
+    Ms(usize),
+    /// The whole caller clip.
+    Full,
+}
+
+impl OverlapSpec {
+    fn samples(self, clip_len: usize) -> usize {
+        match self {
+            OverlapSpec::Ms(ms) => ms * 16,
+            OverlapSpec::Full => clip_len,
+        }
+    }
+
+    fn label(self) -> String {
+        match self {
+            OverlapSpec::Ms(ms) => ms.to_string(),
+            OverlapSpec::Full => "full".to_string(),
+        }
+    }
+
+    fn json(self) -> String {
+        match self {
+            OverlapSpec::Ms(ms) => ms.to_string(),
+            OverlapSpec::Full => "\"full\"".to_string(),
+        }
+    }
+}
+
+/// Gain of the other speech in the overlap (table C).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum GainSpec {
+    /// 10^(level_db / 20) of the caller clip's scene.
+    Level,
+    Linear(f32),
+}
+
+impl GainSpec {
+    fn resolve(self, level_db: i32) -> f32 {
+        match self {
+            GainSpec::Level => 10f32.powf(level_db as f32 / 20.0),
+            GainSpec::Linear(g) => g,
+        }
+    }
+
+    fn label(self) -> String {
+        match self {
+            GainSpec::Level => "level".to_string(),
+            GainSpec::Linear(g) => format!("{g}"),
+        }
+    }
+
+    fn json(self) -> String {
+        match self {
+            GainSpec::Level => "\"level\"".to_string(),
+            GainSpec::Linear(g) => format!("{g}"),
+        }
+    }
+}
+
+fn parse_overlaps(list: &str) -> Result<Vec<OverlapSpec>, String> {
+    let out = list
+        .split(',')
+        .map(|t| match t.trim() {
+            "full" => Ok(OverlapSpec::Full),
+            t => t
+                .parse::<usize>()
+                .map(OverlapSpec::Ms)
+                .map_err(|e| format!("--overlaps-ms: {t}: {e}")),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if out.is_empty() {
+        return Err("--overlaps-ms: empty list".into());
+    }
+    Ok(out)
+}
+
+fn parse_gains(list: &str) -> Result<Vec<GainSpec>, String> {
+    let out = list
+        .split(',')
+        .map(|t| match t.trim() {
+            "level" => Ok(GainSpec::Level),
+            t => match t.parse::<f32>() {
+                Ok(g) if g.is_finite() && g >= 0.0 => Ok(GainSpec::Linear(g)),
+                Ok(_) => Err(format!("--overlap-gain: {t} must be finite and >= 0")),
+                Err(e) => Err(format!("--overlap-gain: {t}: {e}")),
+            },
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if out.is_empty() {
+        return Err("--overlap-gain: empty list".into());
+    }
+    Ok(out)
+}
+
+/// Table C input: other[0..onset] ++ clip, with other[onset..] x gain added over the first
+/// `min(overlap, clip.len(), other.len() - onset)` samples of the clip.
+fn build_recall_input(
+    other: &[f32],
+    clip: &[f32],
+    onset: usize,
+    overlap: usize,
+    gain: f32,
+) -> Vec<f32> {
+    let mut x: Vec<f32> = other[..onset].to_vec();
+    x.extend_from_slice(clip);
+    for i in 0..mixed_samples(other.len(), clip.len(), onset, overlap) {
+        x[onset + i] += other[onset + i] * gain;
+    }
+    x
+}
+
+/// Samples of the overlap that [`build_recall_input`] actually mixes.
+fn mixed_samples(other_len: usize, clip_len: usize, onset: usize, overlap: usize) -> usize {
+    overlap.min(clip_len).min(other_len.saturating_sub(onset))
+}
 /// Window caps of table C; `None` is unlimited.
 const RECALL_CAPS: [Option<usize>; 6] = [Some(2), Some(3), Some(4), Some(6), Some(8), None];
 /// Window caps of table D.
@@ -3316,9 +3445,12 @@ struct TrialScores {
 
 struct RecallRun {
     scheme: Scheme,
-    overlap_ms: usize,
+    gain: GainSpec,
+    overlap: OverlapSpec,
     k_s: f32,
     trials: Vec<TrialScores>,
+    /// Samples of other speech actually mixed, summed over the trials of one scheme.
+    mixed_samples: usize,
 }
 
 struct RecallCell {
@@ -3554,24 +3686,30 @@ fn caller_recall(
     clips: &[CallerClip],
     check: usize,
     threshold: f32,
+    gains: &[GainSpec],
+    overlaps: &[OverlapSpec],
     memos: &mut [EmbedMemo],
     timings: &mut Vec<f64>,
 ) -> Vec<RecallRun> {
     let mut runs: Vec<RecallRun> = Vec::new();
     for scheme in SCHEMES {
-        for overlap_ms in RECALL_OVERLAP_MS {
-            for k_s in RECALL_K_S {
-                runs.push(RecallRun {
-                    scheme,
-                    overlap_ms,
-                    k_s,
-                    trials: Vec::new(),
-                });
+        for gain in gains {
+            for overlap in overlaps {
+                for k_s in RECALL_K_S {
+                    runs.push(RecallRun {
+                        scheme,
+                        gain: *gain,
+                        overlap: *overlap,
+                        k_s,
+                        trials: Vec::new(),
+                        mixed_samples: 0,
+                    });
+                }
             }
         }
     }
-    let run_index = |si: usize, oi: usize, ki: usize| {
-        (si * RECALL_OVERLAP_MS.len() + oi) * RECALL_K_S.len() + ki
+    let run_index = |si: usize, gi: usize, oi: usize, ki: usize| {
+        ((si * gains.len() + gi) * overlaps.len() + oi) * RECALL_K_S.len() + ki
     };
     for (j, clip) in clips.iter().enumerate() {
         let sidx = j % test.streams.len();
@@ -3583,40 +3721,39 @@ fn caller_recall(
             .unwrap_or(&test.refs[0])
             .1
             .as_slice();
-        let gain = 10f32.powf(clip.level_db as f32 / 20.0);
-        for (oi, overlap_ms) in RECALL_OVERLAP_MS.iter().enumerate() {
-            for (ki, k_s) in RECALL_K_S.iter().enumerate() {
-                let onset = ((k_s * SR as f32) as usize).min(other.len());
-                let mut x: Vec<f32> = other[..onset].to_vec();
-                x.extend_from_slice(&clip.audio);
-                for i in 0..overlap_ms * 16 {
-                    if onset + i >= x.len() || onset + i >= other.len() {
-                        break;
-                    }
-                    x[onset + i] += other[onset + i] * gain;
-                }
-                let mut accepted_at: HashMap<usize, bool> = HashMap::new();
-                for (si, scheme) in SCHEMES.iter().enumerate() {
-                    let ends = window_ends(*scheme, x.len(), check);
-                    let mut accepts = Vec::with_capacity(ends.len());
-                    for &end in &ends {
-                        let accepted = *accepted_at.entry(end).or_insert_with(|| {
-                            // Before the onset the window is pure other speech: shared with
-                            // table B's stream cache.
-                            let e = if end <= onset {
-                                cached_window(&mut memos[sidx], emb, other, end, check, timings)
-                            } else {
-                                embed_window(emb, &x, end, check, timings)
-                            };
-                            e.is_some_and(|e| cosine(reference, &e) >= threshold)
+        for (gi, gain_spec) in gains.iter().enumerate() {
+            let gain = gain_spec.resolve(clip.level_db);
+            for (oi, overlap_spec) in overlaps.iter().enumerate() {
+                let overlap = overlap_spec.samples(clip.audio.len());
+                for (ki, k_s) in RECALL_K_S.iter().enumerate() {
+                    let onset = ((k_s * SR as f32) as usize).min(other.len());
+                    let x = build_recall_input(other, &clip.audio, onset, overlap, gain);
+                    let mixed = mixed_samples(other.len(), clip.audio.len(), onset, overlap);
+                    let mut accepted_at: HashMap<usize, bool> = HashMap::new();
+                    for (si, scheme) in SCHEMES.iter().enumerate() {
+                        let ends = window_ends(*scheme, x.len(), check);
+                        let mut accepts = Vec::with_capacity(ends.len());
+                        for &end in &ends {
+                            let accepted = *accepted_at.entry(end).or_insert_with(|| {
+                                // Before the onset the window is pure other speech: shared with
+                                // table B's stream cache.
+                                let e = if end <= onset {
+                                    cached_window(&mut memos[sidx], emb, other, end, check, timings)
+                                } else {
+                                    embed_window(emb, &x, end, check, timings)
+                                };
+                                e.is_some_and(|e| cosine(reference, &e) >= threshold)
+                            });
+                            accepts.push(accepted);
+                        }
+                        let run = &mut runs[run_index(si, gi, oi, ki)];
+                        run.mixed_samples += mixed;
+                        run.trials.push(TrialScores {
+                            onset,
+                            ends,
+                            accepts,
                         });
-                        accepts.push(accepted);
                     }
-                    runs[run_index(si, oi, ki)].trials.push(TrialScores {
-                        onset,
-                        ends,
-                        accepts,
-                    });
                 }
             }
         }
@@ -3638,6 +3775,8 @@ fn long_other_section(
     emb: &Embedder,
     check_s: f32,
     threshold: f32,
+    gains: &[GainSpec],
+    overlaps: &[OverlapSpec],
 ) -> Result<(String, String), String> {
     let check = check_samples(check_s);
     let sets = [
@@ -3775,37 +3914,46 @@ fn long_other_section(
         &clips,
         check,
         threshold,
+        gains,
+        overlaps,
         &mut memos[1],
         &mut timings,
     );
-    md.push_str("### C) Caller recall after k s of other speech\n\nTest set, one trial per caller clip: x = other[0..k] ++ caller (other speech x gain mixed into the first overlap ms of the caller). N = windows scored from the start of x (consecutive with N = 2 is the 0.15.0 behaviour). early_fa = a window ending at or before the onset accepted first; latency = accepting window end - onset.\n\n");
+    md.push_str("### C) Caller recall after k s of other speech\n\nTest set, one trial per caller clip: x = other[0..k] ++ caller (other speech x gain mixed into the first overlap ms of the caller; gain `level` = 10^(level_db/20) of the clip's scene; the overlap is truncated where the other stream or the clip ends, `mixed ms (mean)` is what was actually mixed). N = windows scored from the start of x (consecutive with N = 2 is the 0.15.0 behaviour). early_fa = a window ending at or before the onset accepted first; latency = accepting window end - onset.\n\n");
     let mut c_json = Vec::new();
     for scheme in SCHEMES {
-        for overlap_ms in RECALL_OVERLAP_MS {
-            md.push_str(&format!(
-                "#### {} / overlap {overlap_ms} ms\n\n| k s | N | n | caller % | early_fa % | miss % | latency p50 ms | latency p90 ms |\n|---|---|---|---|---|---|---|---|\n",
-                scheme.name()
+        for gain in gains {
+            for overlap in overlaps {
+                md.push_str(&format!(
+                "#### {} / gain {} / overlap {} ms\n\n| gain | mixed ms (mean) | k s | N | n | caller % | early_fa % | miss % | latency p50 ms | latency p90 ms |\n|---|---|---|---|---|---|---|---|---|---|\n",
+                scheme.name(),
+                gain.label(),
+                overlap.label()
             ));
-            for run in runs
-                .iter()
-                .filter(|r| r.scheme == scheme && r.overlap_ms == overlap_ms)
-            {
-                for cap in RECALL_CAPS {
-                    let c = recall_cell(&run.trials, cap);
-                    md.push_str(&format!(
-                        "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
-                        run.k_s,
-                        cap_label(cap),
-                        c.n,
-                        fmt_opt(pct(c.caller, c.n), 1),
-                        fmt_opt(pct(c.early, c.n), 1),
-                        fmt_opt(pct(c.miss, c.n), 1),
-                        fmt_opt(c.lat_p50_ms, 0),
-                        fmt_opt(c.lat_p90_ms, 0)
-                    ));
-                    c_json.push(format!(
-                        "{{\"scheme\": \"{}\", \"overlap_ms\": {overlap_ms}, \"k_s\": {}, \"cap\": {}, \"n\": {}, \"caller_pct\": {}, \"early_fa_pct\": {}, \"miss_pct\": {}, \"latency_p50_ms\": {}, \"latency_p90_ms\": {}}}",
+                for run in runs
+                    .iter()
+                    .filter(|r| r.scheme == scheme && r.gain == *gain && r.overlap == *overlap)
+                {
+                    let mixed_ms = run.mixed_samples as f64 / run.trials.len().max(1) as f64 / 16.0;
+                    for cap in RECALL_CAPS {
+                        let c = recall_cell(&run.trials, cap);
+                        md.push_str(&format!(
+                            "| {} | {mixed_ms:.0} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                            gain.label(),
+                            run.k_s,
+                            cap_label(cap),
+                            c.n,
+                            fmt_opt(pct(c.caller, c.n), 1),
+                            fmt_opt(pct(c.early, c.n), 1),
+                            fmt_opt(pct(c.miss, c.n), 1),
+                            fmt_opt(c.lat_p50_ms, 0),
+                            fmt_opt(c.lat_p90_ms, 0)
+                        ));
+                        c_json.push(format!(
+                        "{{\"scheme\": \"{}\", \"gain\": {}, \"overlap_ms\": {}, \"mixed_ms_mean\": {mixed_ms:.1}, \"k_s\": {}, \"cap\": {}, \"n\": {}, \"caller_pct\": {}, \"early_fa_pct\": {}, \"miss_pct\": {}, \"latency_p50_ms\": {}, \"latency_p90_ms\": {}}}",
                         scheme.name(),
+                        gain.json(),
+                        overlap.json(),
                         run.k_s,
                         cap_json(cap),
                         c.n,
@@ -3815,9 +3963,10 @@ fn long_other_section(
                         json_num(c.lat_p50_ms),
                         json_num(c.lat_p90_ms)
                     ));
+                    }
                 }
+                md.push('\n');
             }
-            md.push('\n');
         }
     }
     json.push_str(&format!(", \"c\": [{}]", c_json.join(", ")));
@@ -3875,7 +4024,14 @@ fn long_other_run(
         let emb = Embedder::open(path, 1)?;
         for &check_s in &args.checks {
             eprintln!("long-other: model {} check {check_s} s", emb.id);
-            let (section, json) = long_other_section(fx, &emb, check_s, threshold)?;
+            let (section, json) = long_other_section(
+                fx,
+                &emb,
+                check_s,
+                threshold,
+                &args.overlap_gains,
+                &args.overlaps,
+            )?;
             md.push_str(&section);
             runs.push(json);
         }
@@ -3905,6 +4061,67 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recall_input_adds_other_only_from_the_onset() {
+        let other: Vec<f32> = (1..=10).map(|v| v as f32).collect();
+        let clip = vec![100.0; 4];
+        let x = build_recall_input(&other, &clip, 3, 2, 1.0);
+        // other[0..3] ++ clip, then other[3], other[4] added to the first two clip samples.
+        assert_eq!(x, vec![1.0, 2.0, 3.0, 104.0, 105.0, 100.0, 100.0]);
+    }
+
+    #[test]
+    fn recall_input_applies_the_gain() {
+        let other = vec![2.0, 4.0, 6.0, 8.0];
+        let clip = vec![10.0, 10.0];
+        let x = build_recall_input(&other, &clip, 2, 2, 0.5);
+        assert_eq!(x, vec![2.0, 4.0, 13.0, 14.0]);
+    }
+
+    #[test]
+    fn recall_input_truncates_the_overlap_at_the_end_of_other() {
+        let other = vec![1.0, 1.0, 1.0, 1.0];
+        let clip = vec![0.0; 5];
+        let x = build_recall_input(&other, &clip, 3, 5, 1.0);
+        assert_eq!(x, vec![1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(mixed_samples(4, 5, 3, 5), 1);
+        assert_eq!(mixed_samples(4, 5, 4, 5), 0);
+    }
+
+    #[test]
+    fn recall_input_without_overlap_is_a_plain_concat() {
+        let other = vec![1.0, 2.0, 3.0, 4.0];
+        let clip = vec![9.0, 9.0];
+        assert_eq!(
+            build_recall_input(&other, &clip, 2, 0, 1.0),
+            vec![1.0, 2.0, 9.0, 9.0]
+        );
+    }
+
+    #[test]
+    fn recall_input_overlap_larger_than_the_clip_clamps_to_the_clip() {
+        let other = vec![1.0; 10];
+        let clip = vec![0.0; 3];
+        let x = build_recall_input(&other, &clip, 2, 100, 1.0);
+        assert_eq!(x, vec![1.0, 1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(mixed_samples(10, 3, 2, 100), 3);
+        assert_eq!(OverlapSpec::Full.samples(3), 3);
+    }
+
+    #[test]
+    fn overlap_and_gain_lists_parse() {
+        assert_eq!(
+            parse_overlaps("0,1000,full").unwrap(),
+            vec![OverlapSpec::Ms(0), OverlapSpec::Ms(1000), OverlapSpec::Full]
+        );
+        assert_eq!(
+            parse_gains("level,0.5").unwrap(),
+            vec![GainSpec::Level, GainSpec::Linear(0.5)]
+        );
+        assert!(parse_gains("-1").is_err());
+        assert!(parse_overlaps("x").is_err());
+    }
 
     fn sweep_row(
         margin_db: f32,

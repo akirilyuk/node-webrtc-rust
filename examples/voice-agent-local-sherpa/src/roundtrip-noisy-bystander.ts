@@ -60,6 +60,7 @@ import {
   VoiceAgent,
   VOICE_AGENT_VAD_PRESET,
   SPEECH_EVENT_TYPE,
+  SPEAKER_GATE_RECHECK_MAX_WINDOWS,
   type VoiceAgentConfig,
 } from '@node-webrtc-rust/sdk/voice'
 
@@ -68,6 +69,8 @@ import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopba
 import { installRoundtripWallClockTimeout } from './roundtrip-counting.js'
 import {
   BYSTANDER_RELATIVE_DB,
+  CHECK_SPEECH_MS,
+  maxBystanderLeadMs,
   QUIET_CALLER_DBFS,
   WARMUP_S,
   evaluateTurns,
@@ -203,6 +206,13 @@ async function runPass(params: {
       text: s.text,
       kind: s.kind,
     }))
+  const leadBoundMs = (SPEAKER_GATE_RECHECK_MAX_WINDOWS - 2) * CHECK_SPEECH_MS
+  const leadMs = maxBystanderLeadMs(turns)
+  if (leadMs >= leadBoundMs) {
+    throw new Error(
+      `scene: bystander lead ${leadMs} ms into a caller turn >= ${leadBoundMs} ms (outside recheckMaxWindows)`,
+    )
+  }
   const pcm = readWavPcm(join(params.scenesDir, scene.wav48))
   console.log(`--- ${label}: scene ${scene.id}, ${turns.length} judged turns ---`)
 

@@ -2,13 +2,8 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import {
-  SPEAKER_GATE_RECHECK_MAX_WINDOWS,
-  VOICE_AGENT_VAD_PRESET,
-} from '@node-webrtc-rust/sdk/voice'
+import { VOICE_AGENT_VAD_PRESET } from '@node-webrtc-rust/sdk/voice'
 import { describe, expect, it } from 'vitest'
-
-import { CHECK_SPEECH_MS } from './roundtrip-noisy-bystander-helpers.js'
 
 /**
  * Lockstep with the fixture arguments in `scripts/ci/ensure-speaker-fixtures.sh` (that script's
@@ -43,9 +38,6 @@ const arg = (name: string): number => {
   return Number(m![1])
 }
 
-/** Upper end of a long-pool bystander sentence ("about 4-6 s of Piper speech", speaker_fixtures.rs). */
-const LONG_BYSTANDER_MAX_MS = 6000
-
 describe('noisy-bystander scene babble clear window', () => {
   it('is below the VAD preset end silence, so babble and bystanders merge into caller utterances', () => {
     const vad = VOICE_AGENT_VAD_PRESET
@@ -54,9 +46,7 @@ describe('noisy-bystander scene babble clear window', () => {
     expect(arg('--babble-clear-ms')).toBeLessThan(endSilenceMs)
   })
 
-  it('keeps the longest bystander lead into a caller turn inside the gate windows after the first two', () => {
+  it('uses long bystanders (the lead bound is checked on the real manifest at run time)', () => {
     expect(arg('--long-bystanders')).toBeGreaterThan(0)
-    const leadMs = LONG_BYSTANDER_MAX_MS + arg('--min-turn-gap-ms')
-    expect(leadMs).toBeLessThan((SPEAKER_GATE_RECHECK_MAX_WINDOWS - 2) * CHECK_SPEECH_MS)
   })
 })

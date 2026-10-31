@@ -20,6 +20,13 @@ export const MIN_STT_PARTIAL_TOKENS = 2
 /** A barge-in may come at most this long after the later of the verdict and the qualifying partial. */
 export const BARGE_SLACK_MS = 300
 /**
+ * A barge-in may come this much before the deciding window's nominal end: one 20 ms inbound frame
+ * (the gate counts the SpeechStart frame as speech) plus delivery jitter. The product bound
+ * `recheck_barge_earliest_ms` (crates/speech/src/speaker_gate.rs) counts speech bytes, not
+ * wall-clock.
+ */
+export const BARGE_EARLY_SLACK_MS = 50
+/**
  * Absolute cap on barge-in delay after the caller's `user_speaking_start`, for turns decided by
  * the first check. A turn whose final carries `speakerRechecked: true` is bounded by
  * {@link expectedBargeAtMs} alone (verdict at start + `speakerCheckWindows` × checkSpeechMs).
@@ -71,6 +78,20 @@ export const MAX_ABSORBED_SHARE = 0.25
  * Token count as the product counts it (`stt_partial_token_count` in crates/speech config.rs):
  * whitespace-separated tokens with at least one alphanumeric character.
  */
+/**
+ * Longest gap from a bystander turn's start to the start of the caller turn that follows it
+ * (0 when no caller turn follows a bystander turn).
+ */
+export function maxBystanderLeadMs(turns: Turn[]): number {
+  let max = 0
+  for (let j = 1; j < turns.length; j++) {
+    if (turns[j]!.role === 'main' && turns[j - 1]!.role === 'bystander') {
+      max = Math.max(max, turns[j]!.startMs - turns[j - 1]!.startMs)
+    }
+  }
+  return max
+}
+
 export function sttPartialTokenCount(text: string): number {
   return text.split(/\s+/).filter((tok) => tok.length > 0 && /[\p{L}\p{N}]/u.test(tok)).length
 }
@@ -268,6 +289,7 @@ export function pairTurnUtterances(
     merged.add(j)
   })
   // TEMPORARY (step B: split on speaker change) - see ABSORB_PLAN, step 5.
+  // The cap applies per pass (stricter than per run).
   const absorbed = new Map<number, Seen>()
   turns.forEach((turn, j) => {
     if (turn.role !== 'main' || starts[j] != null) return
@@ -442,9 +464,9 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
       }
       // A barge-in released by the deciding window cannot come before that window ends.
       const decided = isRechecked(start, seen) ? verdictAfterMs(start, seen) : undefined
-      if (decided != null && delay < decided) {
+      if (decided != null && delay < decided - BARGE_EARLY_SLACK_MS) {
         failures.push(
-          `${tag}: barge-in ${delay} ms after speech start, before the deciding window ends at ${decided} ms`,
+          `${tag}: barge-in ${delay} ms after speech start, before the deciding window ends at ${decided} ms (slack ${BARGE_EARLY_SLACK_MS} ms)`,
         )
       }
       if (delay > BARGE_ABS_CAP_MS && !isRechecked(start, seen)) {

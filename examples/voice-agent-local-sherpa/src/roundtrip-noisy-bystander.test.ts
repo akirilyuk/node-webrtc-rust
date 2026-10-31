@@ -5,6 +5,7 @@ import {
   evaluateTurns,
   expectedBargeAtMs,
   matchTurnUtterances,
+  maxBystanderLeadMs,
   pairTurnUtterances,
   sttPartialTokenCount,
   type Seen,
@@ -613,6 +614,24 @@ describe('check windows of a re-checked final (speakerCheckWindows)', () => {
     expect(expectedBargeAtMs(ok.seen[0]!, ok.seen)).toBe(107_500)
     const early = run(u1({ bargeAt: 107_400 }))
     expect(early.failures).toMatch(/turn 1 .*before the deciding window ends at 7500 ms/)
+    // 40 ms early is inside the 50 ms slack (one inbound frame plus jitter).
+    expect(run(u1({ bargeAt: 107_460 })).failures).toBe('')
+  })
+
+  it('maxBystanderLeadMs measures bystander start to caller start', () => {
+    const b: Turn = { role: 'bystander', startMs: 100_000, endMs: 104_000, text: 'b', kind: 'long' }
+    const m = (startMs: number): Turn => ({
+      role: 'main',
+      startMs,
+      endMs: startMs + 1_000,
+      text: 'm',
+      kind: 'qualified',
+    })
+    expect(maxBystanderLeadMs([b, m(108_999)])).toBe(8_999)
+    expect(maxBystanderLeadMs([b, m(109_000)])).toBe(9_000)
+    expect(maxBystanderLeadMs([m(90_000), m(95_000)])).toBe(0)
+    expect(maxBystanderLeadMs([b, m(105_000), m(120_000)])).toBe(5_000)
+    expect(maxBystanderLeadMs([])).toBe(0)
   })
 
   it('does not pair when the deciding window ends before the caller starts (7.6 s)', () => {
@@ -795,7 +814,7 @@ describe('absorbed caller turn (temporary)', () => {
   })
 
   it('fails when more than 25 % of the caller turns are absorbed', () => {
-    // Two absorbed turns of five caller turns: 40 %.
+    // Two of three caller turns absorbed: 67 %.
     const c2: Turn = { ...c15, startMs: 100_000, endMs: 101_000, text: 'excuse me please' }
     const scene = [c12, b13, c14, c2, b16]
     const seen = [
@@ -815,6 +834,30 @@ describe('absorbed caller turn (temporary)', () => {
     expect(failures).toMatch(
       /2 of 3 caller turns absorbed into an earlier utterance, more than 25 %/,
     )
+  })
+
+  it('exactly 25 % passes (1 of 4 caller turns absorbed)', () => {
+    const mains = [0, 1].map(
+      (k): Turn => ({
+        role: 'main',
+        startMs: 130_000 + k * 6_000,
+        endMs: 132_000 + k * 6_000,
+        text: 'a long caller sentence',
+        kind: 'long',
+      }),
+    )
+    const extra = mains.flatMap((m, k): Seen[] => [
+      ev('user_speaking_start', m.startMs + 100, { utteranceId: `m${k}` }),
+      ev('user_speech_partial', m.startMs + 600, { utteranceId: `m${k}`, text: 'a long' }),
+      ev('barge_in', m.startMs + 1_650, { utteranceId: `m${k}` }),
+      ev('user_speech_final', m.startMs + 3_000, {
+        utteranceId: `m${k}`,
+        text: 'a long caller sentence',
+        speaker: 'caller',
+      }),
+    ])
+    const { failures } = run([...u12(), ...extra], [c12, b13, c14, b16, ...mains])
+    expect(failures).not.toMatch(/more than 25 %/)
   })
 
   it('stays within 25 % when one of five caller turns is absorbed', () => {

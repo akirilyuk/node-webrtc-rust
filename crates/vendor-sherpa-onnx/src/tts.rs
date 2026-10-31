@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -22,7 +22,7 @@ use crate::loader::voice_debug;
 use crate::native_calls::NativeCallGuard;
 use crate::pool::{SherpaModelPool, TtsEnginePool};
 use crate::sentences::engine_pieces;
-use crate::tts_model_paths::{resolve_tts_model_dir_path, resolve_tts_model_paths, TtsModelFamily};
+use crate::tts_model_paths::{is_kitten_dir_name, resolve_tts_model_dir_path, TtsModelFamily};
 use crate::tts_slots::TtsPriority;
 
 static TTS_GENERATE_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -35,8 +35,6 @@ pub struct SherpaTts {
     speed: f32,
     project_id: Arc<StdMutex<String>>,
     resolved_model_dir: Arc<Mutex<Option<String>>>,
-    /// Model family, resolved once from the model directory (see [`Self::model_family`]).
-    family: OnceLock<TtsModelFamily>,
 }
 
 impl SherpaTts {
@@ -49,19 +47,17 @@ impl SherpaTts {
             speed: parse_speed(config),
             project_id: Arc::new(StdMutex::new(String::new())),
             resolved_model_dir: Arc::new(Mutex::new(None)),
-            family: OnceLock::new(),
         }
     }
 
-    /// The model family of the configured bundle. Until the bundle resolves (missing directory)
-    /// it is [`TtsModelFamily::Vits`], whose text is never adjusted, and the answer is not kept.
+    /// The model family that decides the engine text: `Kitten` when the configured model
+    /// directory is named like a Kitten bundle, else `Vits` (only Kitten text is adjusted). Reads
+    /// the config and environment only, with no filesystem access, so it is cheap per request. An
+    /// unresolvable config is `Vits`.
     fn model_family(&self) -> TtsModelFamily {
-        if let Some(family) = self.family.get() {
-            return *family;
-        }
-        match resolve_tts_model_paths(&self.config) {
-            Ok(paths) => *self.family.get_or_init(|| paths.family),
-            Err(_) => TtsModelFamily::Vits,
+        match resolve_tts_model_dir_path(&self.config) {
+            Ok(dir) if is_kitten_dir_name(&dir) => TtsModelFamily::Kitten,
+            _ => TtsModelFamily::Vits,
         }
     }
 

@@ -3226,6 +3226,12 @@ impl VoiceAgent {
         note: String,
         slot: Option<u64>,
     ) {
+        // The final path takes the step lock first: a playback can end and restart while this
+        // awaits it, so speaking, epoch and protected are read only once the lock is held.
+        let _step = match slot {
+            Some(_) => Some(self.utterance_step.lock().await),
+            None => None,
+        };
         let (speaking, current) = {
             let inner = self.inner.lock().await;
             (inner.agent_speaking, inner.playback_epoch)
@@ -3247,10 +3253,6 @@ impl VoiceAgent {
             ));
             return;
         }
-        let _step = match slot {
-            Some(_) => Some(self.utterance_step.lock().await),
-            None => None,
-        };
         self.event_bus.set_before_slot(slot);
         self.fire_speaker_barge(record_id, note).await;
         self.event_bus.set_before_slot(None);

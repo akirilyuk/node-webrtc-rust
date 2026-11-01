@@ -455,7 +455,7 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
     const isMerged = merged.has(i)
     if (isMerged) {
       console.log(
-        `${tag}: merged utterance ${id} (started ${start.atMs} ms, before the caller at ${turn.startMs} ms; final re-checked caller)`,
+        `${tag}: merged utterance ${id} (started ${start.atMs} ms, before the caller at ${turn.startMs} ms; final caller, ${isRechecked(start, seen) ? 're-checked' : 'first window'}, windows ${String(final?.speakerCheckWindows)})`,
       )
     }
     const barge = bargesOf(id)[0]

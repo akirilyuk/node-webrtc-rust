@@ -642,6 +642,14 @@ describe('merged caller utterance (VAD opened in the bystander slot)', () => {
     )
   })
 
+  it('(d5) a re-checked merged utterance that barges 690 ms after expected fails', () => {
+    const { failures, seen } = run(u7({ partialAt: 68_000, bargeAt: 69_500 }))
+    expect(failures).toMatch(
+      /turn 2 .*barge-in 690 ms after expected \(max of verdict and qualifying partial\) > 300/,
+    )
+    expect([...pairTurnUtterances(SCENE, seen).merged]).toEqual([2])
+  })
+
   it('(e) zero gap: speech ending exactly at the caller scene start is not merged; 1 ms later is', () => {
     // Start 65 000: re-check window ends 68 000, after the caller start; bound 68 000, barge +50.
     const shape = { startAt: 65_000, partialAt: 65_500, bargeAt: 68_050, finalAt: 68_400 }

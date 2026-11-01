@@ -1669,6 +1669,59 @@ mod tests {
         );
     }
 
+    /// Guard for the CI scene args in `scripts/ci/ensure-speaker-fixtures.sh`
+    /// (`--min-turn-gap-ms 2500 --babble-clear-ms 1000 --babble-clear-pull`): over 100 seeds of a
+    /// synthetic S3 schedule (alternating main/bystander turns, S3 turn gaps raised to 2500 ms,
+    /// babble drawn with 150-400 ms gaps), no babble sentence is dropped and no babble start sits
+    /// in the cleared window before any main turn. Dropped sentences left the babble-free holes
+    /// that made `roundtrip-noisy-bystander` miss a caller speech start.
+    #[test]
+    fn babble_clear_pull_with_ci_scene_args_drops_nothing_over_many_seeds() {
+        const CI_MIN_TURN_GAP_MS: usize = 2500;
+        const CI_BABBLE_CLEAR_MS: usize = 1000;
+        let pull = true;
+        let clear = ms(CI_BABBLE_CLEAR_MS);
+        for seed in 0..100u64 {
+            let mut rng = Rng::new(seed);
+            let mut pos = ms(rng.range(4000, 8000)); // enrollment
+            let mut turns = Vec::new();
+            for turn in 0..8 {
+                let clip = ms(rng.range(1500, 4000));
+                if turn % 2 == 0 {
+                    turns.push((pos, pos + clip));
+                }
+                pos += clip
+                    + ms(rng
+                        .range(S3_GAP_MIN_MS, S3_GAP_MAX_MS)
+                        .max(CI_MIN_TURN_GAP_MS));
+            }
+            let len = pos + ms(TAIL_MS);
+            for _track in 0..2 {
+                let (mut starts, mut lens) = (Vec::new(), Vec::new());
+                let mut at = rng.range(0, ms(300));
+                while at < len {
+                    let clip = ms(rng.range(1500, 3500));
+                    starts.push(at);
+                    lens.push(clip);
+                    at += clip + ms(rng.range(150, 400));
+                }
+                let placed = place_babble(&starts, &lens, len, &turns, clear, pull);
+                assert_eq!(placed.len(), starts.len(), "seed {seed}");
+                for (i, p) in placed.iter().enumerate() {
+                    let p = p.unwrap_or_else(|| {
+                        panic!("seed {seed}: babble drawn at {} dropped", starts[i])
+                    });
+                    assert!(
+                        !turns
+                            .iter()
+                            .any(|&(t, _)| t.saturating_sub(clear) <= p && p < t),
+                        "seed {seed}: babble start {p} in the clear window before a main turn"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn s3_gaps_exceed_default_vad_silence() {
         let min_silence =

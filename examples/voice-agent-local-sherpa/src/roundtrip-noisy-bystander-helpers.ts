@@ -28,7 +28,7 @@ export const BARGE_SLACK_MS = 300
 export const BARGE_EARLY_SLACK_MS = 50
 /**
  * Absolute cap on barge-in delay after the caller's onset (the later of `user_speaking_start` and
- * the scene turn's start), for turns decided by the first check. A turn whose final carries `speakerRechecked: true` is bounded by
+ * the scene turn's start), for turns decided by the first check. A turn whose final carries `speakerRechecked: true`, or that is a merged utterance, is bounded by
  * {@link expectedBargeAtMs} alone (verdict at start + `speakerCheckWindows` × checkSpeechMs).
  */
 export const BARGE_ABS_CAP_MS = 3000
@@ -221,20 +221,22 @@ export function utteranceEndMs(utteranceId: string, seen: Seen[]): number | unde
 /**
  * Slot matching ({@link matchTurnUtterances}) plus one re-pairing that keys off product facts
  * (`oracle-relies-only-on-promised-order`): when the VAD opens in a bystander slot and the
- * utterance runs on into the next caller turn, the product re-checks it and its final says
- * `speakerRechecked: true`, `speaker: 'caller'`. Such an utterance is the caller's turn, not the
- * bystander's, when all of these hold:
+ * utterance runs on into the next caller turn, its final says `speaker: 'caller'`. A caller
+ * verdict covers the caller turn when the caller started inside the window that decided it,
+ * re-checked or not (a first window that already holds the caller's start is windowed scoring).
+ * Such an utterance is the caller's turn, not the bystander's, when all of these hold:
  *
- * - it was matched to a bystander turn and its final is re-checked `caller`;
+ * - it was matched to a bystander turn and its final is `caller`;
  * - the next caller turn has no utterance of its own;
  * - its span covers that caller turn's scene start: speech start strictly before, and speech end
  *   (`user_speaking_end`, else the final) strictly after. An utterance that ends exactly at the
  *   caller's scene start holds no caller speech and stays with the bystander (zero gap);
  * - the deciding window reaches the caller's scene start: caller start strictly before speech
- *   start + `speakerRecheckBargeEarliestMs(checkSpeechMs, final.speakerCheckWindows)`. The product
+ *   start + `speakerRecheckBargeEarliestMs(checkSpeechMs, final.speakerCheckWindows)` (windows
+ *   >= 1; a first-window verdict has 1). The product
  *   scores window w on speech [start + (w - 1) × checkSpeechMs, start + w × checkSpeechMs], so a
  *   deciding window that ends before the caller starts held only bystander or babble audio, and
- *   its `caller` verdict is a bystander false upgrade, not the caller's turn. A re-checked final
+ *   its `caller` verdict is a bystander false upgrade, not the caller's turn. A final
  *   without `speakerCheckWindows` is never paired (and {@link evaluateTurns} fails it).
  *
  * TEMPORARY (step B: split on speaker change), plan {@link ABSORB_PLAN} step 5: a final with
@@ -274,7 +276,7 @@ export function pairTurnUtterances(
     const final = seen.find(
       (e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal && e.utteranceId === start.utteranceId,
     )
-    if (final?.speaker !== 'caller' || final.speakerRechecked !== true) return
+    if (final?.speaker !== 'caller') return
     const j = turns.findIndex((t, k) => k > i && t.role === 'main')
     if (j < 0 || starts[j] != null) return
     const callerStartMs = turns[j]!.startMs
@@ -477,11 +479,19 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
         failures.push(
           `${tag}: barge_in without a qualifying partial (>= ${MIN_STT_PARTIAL_TOKENS} tokens) on ${id}`,
         )
-      } else if (isRechecked(start, seen)) {
+      } else if (isRechecked(start, seen) || isMerged) {
+        // A merged utterance (opened on bystander or babble speech) is bounded like a re-checked one: its barge waits on a qualifying partial of a turn that started late, so the 3 s cap from the caller's onset does not apply.
         // The gate counts every frame while its VAD segment is open (speech, babble, pauses under minSilenceDurationMs; not the pre-roll) and restarts at the last window boundary when a segment rejoins the key after SpeechEnd. Voiced scene time is therefore usually at most the counted speech, so this check understates lateness; it can overstate it only after a rejoin. The speech-end and final checks below bound a barge after the audio stops.
         const windowEnd = verdictAfterMs(start, seen)!
         const late = voicedMsBetween(turns, start.atMs, barge.atMs) - windowEnd
-        if (late > BARGE_SLACK_MS) {
+        if (isMerged) {
+          // merged: the barge waits on the first qualifying STT partial of an utterance that began on bystander speech; partial lag is tracked in followups/2026-11-02-speaker-gate-mostly-bystander-first-window.md
+          if (barge.atMs - expected > BARGE_SLACK_MS) {
+            failures.push(
+              `${tag}: barge-in ${barge.atMs - expected} ms after expected (max of verdict and qualifying partial) > ${BARGE_SLACK_MS}`,
+            )
+          }
+        } else if (late > BARGE_SLACK_MS) {
           failures.push(
             `${tag}: barge ${late} ms of voiced scene audio after the deciding window (> ${BARGE_SLACK_MS} ms)`,
           )
@@ -517,7 +527,7 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
       // The VAD can open on babble or a bystander tail before the caller speaks, so speech start is
       // not the caller's onset; the cap bounds the caller-perceived latency.
       const capFrom = Math.max(start.atMs, turn.startMs)
-      if (barge.atMs - capFrom > BARGE_ABS_CAP_MS && !isRechecked(start, seen)) {
+      if (barge.atMs - capFrom > BARGE_ABS_CAP_MS && !isRechecked(start, seen) && !isMerged) {
         failures.push(
           `${tag}: barge-in ${barge.atMs - capFrom} ms after the caller's onset (max of speech start and scene turn start) > cap ${BARGE_ABS_CAP_MS}`,
         )

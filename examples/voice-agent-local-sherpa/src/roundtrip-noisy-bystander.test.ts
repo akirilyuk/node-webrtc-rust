@@ -526,7 +526,7 @@ describe('merged caller utterance (VAD opened in the bystander slot)', () => {
       text: o.text ?? 'suitcase room. Charlie one two three passify',
       speaker: 'caller',
       ...(o.rechecked === false
-        ? {}
+        ? { speakerRechecked: false, speakerCheckWindows: o.windows ?? 1 }
         : { speakerRechecked: true, speakerCheckWindows: o.windows ?? 2 }),
     }),
   ]
@@ -589,19 +589,57 @@ describe('merged caller utterance (VAD opened in the bystander slot)', () => {
     expect(failures).toMatch(/turn 1 .*barge_in for the bystander utterance u7/)
   })
 
-  it('(d) leaves a merged utterance that was not re-checked with its bystander slot', () => {
-    const { failures, seen } = run(u7({ rechecked: false }))
+  it('(d) a first-window caller verdict that holds the caller start covers the caller turn', () => {
+    // Iteration 13 (run 41309454724): start 65 900, caller 67 352 inside window 1 (ends 67 400), barge after it.
+    const { failures, seen } = run(
+      u7({
+        rechecked: false,
+        startAt: 65_900,
+        partialAt: 71_740,
+        bargeAt: 71_746,
+        endAt: 75_000,
+        finalAt: 75_300,
+      }),
+    )
+    expect(failures).toBe('')
+    expect([...pairTurnUtterances(SCENE, seen).merged]).toEqual([2])
+  })
+
+  it('(d2) a first-window caller verdict that ends before the caller starts stays with the bystander', () => {
+    // Start 64 000: window 1 ends 65 500, before the caller (67 352).
+    const { failures, seen } = run(
+      u7({ rechecked: false, startAt: 64_000, partialAt: 65_000, bargeAt: 67_100 }),
+    )
     expect(failures).toMatch(/turn 1 .*barge_in for the bystander utterance u7/)
     expect(failures).toMatch(/turn 1 .*final speaker caller, expected other/)
+    expect([...pairTurnUtterances(SCENE, seen).merged]).toEqual([])
     // TEMPORARY absorb rule: the caller verdict covers the caller turn, so it is absorbed.
-    expect(failures).not.toMatch(/turn 2/)
     expect([...pairTurnUtterances(SCENE, seen).absorbed.keys()]).toEqual([2])
-    expect(pairTurnUtterances(SCENE, seen).starts.map((s) => s?.utteranceId)).toEqual([
-      'u6',
-      'u7',
-      undefined,
-      'u9',
-    ])
+  })
+
+  it('(d3) a merged first-window utterance that barged before the caller started still fails', () => {
+    const { failures } = run(
+      u7({ rechecked: false, startAt: 65_900, partialAt: 66_400, bargeAt: 66_500 }),
+    )
+    expect(failures).toMatch(
+      /turn 2 .*barge-in at 66500 ms on merged utterance u7, not after the caller's scene start 67352 ms/,
+    )
+  })
+
+  it('(d4) a merged first-window utterance that barges 1000 ms after its qualifying partial fails', () => {
+    const { failures } = run(
+      u7({
+        rechecked: false,
+        startAt: 65_900,
+        partialAt: 70_740,
+        bargeAt: 71_740,
+        endAt: 75_000,
+        finalAt: 75_300,
+      }),
+    )
+    expect(failures).toMatch(
+      /turn 2 .*barge-in 1000 ms after expected \(max of verdict and qualifying partial\) > 300/,
+    )
   })
 
   it('(e) zero gap: speech ending exactly at the caller scene start is not merged; 1 ms later is', () => {

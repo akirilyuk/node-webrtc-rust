@@ -3531,9 +3531,8 @@ async fn short_unknown_stt_partial_during_hold_waits_for_hold_expiry() {
         rig.wait_event(SpeechEventKind::UserSpeechPartial, 3000)
             .await
     );
-    // The hold is counted in fed frames, so waiting wall time cannot expire it; the pause only
-    // gives a barge-in that fires on the partial (old behaviour) time to show up.
-    sleep(Duration::from_millis(150)).await;
+    // Barrier: the actor answers it only after the partial (and its barge decision) is handled.
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
     rig.drain();
     assert!(
         barges_since(&rig, base).is_empty(),

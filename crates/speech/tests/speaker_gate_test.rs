@@ -95,6 +95,8 @@ impl SpeakerEmbedder for FakeEmbedder {
 #[derive(Default)]
 struct Script {
     final_on_finalize: Option<String>,
+    /// Handed out once by the next `poll_transcript` as a partial.
+    partial_next: Option<String>,
 }
 
 struct ScriptedStt {
@@ -117,6 +119,9 @@ impl SttProvider for ScriptedStt {
         Ok(())
     }
     async fn poll_transcript(&mut self) -> SpeechResult<Option<SttTranscript>> {
+        if let Some(text) = self.script.lock().unwrap().partial_next.take() {
+            return Ok(Some(SttTranscript::Partial(text)));
+        }
         Ok(self.queue.pop_front())
     }
     async fn finalize_utterance(&mut self) -> SpeechResult<()> {
@@ -3502,4 +3507,47 @@ async fn short_unknown_defers_barge_while_the_utterance_can_rejoin() {
         BargeDecision::Proceed,
         "short and closed: fails open"
     );
+}
+
+/// Agent, iteration-18 order (`rt.provisional-verdict-acted-final`): the `short` verdict is stored
+/// first, then a qualifying STT partial arrives during the gate hold (`require_stt_partial`). The
+/// STT-gated barge-in waits for the hold to expire (no rejoin), then fires once, before the final.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn short_unknown_stt_partial_during_hold_waits_for_hold_expiry() {
+    let mut cfg = agent_config(short_rejoin_cfg(false, DEFAULT_RECHECK_MAX_WINDOWS));
+    cfg.vad.barge_in.require_stt_partial = true;
+    let mut rig = rig_with(cfg).await;
+    rig.enroll().await;
+    let base = rig.log.len();
+    rig.script.lock().unwrap().final_on_finalize = Some("stop it now".into());
+    rig.start_speaking_for(400).await;
+    short_segment(&rig).await;
+    rig.drain();
+    assert!(barges_since(&rig, base).is_empty(), "no barge-in yet");
+    // The hold is still open (fed frames, 80 ms = 4 frames): the partial reaches the barge path.
+    rig.script.lock().unwrap().partial_next = Some("stop it now".into());
+    rig.feed(&silent_stereo_frame(), 1).await;
+    assert!(
+        rig.wait_event(SpeechEventKind::UserSpeechPartial, 3000)
+            .await
+    );
+    // The hold is counted in fed frames, so waiting wall time cannot expire it; the pause only
+    // gives a barge-in that fires on the partial (old behaviour) time to show up.
+    sleep(Duration::from_millis(150)).await;
+    rig.drain();
+    assert!(
+        barges_since(&rig, base).is_empty(),
+        "no barge-in while the hold is open"
+    );
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    assert_eq!(barges_since(&rig, base).len(), 1, "exactly one barge-in");
+    let pos = |pred: &dyn Fn(&SpeechEvent) -> bool| rig.log[base..].iter().position(pred).unwrap();
+    assert!(
+        pos(&|e| e.kind == SpeechEventKind::BargeIn)
+            < pos(&|e| e.kind == SpeechEventKind::UserSpeechFinal),
+        "barge_in precedes the final"
+    );
+    rig.agent.stop().await.unwrap();
 }

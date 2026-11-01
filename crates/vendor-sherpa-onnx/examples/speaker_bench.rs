@@ -3592,6 +3592,16 @@ fn cached_window(
         .clone()
 }
 
+/// Spans whose union makes a stream unit: every segment (bystander and babble), or with
+/// `same_voice` only the bystander segments, so no other voice is stitched in.
+fn union_spans(segments: &[Seg], same_voice: bool) -> Vec<(usize, usize)> {
+    segments
+        .iter()
+        .filter(|s| !same_voice || s.role == "bystander")
+        .map(|s| (s.start_ms, s.end_ms))
+        .collect()
+}
+
 fn load_set_data(
     fx: &mut Fixtures,
     emb: &Embedder,
@@ -3623,11 +3633,7 @@ fn load_set_data(
             .find(|s| s.role == "bystander")
             .map_or_else(|| "-".to_string(), |s| format!("{}#{}", s.voice, s.sid));
         voices.push(voice);
-        let spans: Vec<(usize, usize)> = fx.scenes[scene]
-            .segments
-            .iter()
-            .map(|s| (s.start_ms, s.end_ms))
-            .collect();
+        let spans = union_spans(&fx.scenes[scene].segments, opts.same_voice);
         let audio = fx.audio16(scene)?.clone();
         unions.push(speech_union(&audio, &spans));
     }
@@ -3756,7 +3762,6 @@ fn stream_trials(
     trials
 }
 
-/// Table C: every (scheme, overlap, k) with one trial per caller clip.
 /// Table C's k values: the long ones only when every stream is at least that long.
 fn recall_ks(min_stream_len: usize) -> Vec<f32> {
     RECALL_K_S
@@ -3775,6 +3780,7 @@ fn exposure_times(min_stream_len: usize) -> Vec<f32> {
         .collect()
 }
 
+/// Table C: every (scheme, overlap, k) with one trial per caller clip.
 #[allow(clippy::too_many_arguments)]
 fn caller_recall(
     emb: &Embedder,
@@ -3882,6 +3888,11 @@ fn long_other_section(
         load_set_data(fx, emb, Set::Tune, "tune", opts)?,
         load_set_data(fx, emb, Set::Test, "test", opts)?,
     ];
+    let (total_len, stream_count) = sets
+        .iter()
+        .flat_map(|d| d.streams.iter().map(Vec::len))
+        .fold((0usize, 0usize), |(t, n), l| (t + l, n + 1));
+    let mean_stream_s = (total_len as f64 / stream_count.max(1) as f64 / SR as f64).round();
     let min_stream_len = sets
         .iter()
         .flat_map(|d| d.streams.iter().map(Vec::len))
@@ -3976,7 +3987,7 @@ fn long_other_section(
     // ---- B ----
     md.push_str(&format!(
         "### B) FAR on long other streams (about {} s each: {} bystander unions{})\n\nTrials = streams x references with stream length >= T. FAR(T) = share with an accepting window ending at or before T. Bound = 1 - (1 - p)^windows(T) from table A's p (consecutive scheme).\n\n",
-        opts.unions * 4,
+        mean_stream_s,
         opts.unions,
         if opts.same_voice { ", same voice" } else { "" }
     ));
@@ -4537,6 +4548,32 @@ mod tests {
         let unions = vec![vec![0.0], vec![1.0], vec![2.0]];
         assert_eq!(stitch(&unions, 0, 4), vec![0.0, 1.0, 2.0, 0.0]);
         assert_eq!(stitch(&unions, 2, 4), vec![2.0, 0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn same_voice_union_keeps_only_the_bystander_span() {
+        let seg = |role: &str, start_ms, end_ms| Seg {
+            start_ms,
+            end_ms,
+            role: role.to_string(),
+            voice: "v".to_string(),
+            sid: 0,
+            text: String::new(),
+            enroll: false,
+            kind: "background".to_string(),
+            expected_speaker: String::new(),
+            expected_transcript: None,
+        };
+        let segments = [
+            seg("babble", 0, 5000),
+            seg("bystander", 300, 3500),
+            seg("babble", 3400, 6000),
+        ];
+        assert_eq!(union_spans(&segments, true), vec![(300, 3500)]);
+        assert_eq!(
+            union_spans(&segments, false),
+            vec![(0, 5000), (300, 3500), (3400, 6000)]
+        );
     }
 
     #[test]

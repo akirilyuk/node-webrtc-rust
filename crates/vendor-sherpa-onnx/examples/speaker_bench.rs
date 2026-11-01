@@ -2438,6 +2438,10 @@ struct Args {
     recheck: bool,
     /// With `fixed_threshold`: long other-speech FAR, caller recall and cost per re-check scheme.
     long_other: bool,
+    /// With `long_other`: bystander unions stitched into one stream (default [`STREAM_UNIONS`]).
+    long_other_unions: usize,
+    /// With `long_other`: build every stream from the unions of one bystander voice.
+    long_other_same_voice: bool,
     /// With `long_other`: gains of the other speech over the caller start (table C).
     overlap_gains: Vec<GainSpec>,
     /// With `long_other`: overlaps of the other speech over the caller start (table C).
@@ -2473,6 +2477,8 @@ fn parse_args() -> Result<Args, String> {
     let mut fixed_threshold: Option<f32> = None;
     let mut recheck = false;
     let mut long_other = false;
+    let mut long_other_unions = STREAM_UNIONS;
+    let mut long_other_same_voice = false;
     let mut overlap_gains: Vec<GainSpec> = vec![GainSpec::Level];
     let mut overlaps: Vec<OverlapSpec> = DEFAULT_OVERLAPS.to_vec();
     let mut model_filter: Option<String> = None;
@@ -2560,6 +2566,15 @@ fn parse_args() -> Result<Args, String> {
             }
             "--recheck" => recheck = true,
             "--long-other" => long_other = true,
+            "--long-other-unions" => {
+                long_other_unions = value("--long-other-unions")?
+                    .parse()
+                    .map_err(|e| format!("--long-other-unions: {e}"))?;
+                if long_other_unions == 0 {
+                    return Err("--long-other-unions must be at least 1".to_string());
+                }
+            }
+            "--long-other-same-voice" => long_other_same_voice = true,
             "--overlap-gain" => overlap_gains = parse_gains(&value("--overlap-gain")?)?,
             "--overlaps-ms" => overlaps = parse_overlaps(&value("--overlaps-ms")?)?,
             "--model-filter" => model_filter = Some(value("--model-filter")?),
@@ -2586,6 +2601,8 @@ fn parse_args() -> Result<Args, String> {
         fixed_threshold,
         recheck,
         long_other,
+        long_other_unions,
+        long_other_same_voice,
         overlap_gains,
         overlaps,
         model_filter,
@@ -3173,9 +3190,15 @@ const SLIDING_HOP: usize = 8_000;
 /// Bystander unions stitched into one long other-speech stream.
 const STREAM_UNIONS: usize = 4;
 /// Exposure times of table B, seconds.
-const EXPOSURES_S: [f32; 8] = [1.5, 3.0, 4.5, 6.0, 7.5, 9.0, 12.0, 15.0];
+const EXPOSURES_S: [f32; 12] = [
+    1.5, 3.0, 4.5, 6.0, 7.5, 9.0, 12.0, 15.0, 18.0, 20.0, 25.0, 30.0,
+];
+/// Rows of table B beyond this many seconds are printed only when every stream is that long.
+const EXPOSURE_ALL_LONG_FROM_S: f32 = 15.0;
 /// Seconds of other speech before the caller starts (table C).
-const RECALL_K_S: [f32; 6] = [1.0, 2.0, 3.0, 4.0, 6.0, 9.0];
+const RECALL_K_S: [f32; 9] = [1.0, 2.0, 3.0, 4.0, 6.0, 9.0, 12.0, 15.0, 20.0];
+/// Rows of table C beyond this many seconds are printed only when every stream is that long.
+const RECALL_ALL_LONG_FROM_S: f32 = 9.0;
 /// Default overlaps (`--overlaps-ms`): ms the other speech runs over the start of the caller.
 const DEFAULT_OVERLAPS: [OverlapSpec; 2] = [OverlapSpec::Ms(0), OverlapSpec::Ms(1000)];
 
@@ -3298,7 +3321,8 @@ fn mixed_samples(other_len: usize, clip_len: usize, onset: usize, overlap: usize
     overlap.min(clip_len).min(other_len.saturating_sub(onset))
 }
 /// Window caps of table C; `None` is unlimited.
-const RECALL_CAPS: [Option<usize>; 6] = [Some(2), Some(3), Some(4), Some(6), Some(8), None];
+const RECALL_CAPS: [Option<usize>; 7] =
+    [Some(2), Some(3), Some(4), Some(6), Some(8), Some(12), None];
 /// Window caps of table D.
 const COST_CAPS: [Option<usize>; 4] = [Some(2), Some(4), Some(8), None];
 /// Utterance length priced in table D, seconds.
@@ -3383,6 +3407,44 @@ fn stitch(unions: &[Vec<f32>], start: usize, count: usize) -> Vec<f32> {
     (0..count)
         .flat_map(|d| unions[(start + d) % unions.len()].iter().copied())
         .collect()
+}
+
+/// One stream per union: [`stitch`] of `count` unions, or, with `same_voice`, `count` unions of
+/// the voice of union `i` (in manifest order, wrapping inside that voice's group).
+fn build_streams(
+    unions: &[Vec<f32>],
+    voices: &[String],
+    count: usize,
+    same_voice: bool,
+) -> Vec<Vec<f32>> {
+    if !same_voice {
+        return (0..unions.len())
+            .map(|i| stitch(unions, i, count))
+            .collect();
+    }
+    (0..unions.len())
+        .map(|i| {
+            let group: Vec<usize> = (0..unions.len())
+                .filter(|&j| voices[j] == voices[i])
+                .collect();
+            let pos = group.iter().position(|&j| j == i).unwrap_or(0);
+            (0..count)
+                .flat_map(|d| unions[group[(pos + d) % group.len()]].iter().copied())
+                .collect()
+        })
+        .collect()
+}
+
+/// Distinct voices in first-seen order, with the number of unions (= streams) of each.
+fn voice_counts(voices: &[String]) -> Vec<(String, usize)> {
+    let mut out: Vec<(String, usize)> = Vec::new();
+    for v in voices {
+        match out.iter_mut().find(|(name, _)| name == v) {
+            Some((_, n)) => *n += 1,
+            None => out.push((v.clone(), 1)),
+        }
+    }
+    out
 }
 
 /// End of the first accepting window.
@@ -3496,6 +3558,8 @@ struct SetData {
     refs: Vec<(i32, Vec<f32>)>,
     /// Speech union of every `bystander_alone` scene, manifest order.
     unions: Vec<Vec<f32>>,
+    /// Bystander voice (`voice#sid` of the scene's bystander segment) of every union.
+    voices: Vec<String>,
     /// Stitched streams, one per union.
     streams: Vec<Vec<f32>>,
 }
@@ -3533,6 +3597,7 @@ fn load_set_data(
     emb: &Embedder,
     set: Set,
     name: &'static str,
+    opts: LongOtherOpts,
 ) -> Result<SetData, String> {
     let ref_scenes: Vec<usize> = (0..fx.scenes.len())
         .filter(|&i| {
@@ -3550,7 +3615,14 @@ fn load_set_data(
         .filter(|&i| fx.scenes[i].kind == "bystander_alone" && fx.scenes[i].set == set)
         .collect();
     let mut unions = Vec::new();
+    let mut voices = Vec::new();
     for scene in bystander_scenes {
+        let voice = fx.scenes[scene]
+            .segments
+            .iter()
+            .find(|s| s.role == "bystander")
+            .map_or_else(|| "-".to_string(), |s| format!("{}#{}", s.voice, s.sid));
+        voices.push(voice);
         let spans: Vec<(usize, usize)> = fx.scenes[scene]
             .segments
             .iter()
@@ -3564,15 +3636,21 @@ fn load_set_data(
             "--long-other: set {name} needs conversation scenes at -20 dB and bystander_alone scenes"
         ));
     }
-    let streams = (0..unions.len())
-        .map(|i| stitch(&unions, i, STREAM_UNIONS))
-        .collect();
+    let streams = build_streams(&unions, &voices, opts.unions, opts.same_voice);
     Ok(SetData {
         name,
         refs,
         unions,
+        voices,
         streams,
     })
+}
+
+/// Stream construction of `--long-other`.
+#[derive(Clone, Copy)]
+struct LongOtherOpts {
+    unions: usize,
+    same_voice: bool,
 }
 
 struct CallerClip {
@@ -3679,6 +3757,24 @@ fn stream_trials(
 }
 
 /// Table C: every (scheme, overlap, k) with one trial per caller clip.
+/// Table C's k values: the long ones only when every stream is at least that long.
+fn recall_ks(min_stream_len: usize) -> Vec<f32> {
+    RECALL_K_S
+        .iter()
+        .copied()
+        .filter(|&k| k <= RECALL_ALL_LONG_FROM_S || min_stream_len >= (k * SR as f32) as usize)
+        .collect()
+}
+
+/// Table B's exposure times: the long ones only when every stream is at least that long.
+fn exposure_times(min_stream_len: usize) -> Vec<f32> {
+    EXPOSURES_S
+        .iter()
+        .copied()
+        .filter(|&t| t <= EXPOSURE_ALL_LONG_FROM_S || min_stream_len >= (t * SR as f32) as usize)
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn caller_recall(
     emb: &Embedder,
@@ -3692,10 +3788,12 @@ fn caller_recall(
     timings: &mut Vec<f64>,
 ) -> Vec<RecallRun> {
     let mut runs: Vec<RecallRun> = Vec::new();
+    let min_len = test.streams.iter().map(Vec::len).min().unwrap_or(0);
+    let ks = recall_ks(min_len);
     for scheme in SCHEMES {
         for gain in gains {
             for overlap in overlaps {
-                for k_s in RECALL_K_S {
+                for k_s in ks.iter().copied() {
                     runs.push(RecallRun {
                         scheme,
                         gain: *gain,
@@ -3709,7 +3807,7 @@ fn caller_recall(
         }
     }
     let run_index = |si: usize, gi: usize, oi: usize, ki: usize| {
-        ((si * gains.len() + gi) * overlaps.len() + oi) * RECALL_K_S.len() + ki
+        ((si * gains.len() + gi) * overlaps.len() + oi) * ks.len() + ki
     };
     for (j, clip) in clips.iter().enumerate() {
         let sidx = j % test.streams.len();
@@ -3725,7 +3823,7 @@ fn caller_recall(
             let gain = gain_spec.resolve(clip.level_db);
             for (oi, overlap_spec) in overlaps.iter().enumerate() {
                 let overlap = overlap_spec.samples(clip.audio.len());
-                for (ki, k_s) in RECALL_K_S.iter().enumerate() {
+                for (ki, k_s) in ks.iter().enumerate() {
                     let onset = ((k_s * SR as f32) as usize).min(other.len());
                     let x = build_recall_input(other, &clip.audio, onset, overlap, gain);
                     let mixed = mixed_samples(other.len(), clip.audio.len(), onset, overlap);
@@ -3777,12 +3875,18 @@ fn long_other_section(
     threshold: f32,
     gains: &[GainSpec],
     overlaps: &[OverlapSpec],
+    opts: LongOtherOpts,
 ) -> Result<(String, String), String> {
     let check = check_samples(check_s);
     let sets = [
-        load_set_data(fx, emb, Set::Tune, "tune")?,
-        load_set_data(fx, emb, Set::Test, "test")?,
+        load_set_data(fx, emb, Set::Tune, "tune", opts)?,
+        load_set_data(fx, emb, Set::Test, "test", opts)?,
     ];
+    let min_stream_len = sets
+        .iter()
+        .flat_map(|d| d.streams.iter().map(Vec::len))
+        .min()
+        .unwrap_or(0);
     let test = &sets[1];
     let clips = caller_clips(fx)?;
     if clips.is_empty() {
@@ -3795,8 +3899,9 @@ fn long_other_section(
         .collect();
 
     let mut md = format!(
-        "## {} / check {check_s} s\n\nReferences: {}. Streams per set: tune {}, test {}. Caller clips: {}.\n\n",
+        "## {} / check {check_s} s{}\n\nReferences: {}. Streams per set: tune {}, test {}. Caller clips: {}.\n\n",
         emb.id,
+        if opts.same_voice { " / same voice" } else { "" },
         sets.iter()
             .map(|d| format!("{} n={}", d.name, d.refs.len()))
             .collect::<Vec<_>>()
@@ -3805,6 +3910,21 @@ fn long_other_section(
         sets[1].streams.len(),
         clips.len()
     );
+    if opts.same_voice {
+        for d in &sets {
+            let counts = voice_counts(&d.voices);
+            md.push_str(&format!(
+                "Same voice, {}: {} distinct voices; streams per voice: {}.\n\n",
+                d.name,
+                counts.len(),
+                counts
+                    .iter()
+                    .map(|(v, n)| format!("{v} {n}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
     let mut json = format!(
         "{{\"model\": \"{}\", \"check_s\": {check_s}, \"refs\": {{{}}}, \"streams\": {{{}}}, \"caller_clips\": {}",
         json_escape(&emb.id),
@@ -3855,8 +3975,10 @@ fn long_other_section(
 
     // ---- B ----
     md.push_str(&format!(
-        "### B) FAR on long other streams (about {} s each: {STREAM_UNIONS} bystander unions)\n\nTrials = streams x references with stream length >= T. FAR(T) = share with an accepting window ending at or before T. Bound = 1 - (1 - p)^windows(T) from table A's p (consecutive scheme).\n\n",
-        STREAM_UNIONS * 4
+        "### B) FAR on long other streams (about {} s each: {} bystander unions{})\n\nTrials = streams x references with stream length >= T. FAR(T) = share with an accepting window ending at or before T. Bound = 1 - (1 - p)^windows(T) from table A's p (consecutive scheme).\n\n",
+        opts.unions * 4,
+        opts.unions,
+        if opts.same_voice { ", same voice" } else { "" }
     ));
     let mut trials: Vec<Vec<Vec<StreamTrial>>> = Vec::new(); // [set][scheme]
     for (si, d) in sets.iter().enumerate() {
@@ -3885,7 +4007,7 @@ fn long_other_section(
             "#### {name}\n\n| T s | cons n | cons acc | cons FAR % | bound % | slide n | slide acc | slide FAR % |\n|---|---|---|---|---|---|---|---|\n"
         ));
         let mut rows = Vec::new();
-        for t_s in EXPOSURES_S {
+        for t_s in exposure_times(min_stream_len) {
             let t = (t_s * SR as f32) as usize;
             let (cn, ch) = far_at(&per_scheme[0], t);
             let (sn, sh) = far_at(&per_scheme[1], t);
@@ -4031,6 +4153,10 @@ fn long_other_run(
                 threshold,
                 &args.overlap_gains,
                 &args.overlaps,
+                LongOtherOpts {
+                    unions: args.long_other_unions,
+                    same_voice: args.long_other_same_voice,
+                },
             )?;
             md.push_str(&section);
             runs.push(json);
@@ -4411,6 +4537,65 @@ mod tests {
         let unions = vec![vec![0.0], vec![1.0], vec![2.0]];
         assert_eq!(stitch(&unions, 0, 4), vec![0.0, 1.0, 2.0, 0.0]);
         assert_eq!(stitch(&unions, 2, 4), vec![2.0, 0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn stitch_length_follows_the_union_count() {
+        let unions = vec![vec![0.0; 10], vec![1.0; 10], vec![2.0; 10]];
+        assert_eq!(stitch(&unions, 1, 8).len(), 80);
+        let voices: Vec<String> = vec!["a".into(), "a".into(), "a".into()];
+        let streams = build_streams(&unions, &voices, 8, false);
+        assert!(streams.iter().all(|s| s.len() == 80));
+    }
+
+    #[test]
+    fn default_streams_equal_the_plain_stitch() {
+        let unions = vec![vec![0.0], vec![1.0], vec![2.0], vec![3.0], vec![4.0]];
+        let voices: Vec<String> = ["a", "b", "a", "b", "a"].map(String::from).to_vec();
+        let streams = build_streams(&unions, &voices, STREAM_UNIONS, false);
+        assert_eq!(streams.len(), 5);
+        for (i, s) in streams.iter().enumerate() {
+            assert_eq!(*s, stitch(&unions, i, STREAM_UNIONS));
+        }
+    }
+
+    #[test]
+    fn same_voice_streams_never_mix_two_voices() {
+        // Union value = its index; voice a = {0, 2, 4}, voice b = {1, 3}.
+        let unions: Vec<Vec<f32>> = (0..5).map(|i| vec![i as f32; 3]).collect();
+        let voices: Vec<String> = ["a", "b", "a", "b", "a"].map(String::from).to_vec();
+        let streams = build_streams(&unions, &voices, 8, true);
+        assert_eq!(streams.len(), 5);
+        for (i, s) in streams.iter().enumerate() {
+            assert_eq!(s.len(), 8 * 3);
+            for sample in s {
+                assert_eq!(voices[*sample as usize], voices[i]);
+            }
+        }
+        // Wraps inside the group: voice b starting at union 3 -> 3, 1, 3, 1, ...
+        assert_eq!(streams[3][0], 3.0);
+        assert_eq!(streams[3][3], 1.0);
+        assert_eq!(streams[3][6], 3.0);
+        assert_eq!(
+            voice_counts(&voices),
+            vec![("a".to_string(), 3), ("b".to_string(), 2)]
+        );
+    }
+
+    #[test]
+    fn long_rows_need_every_stream_long_enough() {
+        let s16 = |s: f32| (s * SR as f32) as usize;
+        // Default ~16 s streams: nothing beyond 15 s (k = 12 and 15 now fit).
+        assert_eq!(exposure_times(s16(16.0)), EXPOSURES_S[..8].to_vec());
+        assert_eq!(recall_ks(s16(16.0)), RECALL_K_S[..8].to_vec());
+        // 32 s streams: every row.
+        assert_eq!(exposure_times(s16(32.0)), EXPOSURES_S.to_vec());
+        assert_eq!(recall_ks(s16(32.0)), RECALL_K_S.to_vec());
+        // One short stream drops the rows it cannot reach.
+        assert!(!exposure_times(s16(24.0)).contains(&25.0));
+        assert!(exposure_times(s16(24.0)).contains(&20.0));
+        assert!(!recall_ks(s16(14.0)).contains(&15.0));
+        assert!(recall_ks(s16(14.0)).contains(&12.0));
     }
 
     #[test]

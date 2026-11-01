@@ -393,7 +393,7 @@ The cost is exposure: a long bystander utterance gets one more chance to pass fo
 
 The one-voice column comes from streams of about 35 s built only from the bystander spans, so every window hears the same voice (`speaker_bench --long-other --long-other-same-voice --long-other-unions 14`, 2026-11-01, same model, threshold and n). Those streams were not built for the shorter rows, so they show no value there. With the default cap of 12 the FAR stops at its 18 s value; `recheckMaxWindows: 0` lets it keep growing, to 5.21 % (mixed voices) and 16.25 % (one voice) at 30 s.
 
-That is about 0.2 points per extra window. The cap trades this against how long a lead the gate forgives, because each window is all-or-nothing on it. Caller recall after other speech that leads by k seconds (test set, n = 96):
+With mixed voices that is about 0.25 points per extra window; one steady voice starts higher and climbs faster. The cap trades this against how long a lead the gate forgives, because each window is all-or-nothing on it. Caller recall after other speech that leads by k seconds (test set, n = 96):
 
 | caller starts after | cap 2 (0.15.0) | cap 4 | cap 6 | cap 8 | cap 12 (default) | no cap |
 | ------------------- | -------------- | ----- | ----- | ----- | ---------------- | ------ |
@@ -407,7 +407,7 @@ That is about 0.2 points per extra window. The cap trades this against how long 
 | 15 s                | 0 %            | 0 %   | 0 %   | 0 %   | 93 %             | 93 %   |
 | 20 s                | 0 %            | 0 %   | 0 %   | 0 %   | 0 %              | 89 %   |
 
-The 1 s row stops at 79 % partly because some caller clips are too short for any window to end after the onset. Treat the numbers with care: each stitched stream changes voice every 4 s, so one bystander voice that sounds close to the caller would be accepted more often than the table says, and the four references are the same voice at four levels, so the trials are correlated and the effective sample is smaller than 480.
+The 1 s row stops at 79 % partly because some caller clips are too short for any window to end after the onset. Treat the numbers with care: the mixed-voice streams change voice every 4 s, which understates FAR for one steady bystander voice (the one-voice column above shows how much), and the four references are the same voice at four levels, so the trials are correlated and the effective sample is smaller than 480.
 
 Overlap does not change much. With the other speech mixed in under the caller for 1 s, 3 s or the whole clip, recall moves by at most about 3 points. A bystander at recording level (the raw recordings' scale, not matched to the caller) talking over the caller costs 0 to 3 points at a cap of 6 or more, and early false accepts do not depend on the overlap. That is a bystander at recording level, not one measured as equally loud as the caller.
 

@@ -552,7 +552,9 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
       // pump drains it. On a CPU-starved host the backlog trickles in and the pump keeps the
       // depth under capacity (overflow 0). Hold every pump on the graph while the backlog is
       // written and wait until all of it has been pushed, so the queue fills past capacity on
-      // every host. The resumed pumps skip the held slots (counted as `listenerSkipped`).
+      // every host. The hold is shorter than the pump's slot-skip threshold, so the resumed
+      // pumps skip nothing (`listenerSkipped` 0); the 50-frame queue drains through counted
+      // pop compression (`compressed`).
       const stallHooks: StallHooks | undefined =
         pattern === 'paced-stall-1200ms'
           ? {
@@ -745,6 +747,7 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
       // The 1.2 s hole in the source stream is not a continuity failure of the mixer (the
       // recorder sees it as interior silence), so only the accounting is asserted.
       expect(r.stats!.overflowCompressed, detail).toBeGreaterThanOrEqual(1)
+      expect(r.stats!.listenerSkipped, detail).toBe(0)
       expectAccounted(r)
     },
   )

@@ -2731,6 +2731,104 @@ async fn short_then_rejoin_caller_barges_once() {
     rig.agent.stop().await.unwrap();
 }
 
+/// Agent: the playback is active when a short caller-less burst ends. Its `short` verdict does not
+/// release the held barge-in while the utterance can rejoin; the caller rejoining releases it once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn short_unknown_rejoin_caller_releases_the_held_barge() {
+    let mut rig = rig_with(agent_config(short_rejoin_cfg(
+        false,
+        DEFAULT_RECHECK_MAX_WINDOWS,
+    )))
+    .await;
+    rig.enroll().await;
+    let base = rig.log.len();
+    rig.script.lock().unwrap().final_on_finalize = Some("short then caller".into());
+    rig.start_speaking_for(400).await;
+    short_segment(&rig).await;
+    rig.drain();
+    assert!(
+        barges_since(&rig, base).is_empty(),
+        "the provisional short verdict does not release the barge-in"
+    );
+    queue_checks(&rig, vec![Behavior::Vector(REF.to_vec())]);
+    feed_until_queue_len(&rig, 0).await;
+    assert!(rig.wait_event(SpeechEventKind::BargeIn, 3000).await);
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    assert_eq!(barges_since(&rig, base).len(), 1, "exactly one barge-in");
+    let pos = |pred: &dyn Fn(&SpeechEvent) -> bool| rig.log[base..].iter().position(pred).unwrap();
+    assert!(
+        pos(&|e| e.kind == SpeechEventKind::BargeIn)
+            < pos(&|e| e.kind == SpeechEventKind::UserSpeechFinal),
+        "barge_in precedes the final"
+    );
+    rig.agent.stop().await.unwrap();
+}
+
+/// Agent: the held barge-in of a short burst is suppressed when the rejoined speech is `other`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn short_unknown_rejoin_other_suppresses_the_held_barge() {
+    let mut rig = rig_with(agent_config(short_rejoin_cfg(
+        false,
+        DEFAULT_RECHECK_MAX_WINDOWS,
+    )))
+    .await;
+    rig.enroll().await;
+    let base = rig.log.len();
+    rig.script.lock().unwrap().final_on_finalize = Some("short then bystander".into());
+    rig.start_speaking_for(400).await;
+    short_segment(&rig).await;
+    queue_checks(&rig, others(2));
+    feed_until_queue_len(&rig, 0).await;
+    rig.drain();
+    finish_utterance(&mut rig).await;
+    assert!(barges_since(&rig, base).is_empty(), "no barge-in");
+    rig.agent.stop().await.unwrap();
+}
+
+/// Agent: a short burst that closes without a rejoin keeps failing open (barge-in before the
+/// final), and is vetoed with `suppress_short_barge_in`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn short_unknown_closed_without_rejoin_fails_open() {
+    for (suppress, expected) in [(false, 1_usize), (true, 0)] {
+        let mut rig = rig_with(agent_config(short_rejoin_cfg(
+            suppress,
+            DEFAULT_RECHECK_MAX_WINDOWS,
+        )))
+        .await;
+        rig.enroll().await;
+        let base = rig.log.len();
+        rig.script.lock().unwrap().final_on_finalize = Some("stop".into());
+        rig.start_speaking_for(400).await;
+        short_segment(&rig).await;
+        rig.drain();
+        assert!(
+            barges_since(&rig, base).is_empty(),
+            "suppress={suppress}: nothing before the utterance closes"
+        );
+        rig.feed(&silent_stereo_frame(), 30).await;
+        assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+        rig.drain();
+        assert_eq!(
+            barges_since(&rig, base).len(),
+            expected,
+            "suppress={suppress}"
+        );
+        if expected == 1 {
+            let pos = |pred: &dyn Fn(&SpeechEvent) -> bool| {
+                rig.log[base..].iter().position(pred).unwrap()
+            };
+            assert!(
+                pos(&|e| e.kind == SpeechEventKind::BargeIn)
+                    < pos(&|e| e.kind == SpeechEventKind::UserSpeechFinal),
+                "barge_in precedes the final"
+            );
+        }
+        rig.agent.stop().await.unwrap();
+    }
+}
+
 /// Short segment, then a short rejoin: the resumed check is `short` again (window 2), nothing is
 /// embedded, the final says `unknown` / `short`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3348,4 +3446,60 @@ async fn short_verdict_closed_by_final_is_not_reopened() {
         gate.barge_decision(7),
         node_webrtc_rust_speech::speaker_gate::BargeDecision::Proceed
     ));
+}
+
+/// Gate: a stored `short` verdict holds the barge-in (`Defer`) while the key can still rejoin, and
+/// fails open (`Proceed`, or `Suppress` with `suppress_short_barge_in`) once the final read it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn short_unknown_defers_barge_while_the_utterance_can_rejoin() {
+    use node_webrtc_rust_speech::speaker_gate::BargeDecision;
+    let gate = SpeakerGate::new(SpeakerGateConfig {
+        enabled: true,
+        model_path: Some("fake.onnx".into()),
+        enroll_speech_ms: 400,
+        check_speech_ms: 200,
+        min_check_speech_ms: 200,
+        recheck_max_windows: 2,
+        ..SpeakerGateConfig::default()
+    });
+    let queue = Arc::new(Mutex::new(VecDeque::from(vec![REF.to_vec(); 2])));
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Verdict>();
+    gate.spawn(
+        Box::new(QueueEmbedder {
+            queue: Arc::clone(&queue),
+            calls: Arc::new(Mutex::new(0)),
+        }),
+        Box::new(move |v| {
+            let _ = tx.send(v);
+        }),
+    );
+    gate.begin(0, &GATE_FRAME);
+    gate_frames(&gate, 29);
+    gate.end_utterance();
+    gate.enroll_utterance(0);
+    gate.begin(1, &GATE_FRAME);
+    gate_frames(&gate, 14);
+    gate.end_utterance();
+    let _ = rx.recv().await.unwrap();
+    let _ = rx.recv().await.unwrap();
+    assert!(gate.is_enrolled());
+    gate.begin(7, &GATE_FRAME);
+    gate_frames(&gate, 4);
+    gate.end_utterance();
+    let v7 = rx.recv().await.unwrap();
+    assert_eq!(
+        (v7.key, v7.outcome, v7.reason),
+        (7, Outcome::Unknown, Some("short"))
+    );
+    assert_eq!(
+        gate.barge_decision(7),
+        BargeDecision::Defer,
+        "short and can rejoin: held"
+    );
+    gate.close_recheck(7);
+    assert_eq!(
+        gate.barge_decision(7),
+        BargeDecision::Proceed,
+        "short and closed: fails open"
+    );
 }

@@ -30,7 +30,7 @@ use crate::pipeline::{
     TtsAudioChunk, TtsProgressiveSink, TtsProvider,
 };
 use crate::registry::VendorRegistry;
-use crate::speaker_gate::{BargeDecision, Outcome, SpeakerGate, Verdict};
+use crate::speaker_gate::{BargeDecision, Outcome, SpeakerGate, Verdict, UNKNOWN_SHORT};
 use crate::stt_actor::{
     default_stt_latency_sink, spawn_stt_actor, test_final_delay_ms_from_env, SttActorHandle,
     SttActorOptions, SttCommand, SttResult, STT_ACTOR_START_MS, STT_ACTOR_STOP_MS,
@@ -341,6 +341,9 @@ struct AgentInner {
     hold_lookback_pcm: Vec<u8>,
     /// Milliseconds of inbound audio still forwarded to STT after VAD speech end.
     stt_gate_hold_ms: u32,
+    /// Live key whose gate hold just expired (set where the hold counts down to 0); taken by
+    /// `release_short_barge_on_hold_expiry` later in the same inbound call.
+    gate_hold_expired_key: Option<u64>,
     /// When true, finalize STT once gate hold drains (after trailing speech is relayed).
     stt_finalize_pending: bool,
     /// Endpoint tail + `finalize_utterance` already started for the current pending close.
@@ -722,6 +725,7 @@ impl VoiceAgent {
                 hold_pending_pcm: Vec::new(),
                 hold_lookback_pcm: Vec::new(),
                 stt_gate_hold_ms: 0,
+                gate_hold_expired_key: None,
                 stt_finalize_pending: false,
                 stt_endpoint_closing_started: false,
                 agent_speaking: false,
@@ -3144,6 +3148,20 @@ impl VoiceAgent {
             ));
             return;
         }
+        // A provisional `short` verdict does not release a held barge-in while its utterance can
+        // still rejoin: a rejoined check's verdict, or the final (closed short), settles it.
+        if verdict.outcome == Outcome::Unknown
+            && verdict.reason == Some(UNKNOWN_SHORT)
+            && gate.short_can_rejoin(verdict.key)
+            && gate.has_pending_barge(verdict.key)
+            && self.rejoin_window_open(verdict.key).await
+        {
+            voice_debug(format!(
+                "speaker gate: short verdict key={} keeps the barge-in held (can rejoin)",
+                verdict.key
+            ));
+            return;
+        }
         // Live or closing without a final yet: a short utterance's check goes out at SpeechEnd,
         // after the record moved to closing, and its barge-in still fires on that verdict.
         let record_id = self
@@ -3300,6 +3318,47 @@ impl VoiceAgent {
             .and_then(|g| g.live_check_state())
     }
 
+    /// The live utterance `key` can still be rejoined: it is the live record and its gate hold
+    /// (counted in fed frames, no timer) has not expired.
+    async fn rejoin_window_open(&self, key: u64) -> bool {
+        let inner = self.inner.lock().await;
+        inner.live_key() == Some(key) && inner.stt_gate_hold_ms > 0
+    }
+
+    /// The gate hold of the live utterance expired: a stored `Unknown(short)` verdict is final.
+    /// Settles the barge-in held for it, the same way the final would (allow rule and playback
+    /// epoch rule), without waiting for the final, which comes only after the playback.
+    async fn release_short_barge_on_hold_expiry(&self) {
+        let Some(gate) = self.speaker_gate.as_ref() else {
+            return;
+        };
+        let (key, record_id) = {
+            let mut inner = self.inner.lock().await;
+            let Some(key) = inner.gate_hold_expired_key.take() else {
+                return;
+            };
+            (key, inner.stt_record_ref(key).map(|r| r.id.clone()))
+        };
+        if gate.outcome_for(key) != Some(Outcome::Unknown)
+            || gate.unknown_reason(key) != UNKNOWN_SHORT
+        {
+            return;
+        }
+        let Some(epoch) = gate.take_pending_barge(key) else {
+            return;
+        };
+        let allow = gate.barge_allowed(&gate.verdict_read_by_final(key, Outcome::Unknown));
+        self.settle_pending_barge(
+            key,
+            epoch,
+            allow,
+            record_id,
+            "speaker gate: barge-in released when the short utterance's gate hold expired".into(),
+            None,
+        )
+        .await;
+    }
+
     /// True when a barge-in for the live utterance must wait for (or is vetoed by) the speaker
     /// verdict. Records the pending barge so the verdict handler fires it.
     async fn speaker_gate_holds_barge(&self) -> bool {
@@ -3313,7 +3372,17 @@ impl VoiceAgent {
         let Some(key) = live else {
             return false;
         };
-        match gate.barge_decision(key) {
+        let decision = match gate.barge_decision(key) {
+            // A stored short verdict whose gate hold already expired cannot be rejoined: fail open.
+            BargeDecision::Defer
+                if gate.outcome_for(key) == Some(Outcome::Unknown)
+                    && !self.rejoin_window_open(key).await =>
+            {
+                BargeDecision::Proceed
+            }
+            d => d,
+        };
+        match decision {
             BargeDecision::Proceed => false,
             BargeDecision::Suppress => {
                 let reason = if gate.outcome_for(key) == Some(Outcome::Unknown) {
@@ -4863,6 +4932,7 @@ impl VoiceAgent {
                     if before > 0 && after == 0 {
                         let ctx = inner.otel.session_context.clone();
                         otel::record_gate_hold_end(&ctx);
+                        inner.gate_hold_expired_key = inner.live_key();
                         voice_debug(
                             "STT gate hold expired — utterance may finalize on next inbound frame",
                         );
@@ -5378,6 +5448,7 @@ impl VoiceAgent {
 
         // STT results are not polled here: the STT actor polls the vendor and the result pump
         // emits what it returns.
+        self.release_short_barge_on_hold_expiry().await;
         if gate_closed_skip_stt {
             if call == 1 || call.is_multiple_of(50) {
                 voice_debug(format!(

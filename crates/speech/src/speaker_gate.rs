@@ -782,9 +782,23 @@ impl SpeakerGate {
             {
                 BargeDecision::Suppress
             }
+            // A `short` verdict is provisional while its key can still rejoin: hold the
+            // barge-in until a rejoined check scores or the utterance closes short.
+            Some(Outcome::Unknown)
+                if self.stored_unknown_reason(key) == Some(UNKNOWN_SHORT)
+                    && self.short_can_rejoin(key) =>
+            {
+                BargeDecision::Defer
+            }
             Some(_) => BargeDecision::Proceed,
             None => BargeDecision::Defer,
         }
+    }
+
+    /// True while `key` ended `short` (feed-side record from SpeechEnd, see [`Self::reopen_short`])
+    /// and its final has not started reading the verdict, so the same utterance can still rejoin.
+    pub fn short_can_rejoin(&self, key: u64) -> bool {
+        lock(&self.feed).shorts.iter().any(|(k, _, _)| *k == key) && !self.recheck_closed(key)
     }
 
     /// True when `verdict` vetoes the barge-in of its utterance: `other`, or (opt-in

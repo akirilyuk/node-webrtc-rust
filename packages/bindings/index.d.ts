@@ -373,7 +373,7 @@ export interface JsSpeakerGateConfig {
   /** Keep re-checking an utterance while its verdict is `other` (default true). */
   recheckOnOther?: boolean
   /**
-   * Windows scored per utterance, the first check included (default 8). `0` = no cap; `1` is
+   * Windows scored per utterance, the first check included (default 12). `0` = no cap; `1` is
    * rejected by the gate.
    */
   recheckMaxWindows?: number

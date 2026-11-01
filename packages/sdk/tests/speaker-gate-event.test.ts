@@ -80,7 +80,7 @@ describe('speaker gate speech events', () => {
 
   test('default window cap mirrors DEFAULT_RECHECK_MAX_WINDOWS in speaker_gate.rs', () => {
     // lockstep: crates/speech/src/speaker_gate.rs › default_recheck_max_windows_matches_sdk
-    expect(SPEAKER_GATE_RECHECK_MAX_WINDOWS).toBe(8)
+    expect(SPEAKER_GATE_RECHECK_MAX_WINDOWS).toBe(12)
   })
 
   test('speakerCheckWindows maps from the native event', () => {

@@ -54,7 +54,7 @@ export const VOICE_AGENT_VAD_PRESET: VadConfig = {
  * `other`, the first check included. Mirrors `DEFAULT_RECHECK_MAX_WINDOWS` in the speech crate
  * (`crates/speech/src/speaker_gate.rs`); the Rust unit test cites this file back.
  */
-export const SPEAKER_GATE_RECHECK_MAX_WINDOWS = 8
+export const SPEAKER_GATE_RECHECK_MAX_WINDOWS = 12
 
 /**
  * Check windows of the 0.15.0 gate: the first check plus one re-check.

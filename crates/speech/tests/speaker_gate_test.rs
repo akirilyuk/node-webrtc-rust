@@ -2118,17 +2118,21 @@ async fn recheck_stops_at_the_cap() {
     rig.enroll().await;
     let base = rig.log.len();
     rig.start_speaking_for(400).await;
-    queue_checks(&rig, others(9));
+    queue_checks(&rig, others(DEFAULT_RECHECK_MAX_WINDOWS as usize + 1));
     rig.script.lock().unwrap().final_on_finalize = Some("long bystander".into());
     feed_until_queue_len(&rig, 1).await;
-    // Many more windows of speech: the cap holds the 9th check back.
+    // Many more windows of speech: the default cap holds the 13th check back.
     rig.feed(&loud_stereo_frame(), 100).await;
     sleep(Duration::from_millis(200)).await;
-    assert_eq!(rig.queue.lock().unwrap().len(), 1, "exactly 8 windows");
+    assert_eq!(
+        rig.queue.lock().unwrap().len(),
+        1,
+        "window 12 is scored, window 13 is not"
+    );
     finish_utterance(&mut rig).await;
     let fin = last_final(&rig, base);
     assert_eq!(fin.speaker.as_deref(), Some("other"));
-    assert_eq!(fin.speaker_check_windows, Some(8));
+    assert_eq!(fin.speaker_check_windows, Some(DEFAULT_RECHECK_MAX_WINDOWS));
     assert!(barges_since(&rig, base).is_empty());
     rig.agent.stop().await.unwrap();
 }

@@ -358,17 +358,17 @@ How it works:
 
 Recommended with `vad.provider: 'adaptive'`. With the energy VAD, turns in background noise split into short pieces, which are more often `unknown`.
 
-Limit: a bystander about as loud as the caller can pass the check; the gate is tested with bystander turns 6 dB below the caller (the two long turns of the noisy-bystander roundtrip) and 15 dB below (the other turns), over babble. Turns from two people less than about 1.5 s apart end up in one transcript, labelled by the check of its first speaker, because the agent's end of turn waits that long for more speech. Other speech that opens the VAD and runs into the caller's words without a pause fills the first check window, so the first check says other. The gate keeps re-checking while the verdict stays other, so other speech that leads the caller by up to about `(recheckMaxWindows − 2) × checkSpeechMs` (9 s with the defaults) no longer hides the caller. A longer lead still does, and `recheckMaxWindows: 0` removes the cap at the false-accept cost in the table below. With `recheckOnOther: false` the barge-in stays suppressed and the final is labelled other.
+Limit: a bystander about as loud as the caller can pass the check; the gate is tested with bystander turns 6 dB below the caller (the two long turns of the noisy-bystander roundtrip) and 15 dB below (the other turns), over babble. Turns from two people less than about 1.5 s apart end up in one transcript, labelled by the check of its first speaker, because the agent's end of turn waits that long for more speech. Other speech that opens the VAD and runs into the caller's words without a pause fills the first check window, so the first check says other. The gate keeps re-checking while the verdict stays other, so other speech that leads the caller by up to about `(recheckMaxWindows − 2) × checkSpeechMs` (15 s with the defaults) no longer hides the caller. A longer lead still does, and `recheckMaxWindows: 0` removes the cap at the false-accept cost in the table below. With `recheckOnOther: false` the barge-in stays suppressed and the final is labelled other.
 
 ### Re-check after other (`recheckOnOther`, `recheckMaxWindows`)
 
 A TV or a colleague talking right before the caller can open the VAD, and if the caller starts before that speech pauses, both end up in one utterance. The first 1.5 s window then holds mostly the other voice and scores `other`. Without another look the caller would be ignored for that whole utterance.
 
-With `recheckOnOther` on (the default), the gate scores the following windows of the same utterance, each `checkSpeechMs` of fresh speech with the same model and threshold, until one says `caller` or `recheckMaxWindows` windows have been scored (default 8, the first check included, so 12 s of speech with the defaults). `recheckMaxWindows: 2` gives the 0.15.0 behaviour of a single re-check, `0` removes the cap, and `1` is rejected (use `recheckOnOther: false`). The rules are narrow on purpose:
+With `recheckOnOther` on (the default), the gate scores the following windows of the same utterance, each `checkSpeechMs` of fresh speech with the same model and threshold, until one says `caller` or `recheckMaxWindows` windows have been scored (default 12, the first check included, so 18 s of speech with the defaults). `recheckMaxWindows: 2` gives the 0.15.0 behaviour of a single re-check, `0` removes the cap, and `1` is rejected (use `recheckOnOther: false`). The rules are narrow on purpose:
 
 - Re-checking runs only while the verdict is `other`. A `caller` or `unknown` verdict is never re-checked, so a bystander who joins a caller's utterance cannot relabel it.
 - It can only turn `other` into `caller`. Once a window says `caller`, the held barge-in fires for that utterance (same `utteranceId`) and the final says `speaker: 'caller'`. If every window says `other`, a check fails, or the utterance ends before the next window fills, the verdict stays `other` and there is no barge-in.
-- A barge-in released by the n-th window comes no earlier than n × `checkSpeechMs` of speech (3 s for the second window and 12 s for the eighth, with the defaults). The final reports n as `speakerCheckWindows`, and the SDK exports the bound as `speakerRecheckBargeEarliestMs(checkSpeechMs, window)`. The n × `checkSpeechMs` bound holds for re-check windows (n ≥ 2). The first check follows `minCheckSpeechMs` as in 0.15.0: when `minCheckSpeechMs` is below `checkSpeechMs`, a short utterance's first check at the end of its speech can release a barge-in before 1 × `checkSpeechMs`.
+- A barge-in released by the n-th window comes no earlier than n × `checkSpeechMs` of speech (3 s for the second window and 18 s for the twelfth, with the defaults). The final reports n as `speakerCheckWindows`, and the SDK exports the bound as `speakerRecheckBargeEarliestMs(checkSpeechMs, window)`. The n × `checkSpeechMs` bound holds for re-check windows (n ≥ 2). The first check follows `minCheckSpeechMs` as in 0.15.0: when `minCheckSpeechMs` is below `checkSpeechMs`, a short utterance's first check at the end of its speech can release a barge-in before 1 × `checkSpeechMs`.
 - The final reports `speakerRechecked: true` whenever a re-check was scored before it, with `speaker` set to the combined verdict.
 - A final waits for a re-check that is still running, bounded by `verifyTimeoutMs` like the first check. A final that has read its verdict stops any later re-check of its utterance. If the final stopped waiting (`verifyTimeoutMs`), it says `other` and a later re-check result never barges in.
 - The next window starts only once the previous verdict is in. If a verdict arrives after the utterance has ended (a slow or backlogged speaker model), no further window runs, and the final stays `other` with no barge-in.
@@ -378,25 +378,34 @@ With `recheckOnOther` on (the default), the gate scores the following windows of
 
 The cost is exposure: a long bystander utterance gets one more chance to pass for every extra window. We measured it on long streams of bystander speech and babble, stitched from four scenes, about 16 s each, with the voice changing every 4 s (TitaNet-small, threshold 0.459, `speaker_bench --long-other`, 2026-10-31, pooled n = 480). The false-accept rate (FAR) of consecutive windows by seconds of other speech:
 
-| other speech | windows | FAR    |
-| ------------ | ------- | ------ |
-| 1.5 s        | 1       | 0.21 % |
-| 3 s (0.15.0) | 2       | 0.42 % |
-| 6 s          | 4       | 1.25 % |
-| 9 s          | 6       | 1.46 % |
-| 12 s         | 8       | 2.29 % |
-| 15 s         | 10      | 3.33 % |
+| other speech | windows | FAR, mixed voices | FAR, one bystander voice |
+| ------------ | ------- | ----------------- | ------------------------ |
+| 1.5 s        | 1       | 0.21 %            | —                        |
+| 3 s (0.15.0) | 2       | 0.42 %            | —                        |
+| 6 s          | 4       | 1.25 %            | —                        |
+| 9 s          | 6       | 1.46 %            | —                        |
+| 12 s         | 8       | 2.29 %            | 8.54 %                   |
+| 15 s         | 10      | 3.33 %            | 10.21 %                  |
+| 18 s         | 12      | 3.33 %            | 10.42 %                  |
+| 20 s         | 13      | 3.96 %            | 11.88 %                  |
+| 25 s         | 16      | 4.38 %            | 13.54 %                  |
+| 30 s         | 20      | 5.21 %            | 16.25 %                  |
+
+The one-voice column comes from streams of about 35 s built only from the bystander spans, so every window hears the same voice (`speaker_bench --long-other --long-other-same-voice --long-other-unions 14`, 2026-11-01, same model, threshold and n). Those streams were not built for the shorter rows, so they show no value there. With the default cap of 12 the FAR stops at its 18 s value; `recheckMaxWindows: 0` lets it keep growing, to 5.21 % (mixed voices) and 16.25 % (one voice) at 30 s.
 
 That is about 0.2 points per extra window. The cap trades this against how long a lead the gate forgives, because each window is all-or-nothing on it. Caller recall after other speech that leads by k seconds (test set, n = 96):
 
-| caller starts after | cap 2 (0.15.0) | cap 4 | cap 6 | cap 8 (default) |
-| ------------------- | -------------- | ----- | ----- | --------------- |
-| 1 s                 | 78 %           | 79 %  | 79 %  | 79 %            |
-| 2 s                 | 45 %           | 89 %  | 89 %  | 89 %            |
-| 3 s                 | 0 %            | 95 %  | 95 %  | 95 %            |
-| 4 s                 | 0 %            | 77 %  | 78 %  | 78 %            |
-| 6 s                 | 0 %            | 0 %   | 91 %  | 91 %            |
-| 9 s                 | 0 %            | 0 %   | 0 %   | 92 %            |
+| caller starts after | cap 2 (0.15.0) | cap 4 | cap 6 | cap 8 | cap 12 (default) | no cap |
+| ------------------- | -------------- | ----- | ----- | ----- | ---------------- | ------ |
+| 1 s                 | 78 %           | 79 %  | 79 %  | 79 %  | 79 %             | 79 %   |
+| 2 s                 | 45 %           | 89 %  | 89 %  | 89 %  | 89 %             | 89 %   |
+| 3 s                 | 0 %            | 95 %  | 95 %  | 95 %  | 95 %             | 95 %   |
+| 4 s                 | 0 %            | 77 %  | 78 %  | 78 %  | 78 %             | 78 %   |
+| 6 s                 | 0 %            | 0 %   | 91 %  | 91 %  | 91 %             | 91 %   |
+| 9 s                 | 0 %            | 0 %   | 0 %   | 92 %  | 92 %             | 92 %   |
+| 12 s                | 0 %            | 0 %   | 0 %   | 0 %   | 93 %             | 93 %   |
+| 15 s                | 0 %            | 0 %   | 0 %   | 0 %   | 93 %             | 93 %   |
+| 20 s                | 0 %            | 0 %   | 0 %   | 0 %   | 0 %              | 89 %   |
 
 The 1 s row stops at 79 % partly because some caller clips are too short for any window to end after the onset. Treat the numbers with care: each stitched stream changes voice every 4 s, so one bystander voice that sounds close to the caller would be accepted more often than the table says, and the four references are the same voice at four levels, so the trials are correlated and the effective sample is smaller than 480.
 

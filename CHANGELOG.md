@@ -10,7 +10,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **speech / bindings / sdk:** `speakerGate.recheckMaxWindows` (default 8, `0` = no cap, `1` rejected) caps the check windows scored per utterance. Finals carry `speakerCheckWindows`. `speakerRecheckBargeEarliestMs(checkSpeechMs, window)` gives the earliest barge-in for the n-th window, and `SPEAKER_GATE_RECHECK_MAX_WINDOWS` mirrors the default.
+- **speech / bindings / sdk:** `speakerGate.recheckMaxWindows` (default 12, `0` = no cap, `1` rejected) caps the check windows scored per utterance. Finals carry `speakerCheckWindows`. `speakerRecheckBargeEarliestMs(checkSpeechMs, window)` gives the earliest barge-in for the n-th window, and `SPEAKER_GATE_RECHECK_MAX_WINDOWS` mirrors the default.
 
 ### Changed
 

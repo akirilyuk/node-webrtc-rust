@@ -454,7 +454,7 @@ pub struct JsSpeakerGateConfig {
     pub suppress_short_barge_in: Option<bool>,
     /// Keep re-checking an utterance while its verdict is `other` (default true).
     pub recheck_on_other: Option<bool>,
-    /// Windows scored per utterance, the first check included (default 8). `0` = no cap; `1` is
+    /// Windows scored per utterance, the first check included (default 12). `0` = no cap; `1` is
     /// rejected by the gate.
     pub recheck_max_windows: Option<u32>,
     /// `flag` (default) | `drop`.
@@ -550,9 +550,9 @@ mod speaker_gate_config_from_tests {
     }
 
     #[test]
-    fn recheck_max_windows_defaults_8_and_maps_through() {
+    fn recheck_max_windows_defaults_12_and_maps_through() {
         let d: SpeakerGateConfig = JsSpeakerGateConfig::default().try_into().unwrap();
-        assert_eq!(d.recheck_max_windows, 8);
+        assert_eq!(d.recheck_max_windows, 12);
         for n in [2u32, 0] {
             let c: SpeakerGateConfig = JsSpeakerGateConfig {
                 recheck_max_windows: Some(n),

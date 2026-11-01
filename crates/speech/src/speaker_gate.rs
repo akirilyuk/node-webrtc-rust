@@ -43,10 +43,10 @@ const ENDED_CAP: usize = 4;
 const BACKLOG_WARN: usize = 8;
 
 /// Default for [`SpeakerGateConfig::recheck_max_windows`]: windows scored per utterance, the first
-/// check included (12 s of speech with the default 1.5 s check).
+/// check included (18 s of speech with the default 1.5 s check).
 /// SDK mirror: `SPEAKER_GATE_RECHECK_MAX_WINDOWS` (`packages/sdk/src/voice/defaults.ts`); both are
-/// asserted to be 8 in their own tests.
-pub const DEFAULT_RECHECK_MAX_WINDOWS: u32 = 8;
+/// asserted to be 12 in their own tests.
+pub const DEFAULT_RECHECK_MAX_WINDOWS: u32 = 12;
 
 /// Earliest speech time (ms of speech in the utterance) at which a barge-in released by the
 /// `window`-th scored window (1 = first check) can fire. SDK mirror:
@@ -1353,7 +1353,7 @@ mod tests {
     /// (asserted in packages/sdk/tests/speaker-gate-event.test.ts).
     #[test]
     fn default_recheck_max_windows_matches_sdk() {
-        assert_eq!(DEFAULT_RECHECK_MAX_WINDOWS, 8);
+        assert_eq!(DEFAULT_RECHECK_MAX_WINDOWS, 12);
     }
 
     #[test]

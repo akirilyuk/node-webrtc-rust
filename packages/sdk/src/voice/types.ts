@@ -331,8 +331,8 @@ export interface VoiceAgentConfig {
      */
     recheckOnOther?: boolean
     /**
-     * Default 8. Windows scored per utterance while the verdict stays `other`, the first check
-     * included (8 windows = 12 s of speech with the default `checkSpeechMs`). `2` is the 0.15.0
+     * Default 12. Windows scored per utterance while the verdict stays `other`, the first check
+     * included (12 windows = 18 s of speech with the default `checkSpeechMs`). `2` is the 0.15.0
      * behaviour (one re-check). `0` removes the cap. `1` is rejected (use `recheckOnOther: false`).
      * Ignored when `recheckOnOther` is `false`.
      */

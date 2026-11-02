@@ -377,6 +377,7 @@ fn run_babble(
     voices_root: &std::path::Path,
     recognizer: &sherpa_onnx::OnlineRecognizer,
     tts: &sherpa_onnx::OfflineTts,
+    family: node_webrtc_rust_vendor_sherpa_onnx::TtsModelFamily,
 ) -> Result<String, String> {
     let vad = node_webrtc_rust_speech::config::VadConfig::default();
     let lead_ms = BABBLE_LEAD_MS;
@@ -388,7 +389,7 @@ fn run_babble(
         let mut tally = Tally::new();
         let mut misses = 0usize;
         for i in 0..args.n {
-            let (raw, rate) = synthesize(tts, &args.phrase)?;
+            let (raw, rate) = synthesize(tts, &args.phrase, family)?;
             let (clip, _) = to_recognizer_rate(raw, rate)?;
             let clip = normalize_to(&clip, caller_db as f32);
             let onset = ms(lead_ms);
@@ -445,7 +446,7 @@ fn run(args: &Args) -> Result<String, String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     }
     if let Some(voices_root) = &args.babble {
-        return run_babble(args, voices_root, &recognizer, &tts);
+        return run_babble(args, voices_root, &recognizer, &tts, family);
     }
     let lead = vec![0.0_f32; SAMPLE_RATE as usize * LEAD_SILENCE_MS / 1000];
     let tail = vec![0.0_f32; SAMPLE_RATE as usize * TAIL_SILENCE_MS / 1000];

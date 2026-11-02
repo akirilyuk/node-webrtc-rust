@@ -127,11 +127,13 @@ fn classify_vendor_message(message: &str) -> SynthesizeCode {
 /// Stereo 48 kHz s16le to mono 24 kHz s16le (average of each 2-frame, 2-channel group).
 fn stereo_48k_to_mono_24k(pcm: &[u8]) -> Vec<u8> {
     let samples: Vec<i16> = pcm
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| i16::from_le_bytes(*b))
         .collect();
     let mut out = Vec::with_capacity(samples.len() / 2);
-    for group in samples.chunks_exact(4) {
+    for group in samples.as_chunks::<4>().0 {
         let sum: i32 = group.iter().map(|s| i32::from(*s)).sum();
         out.extend_from_slice(&((sum / 4) as i16).to_le_bytes());
     }

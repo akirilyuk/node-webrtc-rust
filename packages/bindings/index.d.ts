@@ -769,9 +769,23 @@ export declare class JsVoiceAgent {
    * agent. Call after `start`.
    */
   startNativeInbound(track: JsMediaStreamTrack, mixGraph?: JsMixGraph | undefined | null, participantId?: string | undefined | null): void
+  /**
+   * Queues `text` for TTS. Jobs are queued and played in call order: the queue place is
+   * taken synchronously when this method is called, before the returned promise is created,
+   * so concurrent calls never overtake each other.
+   */
   sendTextToTts(text: string, nonBlocking?: boolean | undefined | null, interruptible?: boolean | undefined | null, replyId?: string | undefined | null): Promise<void>
+  /**
+   * @internal Test-only, not public API: delays the send holding ticket `n` (0-based per
+   * agent) by `delays_ms[n]` ms before it reaches the queue. `null` clears it.
+   */
+  __testSetTtsPreEnqueueDelays(delaysMs?: Array<number> | undefined | null): void
   /** Forget the enrolled caller voice (speaker gate); the next utterances enroll again. */
   resetSpeakerEnrollment(): void
+  /**
+   * Cancels every `sendTextToTts` called before this call (queued or on its way to the
+   * queue); the cut is taken synchronously at call time.
+   */
   flushTts(): Promise<void>
   /** Wait until outbound TTS playback finishes (synthesis queue drained and agent not speaking). */
   waitTtsPlaybackIdle(): Promise<void>

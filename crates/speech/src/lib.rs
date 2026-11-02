@@ -69,6 +69,7 @@ pub mod stt_pre_roll;
 pub mod transport;
 pub mod tts_buffer;
 pub mod tts_cache;
+pub mod tts_send_order;
 pub mod tts_text;
 pub(crate) mod turn_latency;
 pub mod utterance_replay;
@@ -103,6 +104,7 @@ pub use session_recorder::{
 };
 pub use transport::resolve_transport;
 pub use tts_buffer::TtsBuffer;
+pub use tts_send_order::{TtsFlushCut, TtsSendTicket};
 pub use utterance_replay::SPEECH_REPLAY_MAX_MS;
 pub use vad::{handle_barge_in, VadEngine, VadTransition, VoiceActivityDetector};
 

@@ -493,6 +493,11 @@ export class VoiceAgent {
    *
    * By default waits until synthesis and playback for this utterance finish. Pass
    * `{ nonBlocking: true }` to return once the job is queued.
+   *
+   * Calls are queued and played in call order (FIFO), also when several calls run
+   * concurrently without awaiting each other: the queue place is taken synchronously when
+   * this method is called. A {@link flushTts} (or barge-in flush / {@link stop}) cancels
+   * every call made before it, queued or not, with `TTS cancelled`; later calls are kept.
    */
   async sendTextToTTS(text: string, options?: SendTextToTtsOptions): Promise<void> {
     debugFn(MODULE, 'sendTextToTTS', `chars=${text.length}`)
@@ -516,6 +521,9 @@ export class VoiceAgent {
   /**
    * Clears pending TTS PCM (manual interrupt).
    * Also used internally when barge-in runs with `bargeIn.flushTts: true`.
+   *
+   * Cancels every {@link sendTextToTTS} called before this call (their promises reject with
+   * `TTS cancelled`); calls made after it are kept.
    */
   async flushTts(): Promise<void> {
     debugFn(MODULE, 'flushTts')

@@ -30,6 +30,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **speech / bindings / sdk:** concurrent `sendTextToTTS` calls are queued and played in call order. Before, each call raced to the queue on its own task, so under CPU load a later reply could play first. The queue place is now taken synchronously when `sendTextToTTS` is called. `flushTts` cancels every call made before it, including calls still on their way to the queue, and keeps later calls. Rust callers can take places with `reserve_tts_send` and send with `send_text_to_tts_reserved`.
 - **speech:** with `gateStt`, a phrase that starts while the previous one is still finishing now reaches STT with the real audio just before it. Before, that lead-in arrived as silence and the recognizer could lose the first word ("excuse me" heard as "use me").
 - **speech:** all agent events (reply, speaking, cache hit, error) go through the ordered event bus. Before, they could overtake events queued behind a final that was waiting for its speaker verdict.
 - **mixer / conference / helpers:** the mix outbound (conference room, native and JS mix pumps) no longer writes a stalled listener's missed slots back to back. After a stall it writes at most 4 frames (the newest slots, which still carry audio) and resumes 20 ms pacing; skipped ticks stay counted in `listenerSkipped`.

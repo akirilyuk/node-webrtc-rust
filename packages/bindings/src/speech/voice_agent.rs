@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use napi::bindgen_prelude::*;
-use napi::JsFunction;
+use napi::{JsFunction, JsObject};
 use napi_derive::napi;
 use node_webrtc_rust_mixer::{Frame, FRAME_BYTES};
 use node_webrtc_rust_speech::inbound_pump::{spawn_inbound_pump, InboundPumpHandles, InboundRead};
@@ -274,23 +274,54 @@ impl JsVoiceAgent {
         Ok(())
     }
 
-    #[napi]
-    pub async fn send_text_to_tts(
+    /// Queues `text` for TTS. Jobs are queued and played in call order: the queue place is
+    /// taken synchronously when this method is called, before the returned promise is created,
+    /// so concurrent calls never overtake each other.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn send_text_to_tts(
         &self,
+        env: Env,
         text: String,
         non_blocking: Option<bool>,
         interruptible: Option<bool>,
         reply_id: Option<String>,
-    ) -> Result<()> {
+    ) -> Result<JsObject> {
+        let ticket = self.inner.reserve_tts_send();
         let options = SendTextToTtsOptions {
             non_blocking: non_blocking.unwrap_or(false),
             interruptible: interruptible.unwrap_or(true),
             reply_id,
         };
-        self.inner
-            .send_text_to_tts_with_options(&text, options)
-            .await
-            .map_err(speech_err)
+        let agent = Arc::clone(&self.inner);
+        env.execute_tokio_future(
+            async move {
+                agent
+                    .send_text_to_tts_reserved(ticket, &text, options)
+                    .await
+                    .map_err(speech_err)
+            },
+            |env, ()| env.get_undefined(),
+        )
+    }
+
+    /// @internal Test-only, not public API: delays the send holding ticket `n` (0-based per
+    /// agent) by `delays_ms[n]` ms before it reaches the queue. `null` clears it.
+    #[napi(js_name = "__testSetTtsPreEnqueueDelays")]
+    pub fn test_set_tts_pre_enqueue_delays(&self, delays_ms: Option<Vec<u32>>) {
+        let hook = delays_ms.map(|delays| {
+            let delays = Arc::new(delays);
+            let hook: node_webrtc_rust_speech::agent::TtsPreEnqueueHook =
+                Arc::new(move |ticket: u64| {
+                    let ms = delays.get(ticket as usize).copied().unwrap_or(0);
+                    Box::pin(async move {
+                        if ms > 0 {
+                            tokio::time::sleep(Duration::from_millis(u64::from(ms))).await;
+                        }
+                    })
+                });
+            hook
+        });
+        self.inner.set_tts_pre_enqueue_hook(hook);
     }
 
     /// Forget the enrolled caller voice (speaker gate); the next utterances enroll again.
@@ -299,9 +330,16 @@ impl JsVoiceAgent {
         self.inner.reset_speaker_enrollment();
     }
 
-    #[napi]
-    pub async fn flush_tts(&self) -> Result<()> {
-        self.inner.flush_tts().await.map_err(speech_err)
+    /// Cancels every `sendTextToTts` called before this call (queued or on its way to the
+    /// queue); the cut is taken synchronously at call time.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn flush_tts(&self, env: Env) -> Result<JsObject> {
+        let cut = self.inner.begin_flush_tts();
+        let agent = Arc::clone(&self.inner);
+        env.execute_tokio_future(
+            async move { agent.flush_tts_from(cut).await.map_err(speech_err) },
+            |env, ()| env.get_undefined(),
+        )
     }
 
     /// Wait until outbound TTS playback finishes (synthesis queue drained and agent not speaking).

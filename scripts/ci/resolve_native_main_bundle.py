@@ -16,9 +16,11 @@ Uses GitHub REST via urllib (no gh CLI). Optional --fixture-dir for deterministi
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -31,6 +33,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import native_build_contract as nbc  # noqa: E402
 
 API_VERSION = "2022-11-28"
+
+# Transient failures on idempotent GETs are retried a bounded number of times.
+MAX_ATTEMPTS = 3
+RETRY_DELAYS_S = (2, 4)
+RETRYABLE_HTTP_STATUS = frozenset({500, 502, 503, 504})
+_sleep = time.sleep
 
 
 class ResolveError(Exception):
@@ -56,17 +64,33 @@ def _github_request(
         },
         method="GET",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            headers = {k.lower(): v for k, v in resp.headers.items()}
-            return resp.getcode(), resp.read(), headers
-    except urllib.error.HTTPError as exc:
-        body = exc.read() if exc.fp else b""
-        raise ResolveError(
-            "http_error", f"status={exc.code} url={url} body={body[:200]!r}"
-        ) from exc
-    except urllib.error.URLError as exc:
-        raise ResolveError("network_error", str(exc)) from exc
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                headers = {k.lower(): v for k, v in resp.headers.items()}
+                return resp.getcode(), resp.read(), headers
+        except urllib.error.HTTPError as exc:
+            body = exc.read() if exc.fp else b""
+            error = ResolveError(
+                "http_error", f"status={exc.code} url={url} body={body[:200]!r}"
+            )
+            if exc.code not in RETRYABLE_HTTP_STATUS:
+                raise error from exc
+            failure: Exception = exc
+            final: ResolveError = error
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
+            # OSError covers ConnectionError and socket timeouts during read.
+            failure = exc
+            final = ResolveError("network_error", f"{type(exc).__name__}: {exc}")
+        if attempt == MAX_ATTEMPTS:
+            raise final from failure
+        print(
+            f"resolve: retry {attempt}/{MAX_ATTEMPTS - 1} after "
+            f"{type(failure).__name__}: {failure} url={url}",
+            file=sys.stderr,
+        )
+        _sleep(RETRY_DELAYS_S[attempt - 1])
+    raise ResolveError("network_error", "unreachable")  # pragma: no cover
 
 
 def _parse_json(data: bytes, label: str) -> Any:

@@ -245,6 +245,116 @@ assert [x["head_sha"] for x in ordered[1:]] == ["bbbb", "cccc"]
 print("ok: exact SHA preferred before older fingerprint candidates")
 PY
 
+echo "==> transient GitHub API network errors retry, then fall back"
+GITHUB_OUTPUT="$TMP/gh-output-net" python3 - <<'PY'
+import http.client
+import io
+import os
+import sys
+import urllib.error
+from pathlib import Path
+
+sys.path.insert(0, "scripts/ci")
+import resolve_native_main_bundle as r
+
+
+class FakeResp:
+    headers = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def getcode(self):
+        return 200
+
+    def read(self):
+        return b"{}"
+
+
+def run_with(side_effects):
+    calls = []
+    sleeps = []
+    queue = list(side_effects)
+
+    def fake_urlopen(req, timeout=None):
+        calls.append(req.full_url)
+        item = queue.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    orig_urlopen, orig_sleep = r.urllib.request.urlopen, r._sleep
+    r.urllib.request.urlopen = fake_urlopen
+    r._sleep = sleeps.append
+    try:
+        try:
+            result = r._github_request("https://api.github.com/x", "tok")
+            err = None
+        except r.ResolveError as exc:
+            result, err = None, exc
+    finally:
+        r.urllib.request.urlopen, r._sleep = orig_urlopen, orig_sleep
+    return result, err, calls, sleeps
+
+
+def http_error(code):
+    return urllib.error.HTTPError(
+        "https://api.github.com/x", code, "x", {}, io.BytesIO(b"body")
+    )
+
+
+rd = http.client.RemoteDisconnected("Remote end closed connection without response")
+
+result, err, calls, sleeps = run_with([rd, rd, FakeResp()])
+assert err is None and result[1] == b"{}", (result, err)
+assert len(calls) == 3 and sleeps == [2, 4], (calls, sleeps)
+
+result, err, calls, sleeps = run_with([rd, rd, rd])
+assert err is not None and err.reason == "network_error", err
+assert len(calls) == 3 and sleeps == [2, 4], (calls, sleeps)
+
+result, err, calls, sleeps = run_with([http_error(404)])
+assert err is not None and err.reason == "http_error", err
+assert len(calls) == 1 and sleeps == [], (calls, sleeps)
+
+result, err, calls, sleeps = run_with([http_error(503), FakeResp()])
+assert err is None and len(calls) == 2 and sleeps == [2], (err, calls, sleeps)
+
+result, err, calls, sleeps = run_with([http_error(502), http_error(502), http_error(502)])
+assert err is not None and err.reason == "http_error" and len(calls) == 3, err
+
+# End to end: dropped connections on every attempt -> fallback output, exit 0.
+orig_urlopen, orig_sleep = r.urllib.request.urlopen, r._sleep
+
+
+def always_drop(req, timeout=None):
+    raise rd
+
+
+r.urllib.request.urlopen = always_drop
+r._sleep = lambda s: None
+try:
+    code = r.main(
+        [
+            "--profile", "release",
+            "--download-dir", os.environ["GITHUB_OUTPUT"] + ".dl",
+            "--sha", "a" * 40,
+            "--repository", "akirilyuk/node-webrtc-rust",
+            "--token", "tok",
+        ]
+    )
+finally:
+    r.urllib.request.urlopen, r._sleep = orig_urlopen, orig_sleep
+assert code == 0, code
+out = Path(os.environ["GITHUB_OUTPUT"]).read_text()
+assert "bundle_reused=false" in out, out
+assert "fallback_reason=network_error" in out, out
+print("ok: transient network errors retry and fall back")
+PY
+
 echo "==> cache-key wiring uses native-v3 + target"
 export NATIVE_TOOL_MODE=declared
 key="$(python3 scripts/ci/native_build_contract.py cache-key --target x86_64-unknown-linux-gnu --profile release)"

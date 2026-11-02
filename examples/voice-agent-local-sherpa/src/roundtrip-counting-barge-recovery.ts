@@ -15,6 +15,8 @@
 
 import type { LocalAudioTrack } from '@node-webrtc-rust/sdk'
 import {
+  SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS,
+  SPEECH_EVENT_TYPE,
   VoiceAgent,
   VOICE_AGENT_VAD_PRESET,
   type VoiceAgentConfig,
@@ -106,14 +108,133 @@ const DEFAULT_INTER_ROUND_GAP_S = 1.0
 /** Ms after agent2 TTS playback starts before barge TTS (mid-playback). */
 const DEFAULT_BARGE_DELAY_MS = 400
 const DEFAULT_BARGE_TONE_S = 1.5
-/** Interrupted leg B must retain fewer number words than this. */
-const DEFAULT_MAX_INTERRUPT_NUMBER_WORDS = 7
+/** Number words in the counting payload (`one` … `ten`). */
+const COUNTING_NUMBER_WORDS = 10
+
+export interface InterruptedLegCaps {
+  /** Ms of agent2 playback that may reach agent1 before the flush (onset + latency bound). */
+  windowMs: number
+  /** Words agent2 speaks per ms, measured on the full (uninterrupted) round 1 echo. */
+  wordsPerMs: number
+  maxNumberWords: number
+  maxSimilarity: number
+  /** False when the window covers the whole echo, so the leg could not prove truncation. */
+  provesTruncation: boolean
+}
+
 /**
- * Interrupted leg B similarity vs full echo text must stay below this.
- * Default raised from 0.55: `minSttPartialTokens` (2) delays barge until a multi-word
- * partial, so more of the echo is heard before flush (CI saw ~60%).
+ * Caps for the interrupted leg B, derived from the product's promised semantic barge latency
+ * (`SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS`, Rust `crates/speech/src/config.rs`) and the speech
+ * rate of the same echo measured in round 1. Never a hand-set word count: the old fixed 7 / 0.7
+ * assumed a barge latency the product never promised and failed whenever the first partial after
+ * the barge onset held only one token (`test.wrong-oracle`, nwr CI run 41462309917).
+ *
+ * Words heard = every word agent2 started before the flush (`ceil`), plus one word in flight on
+ * the wire / recognizer when the flush lands.
  */
-const DEFAULT_MAX_INTERRUPT_SIMILARITY = 0.7
+export function deriveInterruptedLegCaps(params: {
+  /** Whitespace tokens of the full echo text (`You said: One, two … ten` → 12). */
+  fullEchoWords: number
+  /** agent2 `agent_speaking_start` → `agent_speaking_end` of the full round 1 echo. */
+  fullEchoDurationMs: number
+  /** agent2 `agent_speaking_start` → barge phrase onset (agent1 `agent_speaking_start`). */
+  bargeOnsetAfterSpeakStartMs: number
+  /** Tokens before the numbers (`You said`). */
+  prefixWords: number
+  latencyBoundMs?: number
+}): InterruptedLegCaps {
+  // Lockstep: SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS is the product bound this leg asserts.
+  const latencyBoundMs = params.latencyBoundMs ?? SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS
+  const wordsPerMs = params.fullEchoWords / Math.max(1, params.fullEchoDurationMs)
+  const windowMs = Math.max(0, params.bargeOnsetAfterSpeakStartMs) + latencyBoundMs
+  const maxWordsHeard = Math.ceil(wordsPerMs * windowMs) + 1
+  const maxNumberWords = Math.max(
+    0,
+    Math.min(COUNTING_NUMBER_WORDS, maxWordsHeard - params.prefixWords),
+  )
+  return {
+    windowMs,
+    wordsPerMs,
+    maxNumberWords,
+    maxSimilarity: maxNumberWords / COUNTING_NUMBER_WORDS,
+    provesTruncation: maxNumberWords < COUNTING_NUMBER_WORDS,
+  }
+}
+
+/** First `agent_speaking_start` → next `agent_speaking_end` in one agent's recorded events. */
+export function agentSpeakingSpanMs(events: CollectedSpeechEvent[]): number | null {
+  const start = events.find((e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingStart)
+  if (!start) return null
+  const end = events.find(
+    (e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingEnd && e.atMs >= start.atMs,
+  )
+  return end ? end.atMs - start.atMs : null
+}
+
+export interface BargeLatencyResult {
+  /** agent2 speaking start → barge onset (agent1 speaking start). */
+  onsetAfterSpeakStartMs: number | null
+  /** Barge onset → agent2 `barge_in`. */
+  latencyMs: number | null
+  failures: string[]
+}
+
+/**
+ * Asserts barge-in fired, and within `SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS` of the barge
+ * phrase onset. Both event lists are recorded from the same instant (see
+ * `playEchoLegBWithBargeIn`), so their `atMs` share a clock.
+ */
+export function evaluateBargeLatency(params: {
+  agent1Events: CollectedSpeechEvent[]
+  agent2Events: CollectedSpeechEvent[]
+  /** agent2 speaking span of the full round 1 echo ({@link agentSpeakingSpanMs}). */
+  fullEchoDurationMs: number | null
+  latencyBoundMs?: number
+}): BargeLatencyResult {
+  const latencyBoundMs = params.latencyBoundMs ?? SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS
+  const failures: string[] = []
+  const speakStart = params.agent2Events.find(
+    (e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingStart,
+  )
+  const onset = params.agent1Events.find(
+    (e) =>
+      e.type === SPEECH_EVENT_TYPE.agentSpeakingStart && (!speakStart || e.atMs >= speakStart.atMs),
+  )
+  const barge = params.agent2Events.find((e) => e.type === SPEECH_EVENT_TYPE.bargeIn)
+  if (!speakStart) failures.push('interrupted leg B: agent2 agent_speaking_start missing')
+  if (!onset)
+    failures.push('interrupted leg B: barge phrase onset (agent1 agent_speaking_start) missing')
+  if (!barge) failures.push('interrupted leg B: barge_in never fired')
+  const onsetAfterSpeakStartMs = speakStart && onset ? onset.atMs - speakStart.atMs : null
+  const latencyMs = onset && barge ? barge.atMs - onset.atMs : null
+  if (latencyMs !== null && latencyMs > latencyBoundMs) {
+    failures.push(
+      `interrupted leg B: barge_in ${latencyMs}ms after barge onset > SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS ${latencyBoundMs}ms`,
+    )
+  }
+  // Truncation is the product's own signal: the barge flush ends agent2's playback
+  // (`agent_speaking_end` follows `barge_in` within 1 ms on CI), well before the full echo would.
+  if (barge) {
+    const flushEnd = params.agent2Events.find(
+      (e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingEnd && e.atMs >= barge.atMs,
+    )
+    const span = agentSpeakingSpanMs(params.agent2Events)
+    if (!flushEnd) {
+      failures.push(
+        'interrupted leg B: playback not truncated (no agent_speaking_end after barge_in)',
+      )
+    } else if (
+      span !== null &&
+      params.fullEchoDurationMs !== null &&
+      span >= params.fullEchoDurationMs
+    ) {
+      failures.push(
+        `interrupted leg B: playback not truncated (agent2 spoke ${span}ms >= full echo ${params.fullEchoDurationMs}ms)`,
+      )
+    }
+  }
+  return { onsetAfterSpeakStartMs, latencyMs, failures }
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -132,11 +253,11 @@ export interface InterruptedEchoLegResult {
 export function evaluateInterruptedEchoLeg(params: {
   echoText: string
   recognized: string
-  maxNumberWords?: number
-  maxSimilarity?: number
+  /** From {@link deriveInterruptedLegCaps}. */
+  maxNumberWords: number
+  maxSimilarity: number
 }): InterruptedEchoLegResult {
-  const maxNumberWords = params.maxNumberWords ?? DEFAULT_MAX_INTERRUPT_NUMBER_WORDS
-  const maxSimilarity = params.maxSimilarity ?? DEFAULT_MAX_INTERRUPT_SIMILARITY
+  const { maxNumberWords, maxSimilarity } = params
   const recognized = params.recognized.trim()
   const failures: string[] = []
 
@@ -174,6 +295,7 @@ export function evaluateInterruptedEchoLeg(params: {
 export interface EchoLegBWithBargeInResult {
   recognized: string
   bargePhrase: string
+  agent1Events: CollectedSpeechEvent[]
   agent2Events: CollectedSpeechEvent[]
 }
 
@@ -213,6 +335,8 @@ export async function playEchoLegBWithBargeIn(params: {
   })
   const speakingStarted = params.collectorAgent2.waitForAgentSpeakingStart(params.timeoutMs)
   const finalsBaselineBeforeLeg = params.collectorAgent2.stats.finals.length
+  // Same instant for both recordings: their atMs share a clock (evaluateBargeLatency).
+  params.collectorAgent1.startEventRecording()
   params.collectorAgent2.startEventRecording()
   const speakPromise = params.agent2.sendTextToTTS(params.echoText)
 
@@ -243,9 +367,11 @@ export async function playEchoLegBWithBargeIn(params: {
 
   const [recognized] = await Promise.all([recognizedPromise, bargeTrailSilence, bargeFinalWait])
   const agent2Events = params.collectorAgent2.stopEventRecording()
+  const agent1Events = params.collectorAgent1.stopEventRecording()
   return {
     recognized,
     bargePhrase: params.bargePhrase,
+    agent1Events,
     agent2Events,
   }
 }
@@ -269,12 +395,6 @@ async function main(): Promise<void> {
   )
   const bargeDelayMs = Number(process.env.SHERPA_BARGE_RECOVERY_DELAY_MS ?? DEFAULT_BARGE_DELAY_MS)
   const bargeToneS = Number(process.env.SHERPA_BARGE_RECOVERY_TONE_S ?? DEFAULT_BARGE_TONE_S)
-  const maxInterruptWords = Number(
-    process.env.SHERPA_BARGE_RECOVERY_MAX_NUMBER_WORDS ?? DEFAULT_MAX_INTERRUPT_NUMBER_WORDS,
-  )
-  const maxInterruptSimilarity = Number(
-    process.env.SHERPA_BARGE_RECOVERY_MAX_SIMILARITY ?? DEFAULT_MAX_INTERRUPT_SIMILARITY,
-  )
   const guardMs = config.vad?.bargeIn?.agentPlaybackGuardMs ?? 1200
 
   const finalizeWaitMs = sttFinalizeWaitMs(config)
@@ -296,7 +416,7 @@ async function main(): Promise<void> {
   console.log(`SHERPA_TTS_MODEL_PATH=${ttsModelPath}`)
   console.log(`Steps: (1) count→You said OK  (2) count→barge→partial  (3) recovery→You said OK`)
   console.log(
-    `Barge: phrase="${bargePhrase}" delay=${bargeDelayMs}ms  tone=${bargeToneS}s  maxWords=${maxInterruptWords}  maxSim=${maxInterruptSimilarity}`,
+    `Barge: phrase="${bargePhrase}" delay=${bargeDelayMs}ms  tone=${bargeToneS}s  caps from SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS=${SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS}ms`,
   )
   console.log('')
 
@@ -365,12 +485,21 @@ async function main(): Promise<void> {
 
   const failures: string[] = []
 
+  // agent2 speaks only in leg B of round 1: its speaking span is the full echo duration, the
+  // speech rate the interrupted leg's caps are derived from.
+  collectorAgent2.startEventRecording()
   const round1 = await runEchoRound({
     ...roundParams,
     name: 'counting 1 (baseline)',
     kind: 'counting',
     sourcePhrase: countingPhrase,
   })
+  const round1Agent2Events = collectorAgent2.stopEventRecording()
+  const fullEchoText = formatAgent2EchoReply(round1.legA.recognized)
+  const fullEchoDurationMs = agentSpeakingSpanMs(round1Agent2Events)
+  if (fullEchoDurationMs === null) {
+    failures.push('round 1: agent2 speaking span (start → end) missing; cannot derive leg B caps')
+  }
   if (!round1.passed) failures.push(...round1.failures)
   else console.log('✓ Round 1: full You said counting')
 
@@ -423,11 +552,34 @@ async function main(): Promise<void> {
     logLabel: 'counting 2 agent2→agent1 (barge)',
   })
 
+  const bargeLatency = evaluateBargeLatency({
+    agent1Events: legB2.agent1Events,
+    agent2Events: legB2.agent2Events,
+    fullEchoDurationMs,
+  })
+  const caps = deriveInterruptedLegCaps({
+    fullEchoWords: fullEchoText.split(/\s+/).filter(Boolean).length,
+    fullEchoDurationMs: fullEchoDurationMs ?? 0,
+    bargeOnsetAfterSpeakStartMs: bargeLatency.onsetAfterSpeakStartMs ?? 0,
+    prefixWords:
+      fullEchoText.split(/\s+/).filter(Boolean).length -
+      echoPayloadForCompare(fullEchoText).split(/\s+/).filter(Boolean).length,
+  })
+  console.log(
+    `Leg B caps: barge latency=${bargeLatency.latencyMs}ms (bound ${SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS}ms) onset=+${bargeLatency.onsetAfterSpeakStartMs}ms window=${caps.windowMs}ms maxNumbers=${caps.maxNumberWords} maxSim=${caps.maxSimilarity.toFixed(2)}`,
+  )
+  failures.push(...bargeLatency.failures)
+  if (!caps.provesTruncation) {
+    // Truncation is still asserted by evaluateBargeLatency (flush end); only the word cap is moot.
+    console.log(
+      `Leg B word cap skipped: window ${caps.windowMs}ms covers the whole echo (onset +${bargeLatency.onsetAfterSpeakStartMs}ms)`,
+    )
+  }
   const interrupted = evaluateInterruptedEchoLeg({
     echoText: echoText2,
     recognized: legB2.recognized,
-    maxNumberWords: maxInterruptWords,
-    maxSimilarity: maxInterruptSimilarity,
+    maxNumberWords: caps.maxNumberWords,
+    maxSimilarity: caps.maxSimilarity,
   })
 
   const bargePhraseEval = evaluateBargeUtteranceFinal({
@@ -451,7 +603,7 @@ async function main(): Promise<void> {
     )
   }
 
-  if (!interrupted.passed) failures.push(...interrupted.failures)
+  if (caps.provesTruncation && !interrupted.passed) failures.push(...interrupted.failures)
   else console.log('✓ Round 2: barge-in truncated You said playback')
 
   if (!bargePhraseEval.passed) failures.push(...bargePhraseEval.failures)

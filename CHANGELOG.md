@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **bindings / sdk:** `synthesizeTts(config, text, timeoutMs?)` synthesizes a text once with a vendor and returns mono 24 kHz s16le PCM, using the same vendor code as `VoiceAgent`. Rejects with `invalid_input`, `vendor_rate_limited`, `vendor_key_invalid`, `vendor_timeout` or `vendor_error` (`SynthesizeTtsError.code` in the SDK); messages never contain the api key.
+
 ### Fixed
 
 - **speech:** `flushTts`, barge-in and `stop` now also cancel a send the synthesis worker has dequeued but not started yet. Before, such a send still played after the interruption and got no `agent_reply_end`. It now rejects with "TTS cancelled" and gets its interrupted `agent_reply_end` from the flush, before the queued replies' ends.

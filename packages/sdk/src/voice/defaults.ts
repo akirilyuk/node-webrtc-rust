@@ -10,6 +10,19 @@
 import type { VadConfig } from './types.js'
 
 /**
+ * Documented worst-case latency of semantic barge-in (`bargeIn.requireSttPartial`), in ms from
+ * caller speech onset to `barge_in`, with the default local Sherpa streaming STT.
+ *
+ * Barge-in fires on the first partial with `minSttPartialTokens` (2) tokens. Partials arrive about
+ * every 1280 ms; when the first one after onset holds one token, barge waits one more interval:
+ * 1440 ms (time to 2 tokens) + 1280 ms = 2720 ms (about 2.6 s observed on CI).
+ *
+ * Lockstep with Rust `SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS` (`crates/speech/src/config.rs`,
+ * guarded by `crates/speech/tests/semantic_barge_latency_test.rs`).
+ */
+export const SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS = 2720
+
+/**
  * Library defaults (`gateStt: false`).
  * Omit `vad` in {@link VoiceAgentConfig} to get the same behavior from Rust `VadConfig::default()`.
  */

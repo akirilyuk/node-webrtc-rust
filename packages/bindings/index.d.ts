@@ -232,6 +232,23 @@ export interface JsSessionFinalizeResult {
   outboundFrames: number
   inboundFrames: number
 }
+/** Mono 24 kHz s16le PCM of one synthesis. */
+export interface JsTtsSynthesis {
+  pcm: Buffer
+  sampleRate: number
+  channels: number
+}
+/**
+ * Synthesizes `text` once and returns mono 24 kHz s16le PCM.
+ *
+ * Rejects with an error whose message starts with `<code>: `, code one of `invalid_input`,
+ * `vendor_rate_limited`, `vendor_key_invalid`, `vendor_timeout`, `vendor_error`. The two status
+ * codes are set when the vendor error text carries the HTTP status (429; 401 or 403): OpenAI,
+ * Azure, Groq, Deepgram, ElevenLabs, Cartesia, Fish Audio and Mistral do. Any other failure is
+ * `vendor_error`. Messages never contain the api key. `timeoutMs` bounds the whole call
+ * (default 15000).
+ */
+export declare function synthesizeTts(config: JsTtsConfig, text: string, timeoutMs?: number | undefined | null): Promise<JsTtsSynthesis>
 /** The text a Sherpa TTS engine receives for a reply, and how many letters were uppercased. */
 export interface JsTtsEngineText {
   text: string

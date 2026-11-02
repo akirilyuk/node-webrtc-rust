@@ -18,12 +18,18 @@ export { VoiceAgent } from './VoiceAgent.js'
 export { preloadLanguageId } from './preload.js'
 export { ttsEngineText } from './tts-engine-text.js'
 export type { TtsEngineText } from './tts-engine-text.js'
+export { synthesizeTts, SynthesizeTtsError } from './synthesize-tts.js'
+export type { SynthesizeTtsErrorCode, TtsSynthesis } from './synthesize-tts.js'
 
 /** Stable event name constants for tests and harnesses. */
 export { SPEECH_EVENT_TYPE } from './types.js'
 
 /** VAD presets — prefer {@link VOICE_AGENT_VAD_PRESET} for production bots. */
-export { DEFAULT_VOICE_AGENT_VAD, VOICE_AGENT_VAD_PRESET } from './defaults.js'
+export {
+  DEFAULT_VOICE_AGENT_VAD,
+  SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS,
+  VOICE_AGENT_VAD_PRESET,
+} from './defaults.js'
 /** Speaker gate re-check timing (see `speakerGate.recheckOnOther`). */
 export {
   SPEAKER_GATE_RECHECK_MAX_WINDOWS,

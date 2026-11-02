@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-11-02
+
 ### Fixed
 
 - **speech / bindings / sdk:** concurrent `sendTextToTTS` calls are queued and played in call order. Before, each call raced to the queue on its own task, so under CPU load a later reply could play first. The queue place is now taken synchronously when `sendTextToTTS` is called. `flushTts` cancels every call made before it, including calls still on their way to the queue, and keeps later calls. Rust callers can take places with `reserve_tts_send_for_reply(reply_id)` / `reserve_tts_send()` and send with `send_text_to_tts_reserved` (the options' `reply_id` must match the ticket's, otherwise config error); `begin_flush_tts` + `flush_tts_from` split a flush. A send cancelled before it reached the queue gets its `agent_reply_end` from the flush, once, after the queued replies.

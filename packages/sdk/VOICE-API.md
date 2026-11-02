@@ -67,6 +67,30 @@ With **`interruptible: false`** the utterance is protected while it synthesizes 
 
 With **`replyId`** the reply is tagged for per-reply events (see `agent_reply_start` / `agent_reply_end` below). Use a unique id per call. Replies sent without it behave as before and emit none of these events.
 
+## `synthesizeTts`
+
+One-shot text-to-speech without a session: runs the same vendor code as `VoiceAgent` and returns the audio.
+
+```ts
+import { synthesizeTts, SynthesizeTtsError } from '@node-webrtc-rust/sdk/voice'
+
+try {
+  const { pcm, sampleRate, channels } = await synthesizeTts(
+    { provider: 'openai', apiKey, voice: 'alloy' },
+    'Hello there',
+    10_000, // timeoutMs, default 15000
+  )
+  // pcm: mono s16le at 24000 Hz (sampleRate 24000, channels 1)
+} catch (error) {
+  if (error instanceof SynthesizeTtsError) console.log(error.code)
+}
+```
+
+- `text` is 1 to 1000 characters.
+- The vendor key goes in `config.apiKey` (never read from the environment by the caller's choice); error messages never contain it.
+- `error.code` is one of `invalid_input`, `vendor_rate_limited` (the vendor answered HTTP 429), `vendor_key_invalid` (HTTP 401 or 403), `vendor_timeout` (the call did not finish within `timeoutMs`) or `vendor_error`. The status is read from the vendor crate's error text; other failures are `vendor_error`.
+- Native name: `synthesizeTts` in `@node-webrtc-rust/bindings`; it rejects with a message starting `<code>: `, which the SDK wrapper turns into `error.code`.
+
 ## Speech events
 
 | `SpeechEventType`              | When emitted                                                                                                                               | Typical use                                                                                                                                                                                                                                                                           |

@@ -18,6 +18,8 @@ export { VoiceAgent } from './VoiceAgent.js'
 export { preloadLanguageId } from './preload.js'
 export { ttsEngineText } from './tts-engine-text.js'
 export type { TtsEngineText } from './tts-engine-text.js'
+export { synthesizeTts, SynthesizeTtsError } from './synthesize-tts.js'
+export type { SynthesizeTtsErrorCode, TtsSynthesis } from './synthesize-tts.js'
 
 /** Stable event name constants for tests and harnesses. */
 export { SPEECH_EVENT_TYPE } from './types.js'

@@ -52,3 +52,7 @@ log = "0.4"
 
 [build-dependencies]
 napi-build = "2"
+
+[dev-dependencies]
+async-trait = "0.1"
+tokio = { workspace = true, features = ["time", "macros", "rt"] }

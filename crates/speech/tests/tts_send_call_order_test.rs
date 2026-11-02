@@ -1079,3 +1079,218 @@ async fn flush_after_take_back_before_streaming_start_cancels_job() {
     );
     agent.stop().await.unwrap();
 }
+
+// ---------------------------------------------------------------------------------------------
+// A send checks "TTS configured" without the provider lock the worker holds for a whole vendor
+// call, so it reaches the queue while a synthesis runs.
+// ---------------------------------------------------------------------------------------------
+
+/// Spawns blocking send A (`text`, which must start with `park`, reply r1) and waits until it
+/// sits inside the vendor call. Each test uses its own texts: the process-wide phrase cache
+/// would serve a text another test already synthesized without calling the vendor.
+async fn park_a_in_vendor(
+    agent: &Arc<VoiceAgent>,
+    probe: &Probe,
+    text: &'static str,
+) -> (
+    tokio::task::JoinHandle<SpeechResult<()>>,
+    oneshot::Sender<()>,
+) {
+    let (entered, release_vendor) = probe.arm_park();
+    let a = {
+        let agent = Arc::clone(agent);
+        tokio::spawn(async move {
+            agent
+                .send_text_to_tts_with_options(text, blocking("r1"))
+                .await
+        })
+    };
+    timeout(BOUND, entered)
+        .await
+        .expect("A reaches the vendor")
+        .unwrap();
+    (a, release_vendor)
+}
+
+/// While A is parked in the vendor, a `nonBlocking` send B resolves and is in the queue: a
+/// flush taken while A is still parked ends r2 (interrupted) itself, and B never synthesizes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn nonblocking_send_queues_while_synthesis_runs() {
+    let (agent, probe) = probe_agent(CutBy::Flush).await;
+    let mut rx = agent.subscribe_events();
+    let (a, release_vendor) = park_a_in_vendor(&agent, &probe, "park nb a").await;
+
+    timeout(
+        BOUND,
+        agent.send_text_to_tts_with_options("nb b", tagged("r2")),
+    )
+    .await
+    .expect("nonBlocking B resolves while A is still inside the vendor call")
+    .unwrap();
+    assert!(!a.is_finished(), "A is still parked in the vendor");
+
+    timeout(BOUND, agent.flush_tts())
+        .await
+        .expect("flush bounded")
+        .unwrap();
+    let at_flush = drain_now(&mut rx);
+    assert_eq!(
+        reply_ends(&at_flush)
+            .into_iter()
+            .filter(|(id, _)| id == "r2")
+            .collect::<Vec<_>>(),
+        vec![("r2".to_string(), Some(true))],
+        "the flush finds B queued and ends r2 once, interrupted: {at_flush:?}"
+    );
+
+    let _ = release_vendor.send(());
+    let _ = timeout(BOUND, a).await.expect("A bounded").unwrap();
+    timeout(
+        BOUND,
+        agent.send_text_to_tts_with_options("nb z", blocking("rz")),
+    )
+    .await
+    .expect("z bounded")
+    .unwrap();
+    assert!(!probe.reached_vendor("nb b"), "B never synthesizes");
+    agent.stop().await.unwrap();
+}
+
+/// With A parked in the vendor, blocking send B is queued at once (a later `nonBlocking` send C
+/// can only queue after B claimed its turn, and C resolves while A is parked), but B resolves
+/// only after A is released and B itself played.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn blocking_send_resolves_after_own_playback() {
+    let (agent, probe) = probe_agent(CutBy::Flush).await;
+    let mut rx = agent.subscribe_events();
+    let (a, release_vendor) = park_a_in_vendor(&agent, &probe, "park bl a").await;
+
+    let b = {
+        let agent = Arc::clone(&agent);
+        tokio::spawn(async move {
+            agent
+                .send_text_to_tts_with_options("bl b", blocking("r2"))
+                .await
+        })
+    };
+    timeout(
+        BOUND,
+        agent.send_text_to_tts_with_options("bl c", tagged("r3")),
+    )
+    .await
+    .expect("C (after B in ticket order) resolves while A is parked, so B is queued")
+    .unwrap();
+    assert!(!a.is_finished(), "A is still parked in the vendor");
+    assert!(!b.is_finished(), "B waits for its own playback");
+    assert!(!probe.reached_vendor("bl b"), "B has not synthesized yet");
+
+    let _ = release_vendor.send(());
+    timeout(BOUND, a)
+        .await
+        .expect("A bounded")
+        .unwrap()
+        .unwrap();
+    timeout(BOUND, b)
+        .await
+        .expect("B bounded")
+        .unwrap()
+        .unwrap();
+    assert!(
+        probe.reached_vendor("bl b"),
+        "B synthesized before it resolved"
+    );
+    let seen = recv_until_reply_end(&mut rx, "r2").await;
+    let ends = reply_ends(&seen);
+    let pos = |id: &str| ends.iter().position(|(r, _)| r == id);
+    assert!(pos("r1") < pos("r2"), "r1 ends before r2: {ends:?}");
+    assert_ne!(
+        ends[pos("r2").unwrap()].1,
+        Some(true),
+        "r2 played, not interrupted: {ends:?}"
+    );
+    agent.stop().await.unwrap();
+}
+
+/// Without a TTS config a send fails with the same config error as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn send_without_tts_config_fails_same_error() {
+    let agent = make_agent(false).await;
+    for opts in [blocking("r1"), tagged("r2")] {
+        let err = timeout(BOUND, agent.send_text_to_tts_with_options("hello", opts))
+            .await
+            .expect("bounded")
+            .unwrap_err();
+        match err {
+            node_webrtc_rust_speech::error::SpeechError::Config(msg) => {
+                assert_eq!(msg, "TTS not configured")
+            }
+            other => panic!("expected Config(\"TTS not configured\"), got {other:?}"),
+        }
+    }
+    agent.stop().await.unwrap();
+}
+
+/// Reconfigures race sends with tickets (all released by one barrier): every send resolves Ok,
+/// and a blocking send after the race still plays (no ticket stalls the sequencer).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn configure_races_send() {
+    let (agent, probe) = probe_agent(CutBy::Flush).await;
+    let tts_config = config(true).tts.unwrap();
+    let barrier = Arc::new(tokio::sync::Barrier::new(2 * N as usize));
+    let mut sends = Vec::new();
+    let mut updates = Vec::new();
+    for i in 0..N {
+        let ticket = agent.reserve_tts_send_for_reply(Some(&format!("r{i}")));
+        let (agent_s, barrier_s) = (Arc::clone(&agent), Arc::clone(&barrier));
+        sends.push(tokio::spawn(async move {
+            barrier_s.wait().await;
+            let opts = if i % 2 == 0 {
+                blocking(&format!("r{i}"))
+            } else {
+                tagged(&format!("r{i}"))
+            };
+            agent_s
+                .send_text_to_tts_reserved(ticket, &format!("cr s {i}"), opts)
+                .await
+        }));
+        let (agent_u, barrier_u, cfg) =
+            (Arc::clone(&agent), Arc::clone(&barrier), tts_config.clone());
+        updates.push(tokio::spawn(async move {
+            barrier_u.wait().await;
+            agent_u
+                .update_tts_config(
+                    cfg,
+                    node_webrtc_rust_speech::config::UpdateTtsConfigOptions {
+                        cancel_inflight: false,
+                    },
+                )
+                .await
+        }));
+    }
+    for u in updates {
+        timeout(BOUND, u)
+            .await
+            .expect("update bounded")
+            .unwrap()
+            .unwrap();
+    }
+    for (i, s) in sends.into_iter().enumerate() {
+        timeout(BOUND, s)
+            .await
+            .expect("send bounded")
+            .unwrap()
+            .unwrap_or_else(|e| panic!("send {i}: {e}"));
+    }
+    timeout(
+        BOUND,
+        agent.send_text_to_tts_with_options("cr after race", blocking("rz")),
+    )
+    .await
+    .expect("send after the race bounded")
+    .unwrap();
+    assert!(
+        probe.reached_vendor("cr after race"),
+        "the later send played"
+    );
+    agent.stop().await.unwrap();
+}

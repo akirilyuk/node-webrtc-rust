@@ -602,6 +602,12 @@ pub struct VoiceAgent {
     /// Test hook: verdicts the handler has finished applying.
     speaker_verdicts_applied: AtomicU64,
     tts: Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
+    /// Whether `tts` holds a provider. Written while holding the `tts` lock at every writer of
+    /// `tts` (constructor, `apply_pending_tts_config_if_any`), read by sends without that lock:
+    /// the synthesis worker holds `tts` for a whole vendor call, and a send must reach the
+    /// queue without waiting for it (`rt.serial-queue-head-of-line`). The worker still checks
+    /// the provider itself before synthesis.
+    tts_configured: AtomicBool,
     tts_drain_wake: Arc<Notify>,
     tts_drain_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     tts_synthesis_queue: Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
@@ -806,6 +812,7 @@ impl VoiceAgent {
             speaker_finals_parked: std::sync::atomic::AtomicBool::new(false),
             speaker_finals_release: Notify::new(),
             speaker_verdicts_applied: AtomicU64::new(0),
+            tts_configured: AtomicBool::new(tts.is_some()),
             tts: Arc::new(Mutex::new(tts)),
             tts_drain_wake: Arc::new(Notify::new()),
             tts_drain_worker: Arc::new(Mutex::new(None)),
@@ -1432,7 +1439,11 @@ impl VoiceAgent {
         let session_ctx = self.inner.lock().await.otel.session_context.clone();
         let new_tts = wrap_tts_for_agent(self.registry.create_tts(&config)?, &config);
         new_tts.bind_session_context(&session_ctx);
-        *self.tts.lock().await = Some(new_tts);
+        {
+            let mut tts = self.tts.lock().await;
+            *tts = Some(new_tts);
+            self.tts_configured.store(true, Ordering::SeqCst);
+        }
         {
             let mut inner = self.inner.lock().await;
             inner.config.tts = Some(config.clone());
@@ -2189,11 +2200,9 @@ impl VoiceAgent {
             hook(ticket.id()).await;
         }
 
-        {
-            let tts = self.tts.lock().await;
-            if tts.is_none() {
-                return Err(SpeechError::Config("TTS not configured".into()));
-            }
+        // Not `self.tts.lock()`: the worker holds that lock for a whole synthesis.
+        if !self.tts_configured.load(Ordering::SeqCst) {
+            return Err(SpeechError::Config("TTS not configured".into()));
         }
 
         let (done_tx, done_rx) = if options.non_blocking {
@@ -2397,7 +2406,9 @@ impl VoiceAgent {
                     //     epoch. A later cut no longer finds the job held; the synthesis job owns
                     //     its reply end then and catches the cut through the epoch: the streaming
                     //     path checks it right after resetting `generate_cancel` (before the
-                    //     vendor call) and per chunk, the buffered path before it enqueues PCM.
+                    //     vendor call) and once more after the vendor call ends (per chunk it
+                    //     checks the buffer generation, not the epoch); the buffered path checks
+                    //     it before it enqueues PCM.
                     let taken = {
                         let _pending = queue.lock().await;
                         let job = held_job.lock().unwrap_or_else(|e| e.into_inner()).take();

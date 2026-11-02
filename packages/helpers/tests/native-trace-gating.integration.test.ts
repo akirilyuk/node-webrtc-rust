@@ -109,9 +109,57 @@ describe.skipIf(typeof RTCPeerConnection !== 'function')('native trace env gatin
       WNR_LOG_SEGMENT_BYTES: String(seg),
     })
     expect(r.status, r.stderr).toBe(0)
-    const files = readdirSync(dir).sort()
-    expect(files).toHaveLength(2)
-    expect(files[1]).toMatch(/\.log\.1$/)
-    for (const f of files) expect(statSync(join(dir, f)).size).toBeLessThanOrEqual(seg)
+    const files = readdirSync(dir)
+    const sizes = Object.fromEntries(files.map((f) => [f, statSync(join(dir, f)).size]))
+    expect(boundedSegmentsViolation(files, sizes, seg)).toBeNull()
+  })
+})
+
+/**
+ * The rotation contract: a rotation happened (`<path>.1` exists), no file other than `<path>`
+ * and `<path>.1`, each at most one segment. `<path>` itself may be missing: the child exits while
+ * native threads can still be logging, and exit can land inside a rotation, after
+ * `<path>` → `<path>.1` and before the new `<path>` is created. Returns null when the contract
+ * holds, else the reason.
+ */
+function boundedSegmentsViolation(
+  files: string[],
+  sizes: Record<string, number>,
+  seg: number,
+): string | null {
+  const older = files.find((f) => /^native-\d+\.log\.1$/.test(f))
+  if (!older) return `no rotated segment in [${files.join(', ')}]`
+  const current = older.slice(0, -'.1'.length)
+  const extra = files.filter((f) => f !== older && f !== current)
+  if (extra.length > 0) return `unexpected files [${extra.join(', ')}]`
+  const big = files.filter((f) => sizes[f] > seg)
+  if (big.length > 0) return `over ${seg} bytes: [${big.join(', ')}]`
+  return null
+}
+
+describe('boundedSegmentsViolation', () => {
+  const seg = 100
+  it('accepts the current and the rotated segment', () => {
+    const files = ['native-7.log', 'native-7.log.1']
+    expect(boundedSegmentsViolation(files, { [files[0]]: 10, [files[1]]: 100 }, seg)).toBeNull()
+  })
+  it('accepts exit inside a rotation (only the rotated segment exists)', () => {
+    expect(boundedSegmentsViolation(['native-7.log.1'], { 'native-7.log.1': 90 }, seg)).toBeNull()
+  })
+  it('rejects a run without rotation', () => {
+    expect(boundedSegmentsViolation(['native-7.log'], { 'native-7.log': 90 }, seg)).toMatch(
+      /no rotated segment/,
+    )
+  })
+  it('rejects a third segment', () => {
+    const files = ['native-7.log', 'native-7.log.1', 'native-7.log.2']
+    const sizes = Object.fromEntries(files.map((f) => [f, 10]))
+    expect(boundedSegmentsViolation(files, sizes, seg)).toMatch(/unexpected files/)
+  })
+  it('rejects a segment over the bound', () => {
+    const files = ['native-7.log', 'native-7.log.1']
+    expect(boundedSegmentsViolation(files, { [files[0]]: 101, [files[1]]: 10 }, seg)).toMatch(
+      /over 100 bytes/,
+    )
   })
 })

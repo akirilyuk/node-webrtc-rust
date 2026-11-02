@@ -8,18 +8,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Added
-
-- **speech / bindings / sdk:** `speakerGate.recheckMaxWindows` (default 12, `0` = no cap, `1` rejected) caps the check windows scored per utterance. Finals carry `speakerCheckWindows`. `speakerRecheckBargeEarliestMs(checkSpeechMs, window)` gives the earliest barge-in for the n-th window, and `SPEAKER_GATE_RECHECK_MAX_WINDOWS` mirrors the default.
-
-### Changed
-
-- **speech / sdk:** the speaker gate keeps re-checking while the verdict is `other` (was one re-check). Set `recheckMaxWindows: 2` for the 0.15.0 behaviour. A barge-in held for a re-check fires only into the reply that was playing when it was held and always comes before its utterance's final.
-- **speech:** a `short` speaker verdict is provisional while its utterance can continue. Speech that resumes within the brief gap joining it to the same utterance is checked (as window 2, counted in `speakerCheckWindows` and towards `recheckMaxWindows`), so a caller there is recognised and a bystander there no longer barges in unchecked.
-- **speech:** a barge-in attempt during a provisional `short` verdict is held until the verdict settles (a rejoined check scores it, or the STT gate hold expires without a rejoin), so babble in the STT pre-roll no longer barges in before any window is scored. A short caller barge-in still fires, `sttGateHoldMs` after its speech end.
-- **sdk:** `speakerRecheckBargeEarliestMs` now takes the window number as a second argument. `SPEAKER_GATE_RECHECK_WINDOWS` is deprecated; use `speakerCheckWindows` on the final.
-
-## [0.15.0] - 2026-10-30
+## [0.15.0] - 2026-11-02
 
 ### Added
 
@@ -29,11 +18,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Finals carry `speaker`.
   - With `onMismatch: 'drop'`, a final from another speaker is dropped and a `user_speech_ignored` event is emitted.
   - `resetSpeakerEnrollment` clears the enrolled caller.
-  - Each utterance gets one check; only an `other` verdict can be re-checked once (`recheckOnOther`).
+  - Each utterance is checked on its first `checkSpeechMs` of speech. While the verdict is `other`, later windows are checked again (`recheckOnOther`, below).
   - Tested with bystanders 15 dB or more below the caller. A bystander about as loud as the caller can pass the check.
 - **speech / bindings / sdk:** `speakerGate.suppressShortBargeIn` (opt-in, default `false`): an utterance with less speech than `minCheckSpeechMs` suppresses its barge-in like `other`. Other `unknown` verdicts still fail open.
 - **speech / bindings / sdk:** `user_speech_final` carries `speakerUnknownReason` (`short`, `timeout`, `error`, `no_embedding`, `not_enrolled`, `no_check`) when `speaker` is `unknown`, so an app can tell "too short to check" from a failed check.
-- **speech / bindings / sdk:** `speakerGate.recheckOnOther` (default `true`): when an utterance's first check says `other` and the utterance keeps going, the next `checkSpeechMs` of speech is checked once more. A `caller` re-check releases the held barge-in (no earlier than `2 × checkSpeechMs` of speech, exported as `speakerRecheckBargeEarliestMs`) and labels the final `caller`; anything else keeps `other`. It never runs after a `caller` or `unknown` verdict. Finals carry `speakerRechecked: true` when a re-check was scored. This covers a TV or a colleague who talks right before the caller and runs into the caller's words.
+- **speech / bindings / sdk:** `speakerGate.recheckOnOther` (default `true`): while an utterance's verdict is `other` and the utterance keeps going, each further `checkSpeechMs` of speech is checked again, up to `speakerGate.recheckMaxWindows` windows per utterance (default 12, `0` = no cap, `1` rejected; `SPEAKER_GATE_RECHECK_MAX_WINDOWS` mirrors the default). A `caller` re-check releases the held barge-in and labels the final `caller`; anything else keeps `other`. `speakerRecheckBargeEarliestMs(checkSpeechMs, window)` gives the earliest barge-in for the n-th window. A held barge-in fires only into the reply that was playing when it was held, and always before its utterance's final. Re-checks never run after a `caller` verdict. Finals carry `speakerCheckWindows` (windows scored) and `speakerRechecked: true` when a re-check was scored. This covers a TV or a colleague who talks right before the caller and runs into the caller's words. `SPEAKER_GATE_RECHECK_WINDOWS` (2) is exported but deprecated; read `speakerCheckWindows` on the final instead.
+- **speech:** a `short` speaker verdict is provisional while its utterance can continue. Speech that resumes within the brief gap joining it to the same utterance is checked as the next window (counted in `speakerCheckWindows` and towards `recheckMaxWindows`), so a caller there is recognised and a bystander there does not barge in unchecked. A barge-in attempt during a provisional `short` verdict is held until the verdict settles: a rejoined check scores it, or the STT gate hold expires without a rejoin. Babble in the STT pre-roll therefore cannot barge in before any window is scored, while a short caller barge-in still fires, `sttGateHoldMs` after its speech end.
 - **bench:** `speaker_bench --fixed-threshold <t> --recheck` adds the two-window (re-check) FAR on impostor segments long enough for two windows.
 - **bench:** `speaker_bench --checks <seconds,...>` sets the Part 1 check lengths, and `--fixed-threshold <t>` scores every length at one threshold (`part1_fixed.md`).
 - **speech / bindings / sdk:** `barge_in` carries the `utteranceId` of the interrupting utterance, so consumers can pair it with its utterance by id. It is unset for a manual flush and for the standalone VAD.

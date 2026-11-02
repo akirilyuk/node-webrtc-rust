@@ -80,6 +80,76 @@ pub fn prepare_engine_text(text: &str, mode: SentenceCase) -> EngineText<'_> {
     }
 }
 
+/// Longest opener (in letters) that [`merge_short_opener`] merges into the next sentence.
+pub const MAX_OPENER_LETTERS: usize = 6;
+
+/// Merges a lone short opener into the sentence after it: `Hi! Ask me anything.` becomes
+/// `Hi, ask me anything.`.
+///
+/// Kitten nano renders a one-word opener about 18 dB below the sentence after it, with a long
+/// near-silent gap, and the recognizer then drops the word. Measurements and the decision to
+/// apply this to Kitten models only: `docs/tts-opener-sweep-2026-10-31.md`.
+///
+/// The text is returned borrowed unless all of these hold:
+/// - the first whitespace-separated token is 2 to [`MAX_OPENER_LETTERS`] ASCII letters followed by
+///   exactly one `!` or `.` (so `Hi!!`, `Hi...`, `Hi?`, `Hi?!`, `Got it!`, `5!` and `Да!` do not
+///   match);
+/// - the word is not one of the abbreviations that end in `.` without ending a sentence
+///   (`Dr.`, `Mr.`, `Etc.`);
+/// - whitespace and then text with at least one letter or digit follow.
+///
+/// The word keeps its case; the rest follows after `, `. The first letter of the rest is
+/// lowercased only when its first word is an ASCII capitalized word of 2 or more letters
+/// (`Ask`), so `VoiceThere`, `NASA`, `I` and `I'm` keep their case.
+pub fn merge_short_opener(text: &str) -> Cow<'_, str> {
+    let Some(token_end) = text.find(char::is_whitespace) else {
+        return Cow::Borrowed(text);
+    };
+    let token = &text[..token_end];
+    let Some(word) = token.strip_suffix(['!', '.']) else {
+        return Cow::Borrowed(text);
+    };
+    let letters = word.chars().count();
+    let is_opener = (2..=MAX_OPENER_LETTERS).contains(&letters)
+        && word.chars().all(|c| c.is_ascii_alphabetic())
+        && !NON_TERMINAL_ABBREVIATIONS.contains(&word.to_lowercase().as_str());
+    if !is_opener {
+        return Cow::Borrowed(text);
+    }
+    let rest = text[token_end..].trim_start();
+    if !rest.chars().any(char::is_alphanumeric) {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len() + 1);
+    out.push_str(word);
+    out.push_str(", ");
+    if starts_with_capitalized_word(rest) {
+        let mut chars = rest.chars();
+        if let Some(first) = chars.next() {
+            out.extend(first.to_lowercase());
+        }
+        out.push_str(chars.as_str());
+    } else {
+        out.push_str(rest);
+    }
+    Cow::Owned(out)
+}
+
+/// Whether the first word of `rest` is an ASCII capitalized word of 2 or more letters
+/// (`Ask`, not `I`, `I'm`, `NASA`, `VoiceThere`).
+fn starts_with_capitalized_word(rest: &str) -> bool {
+    let word: String = rest.chars().take_while(char::is_ascii_alphabetic).collect();
+    let mut chars = word.chars();
+    let (Some(first), true) = (chars.next(), word.len() >= 2) else {
+        return false;
+    };
+    // A non-ASCII letter right after the word means the word is longer than it looks.
+    let next = rest[word.len()..].chars().next();
+    first.is_ascii_uppercase()
+        && chars.all(|c| c.is_ascii_lowercase())
+        && !next.is_some_and(char::is_alphabetic)
+}
+
 /// A following fragment needs at least this many words to get a capital (see
 /// [`prepare_engine_text`]).
 const MIN_CAPITALIZED_FRAGMENT_WORDS: usize = 2;
@@ -128,6 +198,103 @@ fn ends_sentence_at(chars: &[char], i: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merges_every_short_opener() {
+        for opener in [
+            "Hi", "Hey", "Sure", "Yes", "No", "Okay", "OK", "Great", "Thanks", "Right", "Hello",
+            "Well", "So", "Oh", "Wow", "Yep", "Nope", "Cool", "Done",
+        ] {
+            let input = format!("{opener}! Ask me anything about VoiceThere.");
+            assert_eq!(
+                merge_short_opener(&input),
+                format!("{opener}, ask me anything about VoiceThere."),
+                "{opener}"
+            );
+        }
+        assert_eq!(merge_short_opener("Hi. Ask me."), "Hi, ask me.");
+    }
+
+    #[test]
+    fn two_word_opener_is_unchanged() {
+        for text in ["Got it! Ask me anything.", "Hello there! Ask me anything."] {
+            assert!(
+                matches!(merge_short_opener(text), Cow::Borrowed(_)),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn single_letter_numbers_and_abbreviations_are_unchanged() {
+        for text in [
+            "I. Am here.",
+            "A! Go now.",
+            "5! Ask me.",
+            "Dr. Smith is here.",
+            "Mr. Jones said hi.",
+            "Etc. And more.",
+        ] {
+            assert!(
+                matches!(merge_short_opener(text), Cow::Borrowed(_)),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn seven_letters_is_unchanged() {
+        assert!(matches!(
+            merge_short_opener("Awesome! Ask me."),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn lone_opener_stays() {
+        for text in ["Hi!", "Hi! ", "Hi! !!"] {
+            assert!(
+                matches!(merge_short_opener(text), Cow::Borrowed(_)),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_english_text_is_unaffected() {
+        for text in ["Да! Спросите меня.", "你好！请问。", "Ça! Va bien."] {
+            assert!(
+                matches!(merge_short_opener(text), Cow::Borrowed(_)),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn merge_keeps_the_case_of_names_and_i() {
+        assert_eq!(
+            merge_short_opener("Hi! VoiceThere is here."),
+            "Hi, VoiceThere is here."
+        );
+        assert_eq!(merge_short_opener("Hi! I can help."), "Hi, I can help.");
+        assert_eq!(merge_short_opener("Hi! I'm here."), "Hi, I'm here.");
+        assert_eq!(merge_short_opener("Hi! NASA called."), "Hi, NASA called.");
+    }
+
+    #[test]
+    fn terminator_variants_are_unchanged() {
+        for text in [
+            "Hi!! Ask me.",
+            "Hi?! Ask me.",
+            "Hi... Ask me.",
+            "Hi? Ask me.",
+        ] {
+            assert!(
+                matches!(merge_short_opener(text), Cow::Borrowed(_)),
+                "{text}"
+            );
+        }
+    }
 
     fn capitalize(text: &str) -> String {
         prepare_engine_text(text, SentenceCase::Auto)

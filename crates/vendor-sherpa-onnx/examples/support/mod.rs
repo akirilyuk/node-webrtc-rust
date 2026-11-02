@@ -8,6 +8,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
+use node_webrtc_rust_vendor_sherpa_onnx::{resolve_tts_model_paths, TtsModelFamily};
 use sherpa_onnx::{GenerationConfig, OfflineTts, OnlineRecognizer, OnlineRecognizerConfig};
 
 /// Recognizer input rate.
@@ -199,17 +200,49 @@ pub fn generation_config_sid(sid: i32) -> GenerationConfig {
 /// and the engine sample rate.
 ///
 /// [`engine_pieces`]: node_webrtc_rust_vendor_sherpa_onnx::engine_pieces
-pub fn synthesize(tts: &OfflineTts, text: &str) -> Result<(Vec<f32>, i32), String> {
-    synthesize_sid(tts, text, 0)
+pub fn synthesize(
+    tts: &OfflineTts,
+    text: &str,
+    family: TtsModelFamily,
+) -> Result<(Vec<f32>, i32), String> {
+    synthesize_family(tts, text, 0, family)
 }
 
-/// [`synthesize`] with speaker id `sid` (same `GenerationConfig` otherwise).
+/// The model family of the bundle in `model_dir`, as nwr resolves it.
+pub fn tts_family(model_dir: &Path) -> Result<TtsModelFamily, String> {
+    use node_webrtc_rust_speech::config::{SentenceCase, TtsConfig, TtsVendor};
+    let config = TtsConfig {
+        provider: TtsVendor::LocalSherpa,
+        model: None,
+        model_path: Some(model_dir.to_string_lossy().into_owned()),
+        voice: None,
+        api_key: None,
+        endpoint: None,
+        transport: None,
+        sentence_case: SentenceCase::Auto,
+    };
+    resolve_tts_model_paths(&config)
+        .map(|paths| paths.family)
+        .map_err(|e| e.to_string())
+}
+
+/// [`synthesize`] with speaker id `sid` for a VITS bundle (same `GenerationConfig` otherwise).
 pub fn synthesize_sid(tts: &OfflineTts, text: &str, sid: i32) -> Result<(Vec<f32>, i32), String> {
+    synthesize_family(tts, text, sid, TtsModelFamily::Vits)
+}
+
+/// [`synthesize`] with speaker id `sid` for a bundle of `family`.
+pub fn synthesize_family(
+    tts: &OfflineTts,
+    text: &str,
+    sid: i32,
+    family: TtsModelFamily,
+) -> Result<(Vec<f32>, i32), String> {
     use node_webrtc_rust_speech::config::SentenceCase;
     use node_webrtc_rust_speech::tts_cache::normalize_phrase_text;
     use node_webrtc_rust_vendor_sherpa_onnx::engine_pieces;
     let mut samples = Vec::new();
-    for piece in engine_pieces(&normalize_phrase_text(text), SentenceCase::Auto) {
+    for piece in engine_pieces(&normalize_phrase_text(text), SentenceCase::Auto, family) {
         let audio = tts
             .generate_with_config(
                 &piece,

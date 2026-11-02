@@ -5,7 +5,9 @@
 //! one waits for one sentence instead of the whole text.
 
 use node_webrtc_rust_speech::config::SentenceCase;
-use node_webrtc_rust_speech::tts_text::prepare_engine_text;
+use node_webrtc_rust_speech::tts_text::{merge_short_opener, prepare_engine_text};
+
+use crate::tts_model_paths::TtsModelFamily;
 
 /// Upper bound (in chars) for one synthesised piece. The ORT arena grows to the
 /// longest input it has seen, so very long inputs are cut at a comma or a space.
@@ -98,7 +100,9 @@ pub fn split_for_first_audio(text: &str) -> Vec<String> {
     pieces
 }
 
-/// The pieces nwr hands to the TTS engine for `normalized` text, in order: sentence-start
+/// The pieces nwr hands to the TTS engine for `normalized` text, in order: for
+/// [`TtsModelFamily::Kitten`] a lone short opener is merged into the next sentence first
+/// ([`merge_short_opener`]; Piper, Kokoro and other families keep their text), then sentence-start
 /// capitalization ([`prepare_engine_text`] under `mode`), then [`split_for_first_audio`]. Text
 /// without letters or digits goes to the engine whole.
 ///
@@ -106,8 +110,13 @@ pub fn split_for_first_audio(text: &str) -> Vec<String> {
 /// plays them back to back. Public (hidden) so the `phrase_sweep` example synthesizes the same
 /// engine calls instead of a copy of the split.
 #[doc(hidden)]
-pub fn engine_pieces(normalized: &str, mode: SentenceCase) -> Vec<String> {
-    let engine_text = prepare_engine_text(normalized, mode).text;
+pub fn engine_pieces(normalized: &str, mode: SentenceCase, family: TtsModelFamily) -> Vec<String> {
+    let merged = if family == TtsModelFamily::Kitten {
+        merge_short_opener(normalized)
+    } else {
+        std::borrow::Cow::Borrowed(normalized)
+    };
+    let engine_text = prepare_engine_text(&merged, mode).text;
     let mut pieces = split_for_first_audio(&engine_text);
     if pieces.is_empty() {
         pieces.push(engine_text.to_string());
@@ -473,6 +482,7 @@ mod tests {
         let pieces = engine_pieces(
             "this is a very long sentence, maybe the longest sentence ever spoken. it is so long, that the lenght of it cannot even be measured.",
             SentenceCase::Auto,
+            TtsModelFamily::Vits,
         );
         assert_eq!(
             pieces,
@@ -487,8 +497,23 @@ mod tests {
     #[test]
     fn engine_pieces_keeps_symbol_only_text_whole() {
         assert_eq!(
-            engine_pieces("...", SentenceCase::Auto),
+            engine_pieces("...", SentenceCase::Auto, TtsModelFamily::Vits),
             vec!["...".to_string()]
         );
+    }
+
+    #[test]
+    fn kitten_merges_the_opener() {
+        let text = "Hi! Ask me anything about VoiceThere.";
+        assert_eq!(
+            engine_pieces(text, SentenceCase::Auto, TtsModelFamily::Kitten),
+            vec!["Hi, ask me anything about VoiceThere.".to_string()]
+        );
+        for family in [TtsModelFamily::Vits, TtsModelFamily::Kokoro] {
+            assert_eq!(
+                engine_pieces(text, SentenceCase::Auto, family),
+                vec!["Hi! Ask me anything about VoiceThere.".to_string()]
+            );
+        }
     }
 }

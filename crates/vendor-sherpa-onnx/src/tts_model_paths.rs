@@ -97,6 +97,14 @@ pub fn resolve_tts_model_paths(config: &TtsConfig) -> SpeechResult<ResolvedTtsMo
     })
 }
 
+/// Whether the last component of `dir` names a Kitten bundle (`kitten*`, case-insensitive). No
+/// filesystem access: the family of a `voices.bin` bundle comes from its directory name.
+pub(crate) fn is_kitten_dir_name(dir: &Path) -> bool {
+    dir.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| name.to_lowercase().starts_with("kitten"))
+}
+
 /// Kokoro / Kitten bundle: `voices.bin` next to the model, family from the directory name.
 /// No rule FSTs are applied: the Kokoro multi-lang bundle ships Chinese normalizers only.
 fn resolve_voices_bundle(
@@ -110,7 +118,7 @@ fn resolve_voices_bundle(
         .to_lowercase();
     let family = if dir_name.starts_with("kokoro") {
         TtsModelFamily::Kokoro
-    } else if dir_name.starts_with("kitten") {
+    } else if is_kitten_dir_name(&model_dir) {
         TtsModelFamily::Kitten
     } else {
         return Err(SpeechError::Config(format!(
@@ -529,6 +537,86 @@ mod tests {
         assert_eq!(paths.model, dir.0.join("model.fp32.onnx"));
         assert!(paths.lexicons.is_empty());
         assert!(paths.dict_dir.is_none());
+    }
+
+    fn cache_text(dir: &TempDir) -> (String, bool) {
+        use node_webrtc_rust_speech::pipeline::TtsProvider;
+        let tts = crate::tts::SherpaTts::new(&dir.config());
+        let text = tts.phrase_cache_text("Hi! Ask me anything.");
+        let borrowed = matches!(text, std::borrow::Cow::Borrowed(_));
+        (text.into_owned(), borrowed)
+    }
+
+    #[test]
+    fn kitten_provider_merges_the_opener_in_its_cache_text() {
+        let dir = TempDir::named("kitten-nano-en-v0_8-fp32");
+        for name in ["model.fp32.onnx", "voices.bin", "tokens.txt"] {
+            dir.file(name);
+        }
+        dir.dir("espeak-ng-data");
+        assert_eq!(cache_text(&dir).0, "Hi, ask me anything.");
+    }
+
+    #[test]
+    fn kitten_int8_dir_is_kitten_too() {
+        let dir = TempDir::named("kitten-nano-en-v0_8-int8");
+        for name in ["model.int8.onnx", "voices.bin", "tokens.txt"] {
+            dir.file(name);
+        }
+        dir.dir("espeak-ng-data");
+        assert_eq!(cache_text(&dir).0, "Hi, ask me anything.");
+    }
+
+    #[test]
+    fn kokoro_provider_keeps_its_cache_text() {
+        let dir = TempDir::named("kokoro-multi-lang-v1_0");
+        for name in [
+            "model.onnx",
+            "voices.bin",
+            "tokens.txt",
+            "lexicon-us-en.txt",
+        ] {
+            dir.file(name);
+        }
+        dir.dir("espeak-ng-data");
+        assert_eq!(cache_text(&dir), ("Hi! Ask me anything.".to_string(), true));
+    }
+
+    #[test]
+    fn piper_provider_keeps_its_cache_text() {
+        let dir = TempDir::named("vits-piper-en_US-amy-medium");
+        dir.file("en_US-amy-medium.onnx");
+        dir.file("tokens.txt");
+        dir.dir("espeak-ng-data");
+        assert_eq!(cache_text(&dir), ("Hi! Ask me anything.".to_string(), true));
+    }
+
+    #[test]
+    fn is_kitten_dir_name_checks_the_last_component() {
+        assert!(is_kitten_dir_name(Path::new("/m/kitten-nano-en-v0_8-fp32")));
+        assert!(!is_kitten_dir_name(Path::new("/m/kokoro-multi-lang-v1_0")));
+        assert!(!is_kitten_dir_name(Path::new(
+            "/m/vits-piper-en_US-amy-medium"
+        )));
+        assert!(!is_kitten_dir_name(Path::new("/kitten/other")));
+    }
+
+    #[test]
+    fn cache_text_and_engine_text_use_the_same_model_family() {
+        // `synthesize_miss` needs a loaded engine, so pin the wiring in the source.
+        let src = include_str!("tts.rs");
+        let miss = src
+            .split("async fn synthesize_miss(")
+            .nth(1)
+            .and_then(|rest| rest.split("/// One resampler shared").next())
+            .expect("synthesize_miss body");
+        assert!(miss.contains("self.model_family()"));
+        let cache = src
+            .split("fn phrase_cache_text<")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn synthesize(").next())
+            .expect("phrase_cache_text body");
+        assert!(cache.contains("self.model_family()"));
     }
 
     #[test]

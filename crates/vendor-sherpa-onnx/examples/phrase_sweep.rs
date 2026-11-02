@@ -52,7 +52,7 @@ mod audio;
 
 use support::{
     add_at, babble_clear_start, create_recognizer, create_tts, normalize_to, recognize,
-    resample_linear, synthesize, synthesize_sid, write_wav, Rng, TEST_VOICES,
+    resample_linear, synthesize, synthesize_sid, tts_family, write_wav, Rng, TEST_VOICES,
 };
 
 const LEAD_SILENCE_MS: usize = 300;
@@ -377,6 +377,7 @@ fn run_babble(
     voices_root: &std::path::Path,
     recognizer: &sherpa_onnx::OnlineRecognizer,
     tts: &sherpa_onnx::OfflineTts,
+    family: node_webrtc_rust_vendor_sherpa_onnx::TtsModelFamily,
 ) -> Result<String, String> {
     let vad = node_webrtc_rust_speech::config::VadConfig::default();
     let lead_ms = BABBLE_LEAD_MS;
@@ -388,7 +389,7 @@ fn run_babble(
         let mut tally = Tally::new();
         let mut misses = 0usize;
         for i in 0..args.n {
-            let (raw, rate) = synthesize(tts, &args.phrase)?;
+            let (raw, rate) = synthesize(tts, &args.phrase, family)?;
             let (clip, _) = to_recognizer_rate(raw, rate)?;
             let clip = normalize_to(&clip, caller_db as f32);
             let onset = ms(lead_ms);
@@ -440,11 +441,12 @@ fn run_babble(
 fn run(args: &Args) -> Result<String, String> {
     let recognizer = create_recognizer(&args.stt)?;
     let tts = create_tts(&args.tts)?;
+    let family = tts_family(&args.tts)?;
     if let Some(dir) = &args.dump_misses {
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     }
     if let Some(voices_root) = &args.babble {
-        return run_babble(args, voices_root, &recognizer, &tts);
+        return run_babble(args, voices_root, &recognizer, &tts, family);
     }
     let lead = vec![0.0_f32; SAMPLE_RATE as usize * LEAD_SILENCE_MS / 1000];
     let tail = vec![0.0_f32; SAMPLE_RATE as usize * TAIL_SILENCE_MS / 1000];
@@ -454,7 +456,7 @@ fn run(args: &Args) -> Result<String, String> {
     let mut resampled = false;
 
     for i in 0..args.n {
-        let (raw, rate) = synthesize(&tts, &args.phrase)?;
+        let (raw, rate) = synthesize(&tts, &args.phrase, family)?;
         match tts_rate {
             Some(first) if first != rate => {
                 return Err(format!(
@@ -627,10 +629,11 @@ mod tests {
         // ones through the product's own split, not a copy of it.
         let src = include_str!("support/mod.rs");
         let body = src
-            .split("pub fn synthesize(")
+            .split("pub fn synthesize_family(")
             .nth(1)
-            .expect("synthesize body");
-        assert!(body.contains("engine_pieces(&normalize_phrase_text(text), SentenceCase::Auto)"));
+            .expect("synthesize_family body");
+        assert!(body
+            .contains("engine_pieces(&normalize_phrase_text(text), SentenceCase::Auto, family)"));
         assert!(!body.contains("prepare_engine_text"));
     }
 

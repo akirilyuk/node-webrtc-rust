@@ -29,3 +29,5 @@ pub use stt::{
     sherpa_poll_blocking_hops, FINALIZE_TAIL_PADDING_MS,
 };
 pub use tts::{reset_tts_generate_count, tts_generate_count};
+#[doc(hidden)]
+pub use tts_model_paths::{resolve_tts_model_paths, TtsModelFamily};

@@ -18,6 +18,11 @@ export interface SignalingServerOptions {
   path?: string
   /** WebSocket ping interval; set to 0 to disable liveness checks. */
   pingIntervalMs?: number
+  /**
+   * Upper bound for `close()`: clients still open after this are terminated and the HTTP server's
+   * remaining connections are closed. Default 2000.
+   */
+  closeTimeoutMs?: number
 }
 
 /** Options for {@link SignalingClient}. */

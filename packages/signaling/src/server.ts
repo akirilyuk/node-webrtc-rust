@@ -25,6 +25,7 @@ export class SignalingServer extends EventEmitter {
   private httpServer: HttpServer | null = null
   private listeningPort = 0
   private readonly pingIntervalMs: number
+  private readonly closeTimeoutMs: number
   private pingTimer: NodeJS.Timeout | null = null
 
   /** @param options - Optional HTTP server attachment or WebSocket path. */
@@ -32,6 +33,7 @@ export class SignalingServer extends EventEmitter {
     super()
     this.attachedServer = options.server
     this.pingIntervalMs = options.pingIntervalMs ?? 5_000
+    this.closeTimeoutMs = Math.max(0, options.closeTimeoutMs ?? 2_000)
     this.wss = options.server
       ? new WebSocketServer({ server: options.server, path: options.path })
       : new WebSocketServer({ noServer: true })
@@ -105,27 +107,47 @@ export class SignalingServer extends EventEmitter {
     })
   }
 
-  /** Closes all peer sockets and the underlying HTTP/WebSocket servers. */
+  /**
+   * Closes every client socket (joined or not) and the underlying HTTP/WebSocket servers.
+   * Resolves within `closeTimeoutMs` plus a short grace: sockets still open after the bound are
+   * terminated and the HTTP server's remaining connections are closed.
+   */
   close(): Promise<void> {
     debugFn('signaling::SignalingServer', 'close')
     this.stopPingTimer()
-    for (const room of this.rooms.values()) {
-      for (const peer of room.values()) {
-        peer.socket.close()
+    for (const socket of this.wss.clients) {
+      try {
+        socket.close(1001, 'server shutting down')
+      } catch {
+        // best-effort: the terminate fallback below covers it
       }
     }
     this.rooms.clear()
 
+    const httpServer = this.httpServer
+    const forceTimer = setTimeout(() => {
+      for (const socket of this.wss.clients) {
+        socket.terminate()
+      }
+      httpServer?.closeAllConnections?.()
+    }, this.closeTimeoutMs)
+    forceTimer.unref()
+
     return new Promise((resolve, reject) => {
       this.wss.close((error) => {
         if (error) {
+          clearTimeout(forceTimer)
           reject(error)
           return
         }
         if (this.httpServer) {
-          this.httpServer.close(() => resolve())
+          this.httpServer.close(() => {
+            clearTimeout(forceTimer)
+            resolve()
+          })
           this.httpServer = null
         } else {
+          clearTimeout(forceTimer)
           resolve()
         }
       })

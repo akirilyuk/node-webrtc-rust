@@ -8,14 +8,21 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Added
-
-- **bindings / sdk:** `synthesizeTts(config, text, timeoutMs?)` synthesizes a text once with a vendor and returns mono 24 kHz s16le PCM, using the same vendor code as `VoiceAgent`. Rejects with `invalid_input`, `vendor_rate_limited`, `vendor_key_invalid`, `vendor_timeout` or `vendor_error` (`SynthesizeTtsError.code` in the SDK); messages never contain the api key.
-
 ### Fixed
 
 - **speech:** `flushTts`, barge-in and `stop` now also cancel a send the synthesis worker has dequeued but not started yet. Before, such a send still played after the interruption and got no `agent_reply_end`. It now rejects with "TTS cancelled" and gets its interrupted `agent_reply_end` from the flush, before the queued replies' ends.
 - **speech:** `sendTextToTTS` reaches the queue without waiting for the current synthesis to finish. Before, every send (also `nonBlocking`) waited on the provider lock the synthesis worker holds for a whole vendor call, so it could not queue (or resolve, for `nonBlocking`) until that synthesis ended. A blocking send still resolves after its own playback, and a send without a TTS config still fails with "TTS not configured".
+
+## [0.16.0] - 2026-11-03
+
+### Added
+
+- **bindings / sdk:** `synthesizeTts(config, text, timeoutMs?)` synthesizes a text once with a vendor and returns mono 24 kHz s16le PCM, using the same vendor code as `VoiceAgent`. Rejects with `invalid_input`, `vendor_rate_limited`, `vendor_key_invalid`, `vendor_timeout` or `vendor_error` (`SynthesizeTtsError.code` in the SDK); messages never contain the api key.
+- **sdk:** `SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS` (2720 ms), exported from `@node-webrtc-rust/sdk/voice`, is the documented worst-case latency of semantic barge-in (`bargeIn.requireSttPartial`) with the default local Sherpa streaming STT, from caller speech onset to `barge_in`. It is documented in `packages/sdk/VOICE-VAD-AND-BARGE-IN.md`, and the Rust value in `node_webrtc_rust_speech::config` is guarded by a test.
+
+### Changed
+
+- **speech:** the Deepgram, ElevenLabs and Cartesia TTS clients now put the numeric HTTP status at the start of the error text of a non-2xx answer (`<status>: <body>`), so callers can read the status. `synthesizeTts` uses it to tell `vendor_rate_limited` and `vendor_key_invalid` from other vendor errors.
 
 ## [0.15.1] - 2026-11-02
 

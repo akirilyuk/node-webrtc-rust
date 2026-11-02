@@ -55,7 +55,9 @@ new VoiceAgent(config)
 await agent.sendTextToTTS(text, { nonBlocking?: boolean, interruptible?: boolean, replyId?: string })
 ```
 
-Rust: `send_text_to_tts_with_options(text, SendTextToTtsOptions { non_blocking, interruptible, reply_id })`. `SendTextToTtsOptions::default()` and the plain `sendTextToTTS(text)` call keep the old behavior (`interruptible: true`).
+**Call order:** replies are queued and played in the order `sendTextToTTS` was called (FIFO), also for concurrent calls that are not awaited one by one. The queue place is taken synchronously at call time. `flushTts()` (and a barge-in flush or `stop()`) cancels every call made before it, queued or still on its way to the queue, with `TTS cancelled`; calls made after it are kept.
+
+Rust: `send_text_to_tts_with_options(text, SendTextToTtsOptions { non_blocking, interruptible, reply_id })`. In Rust the queue place is taken when the returned future is first polled; to fix the order of concurrent sends, take the places synchronously with `reserve_tts_send_for_reply(reply_id)` (or `reserve_tts_send()` for a send without a reply id) and pass each ticket to `send_text_to_tts_reserved(ticket, text, options)`; `options.reply_id` must equal the ticket's reply id, otherwise the call fails with a config error. A flush that cancels a send before it is queued emits that reply's `agent_reply_end` after the queued replies' ends. `begin_flush_tts()` + `flush_tts_from(cut)` split a flush the same way. `SendTextToTtsOptions::default()` and the plain `sendTextToTTS(text)` call keep the old behavior (`interruptible: true`).
 
 With **`interruptible: false`** the utterance is protected while it synthesizes and plays, for example a "please wait" message spoken while the user is still talking:
 

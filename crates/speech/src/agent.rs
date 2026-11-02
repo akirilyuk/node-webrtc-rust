@@ -42,6 +42,7 @@ use crate::stt_hold::{
 use crate::stt_pre_roll::{ShortBurstRetainer, SttPreRollBuffer, SHORT_BURST_SEPARATOR_MS};
 use crate::tts_buffer::{ReplyTransition, TtsBuffer};
 use crate::tts_cache::{normalize_phrase_text, wrap_tts_for_agent};
+use crate::tts_send_order::{TtsFlushCut, TtsSendOrder, TtsSendTicket};
 use crate::tts_text::prepare_engine_text;
 use crate::turn_latency::TurnLatencyTracker;
 use crate::utterance_replay::{UtteranceReplayBuffer, UtteranceReplaySnapshot};
@@ -551,7 +552,16 @@ struct TtsSynthesisJob {
     requested_at: Instant,
     /// Host-chosen id of this reply; tags the reply events and the job's `tts_*` events.
     reply_id: Option<Arc<str>>,
+    /// Call-order ticket ([`TtsSendTicket`]); the queue is sorted by it.
+    ticket: u64,
 }
+
+/// Test hook run after a send took its ticket and before it reaches the synthesis queue.
+/// Receives the ticket id. Tests use it to hold early sends back deterministically.
+#[doc(hidden)]
+pub type TtsPreEnqueueHook = Arc<
+    dyn Fn(u64) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync,
+>;
 
 /// One voice agent session bound to a single peer connection.
 ///
@@ -598,6 +608,12 @@ pub struct VoiceAgent {
     tts_synthesis_wake: Arc<Notify>,
     tts_synthesis_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     tts_synthesis_busy: Arc<AtomicBool>,
+    /// Call-order tickets for `send_text_to_tts*` (queue order = call order).
+    tts_send_order: Arc<TtsSendOrder>,
+    tts_pre_enqueue_hook: std::sync::Mutex<Option<TtsPreEnqueueHook>>,
+    /// Test-only hook run by the synthesis worker after it dequeued a job and before it takes
+    /// the TTS lock (see [`VoiceAgent::set_tts_pre_synthesis_hook`]).
+    tts_pre_synthesis_hook: Arc<std::sync::Mutex<Option<TtsPreEnqueueHook>>>,
     /// True from the moment the worker pops a job (under the queue lock) until it marks
     /// `tts_synthesis_busy`. Closes the window in which a job is in neither the queue nor busy.
     tts_job_dequeued: Arc<AtomicBool>,
@@ -789,6 +805,9 @@ impl VoiceAgent {
             tts_synthesis_wake: Arc::new(Notify::new()),
             tts_synthesis_worker: Arc::new(Mutex::new(None)),
             tts_synthesis_busy: Arc::new(AtomicBool::new(false)),
+            tts_send_order: Arc::new(TtsSendOrder::default()),
+            tts_pre_enqueue_hook: std::sync::Mutex::new(None),
+            tts_pre_synthesis_hook: Arc::new(std::sync::Mutex::new(None)),
             lid_completion_notify: Arc::new(Notify::new()),
             lid_gate_bound_hits: Arc::new(AtomicUsize::new(0)),
             tts_synthesis_epoch: Arc::new(AtomicU64::new(0)),
@@ -2084,14 +2103,80 @@ impl VoiceAgent {
     }
 
     /// Like [`send_text_to_tts`](Self::send_text_to_tts) with explicit queue / wait behavior.
+    ///
+    /// Jobs are queued in call order: the call takes its ticket
+    /// ([`reserve_tts_send`](Self::reserve_tts_send)) when the returned future is first polled,
+    /// before any await. Callers that start several sends concurrently and need a fixed order
+    /// take the tickets themselves, synchronously, and pass each one to
+    /// [`send_text_to_tts_reserved`](Self::send_text_to_tts_reserved).
     pub async fn send_text_to_tts_with_options(
         &self,
         text: &str,
         options: SendTextToTtsOptions,
     ) -> SpeechResult<()> {
+        let ticket = self.reserve_tts_send_for_reply(options.reply_id.as_deref());
+        self.send_text_to_tts_reserved(ticket, text, options).await
+    }
+
+    /// Takes the next place in the TTS queue order. Synchronous, so the order of these calls is
+    /// the order the jobs are queued and played. Pass the ticket to
+    /// [`send_text_to_tts_reserved`](Self::send_text_to_tts_reserved); dropping it unused gives
+    /// the place up. A flush or stop after this call cancels the send.
+    ///
+    /// The ticket carries no reply id: the send must not set `reply_id` (use
+    /// [`reserve_tts_send_for_reply`](Self::reserve_tts_send_for_reply) for that).
+    pub fn reserve_tts_send(&self) -> TtsSendTicket {
+        self.reserve_tts_send_for_reply(None)
+    }
+
+    /// Like [`reserve_tts_send`](Self::reserve_tts_send) for a send that carries `reply_id`
+    /// (pass the same id in the send's options). A flush or stop that cancels the send before it
+    /// reaches the queue emits that reply's `agent_reply_end`, in ticket order after the queued
+    /// replies; the cancelled send does not emit it. The ticket owns the reply id:
+    /// [`send_text_to_tts_reserved`](Self::send_text_to_tts_reserved) rejects options whose
+    /// `reply_id` differs.
+    pub fn reserve_tts_send_for_reply(&self, reply_id: Option<&str>) -> TtsSendTicket {
+        self.tts_send_order
+            .reserve_with_reply(reply_id.map(Arc::from))
+    }
+
+    /// Sends `text` in the queue place held by `ticket`.
+    ///
+    /// The job waits until every earlier ticket has been queued or given up (error, cancel,
+    /// dropped future), so it never jumps ahead of an earlier call. A flush / stop that runs
+    /// after the ticket was taken and before the job is queued rejects it with `TTS cancelled`,
+    /// the same as a queued job.
+    ///
+    /// `options.reply_id` must equal the id the ticket was reserved with (`None` for
+    /// [`reserve_tts_send`](Self::reserve_tts_send)); otherwise the call fails at once with a
+    /// config error and gives its place up.
+    pub async fn send_text_to_tts_reserved(
+        &self,
+        mut ticket: TtsSendTicket,
+        text: &str,
+        options: SendTextToTtsOptions,
+    ) -> SpeechResult<()> {
+        if options.reply_id.as_deref() != ticket.reply_id() {
+            // The ticket owns the reply id (a cut emits its reply end), so a different id here
+            // would end the wrong reply. Dropping the ticket releases its turn.
+            return Err(SpeechError::Config(format!(
+                "sendTextToTts reply id {:?} differs from the id the ticket was reserved with ({:?})",
+                options.reply_id,
+                ticket.reply_id()
+            )));
+        }
         let trimmed = text.trim();
         if trimmed.is_empty() {
             return Ok(());
+        }
+
+        let hook = self
+            .tts_pre_enqueue_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(hook) = hook {
+            hook(ticket.id()).await;
         }
 
         {
@@ -2108,15 +2193,34 @@ impl VoiceAgent {
             (Some(tx), Some(rx))
         };
 
-        {
-            let mut queue = self.tts_synthesis_queue.lock().await;
-            queue.push_back(TtsSynthesisJob {
-                text: trimmed.to_string(),
-                done: done_tx,
-                interruptible: options.interruptible,
-                requested_at: Instant::now(),
-                reply_id: options.reply_id.as_deref().map(Arc::from),
-            });
+        let reply_id: Option<Arc<str>> = options.reply_id.as_deref().map(Arc::from);
+        let queued = match self.tts_send_order.wait_turn(ticket.id()).await {
+            Err(_) => false,
+            Ok(()) => {
+                let mut queue = self.tts_synthesis_queue.lock().await;
+                // Claim under the queue lock: a cut taken before this point cancels the job (and
+                // owns its reply end); a cut taken after it finds the job in the queue and drops
+                // it there.
+                if !self.tts_send_order.claim(ticket.id()) {
+                    false
+                } else {
+                    queue.push_back(TtsSynthesisJob {
+                        text: trimmed.to_string(),
+                        done: done_tx,
+                        interruptible: options.interruptible,
+                        requested_at: Instant::now(),
+                        reply_id,
+                        ticket: ticket.id(),
+                    });
+                    ticket.release();
+                    true
+                }
+            }
+        };
+        drop(ticket);
+        if !queued {
+            // The cut that cancelled this send emits its reply end, in ticket order.
+            return Err(SpeechError::Internal("TTS cancelled".into()));
         }
 
         self.ensure_tts_synthesis_worker().await;
@@ -2128,6 +2232,37 @@ impl VoiceAgent {
         }
 
         Ok(())
+    }
+
+    /// Installs (or clears) the [`TtsPreEnqueueHook`] (tests only).
+    #[doc(hidden)]
+    pub fn set_tts_pre_enqueue_hook(&self, hook: Option<TtsPreEnqueueHook>) {
+        *self
+            .tts_pre_enqueue_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = hook;
+    }
+
+    /// Installs (or clears) a hook the synthesis worker awaits with the job's ticket id after it
+    /// dequeued the job and before synthesis takes the TTS lock (tests only). While the hook
+    /// parks, the worker holds no lock, so later sends can still reach the queue.
+    #[doc(hidden)]
+    pub fn set_tts_pre_synthesis_hook(&self, hook: Option<TtsPreEnqueueHook>) {
+        *self
+            .tts_pre_synthesis_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = hook;
+    }
+
+    /// Ticket ids of the queued synthesis jobs, front first (tests only).
+    #[doc(hidden)]
+    pub async fn queued_tts_tickets(&self) -> Vec<u64> {
+        self.tts_synthesis_queue
+            .lock()
+            .await
+            .iter()
+            .map(|j| j.ticket)
+            .collect()
     }
 
     /// Fault-path LID gate bound hit count (mock/tests).
@@ -2176,6 +2311,7 @@ impl VoiceAgent {
         let drain_alive = Arc::clone(&self.tts_worker_tasks_alive);
         let weak_self = self.weak_self.clone();
         let lid_notify = Arc::clone(&self.lid_completion_notify);
+        let pre_synthesis_hook = Arc::clone(&self.tts_pre_synthesis_hook);
         *slot = Some(tokio::spawn(async move {
             let _alive_guard = TtsWorkerAliveGuard::enter(&alive);
             loop {
@@ -2212,6 +2348,14 @@ impl VoiceAgent {
                     let Some(job) = job else {
                         break;
                     };
+
+                    let hook = pre_synthesis_hook
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
+                    if let Some(hook) = hook {
+                        hook(job.ticket).await;
+                    }
 
                     Self::await_in_flight_lid_before_tts(&weak_self, &inner, &lid_notify).await;
 
@@ -2990,13 +3134,31 @@ impl VoiceAgent {
 
     /// Drop every queued synthesis job and return the reply ids of those that carried one.
     /// The caller emits their `agent_reply_end` ([`emit_dropped_reply_ends`](Self::emit_dropped_reply_ends))
-    /// after it has flushed the buffer, so replies end in queue order.
+    /// after it has flushed the buffer, so replies end in queue order. Sends cancelled on their
+    /// way to the queue follow the queued ones (their tickets are all later).
     async fn cancel_pending_tts_synthesis_collect(&self) -> Vec<Arc<str>> {
+        let cut = self.tts_send_order.cut();
+        self.cancel_pending_tts_synthesis_collect_before(cut).await
+    }
+
+    /// `fire_speaker_barge` and `stop` take the cut and emit its reply ends in one call
+    /// (through [`cancel_pending_tts_synthesis_collect`](Self::cancel_pending_tts_synthesis_collect)),
+    /// so there is no gap for a cancelled send to race; only the public
+    /// `begin_flush_tts` / `flush_tts_from` pair splits them, and it carries the ids in the cut.
+    ///
+    /// Drops the queued jobs whose ticket is before `cut` (all of them unless a later send was
+    /// queued after the cut was taken). Sends still on their way to the queue were cancelled by
+    /// the cut itself. A job already synthesizing or playing is cut regardless of its ticket.
+    async fn cancel_pending_tts_synthesis_collect_before(&self, cut: TtsFlushCut) -> Vec<Arc<str>> {
         self.invalidate_inflight_tts_synthesis();
         Self::clear_pending_first_audio(&mut *self.inner.lock().await);
         let mut queue = self.tts_synthesis_queue.lock().await;
         let mut dropped = Vec::new();
-        for job in queue.drain(..) {
+        let keep_from = queue
+            .iter()
+            .position(|j| j.ticket >= cut.below)
+            .unwrap_or(queue.len());
+        for job in queue.drain(..keep_from) {
             if let Some(id) = job.reply_id {
                 dropped.push(id);
             }
@@ -3004,6 +3166,8 @@ impl VoiceAgent {
                 let _ = done.send(Err(SpeechError::Internal("TTS cancelled".into())));
             }
         }
+        // Every queued ticket is below every ticket still on its way, so this is ticket order.
+        dropped.extend(cut.in_flight_replies);
         dropped
     }
 
@@ -3014,8 +3178,23 @@ impl VoiceAgent {
     }
 
     /// Clears pending outbound TTS (manual cancel or barge-in when `flush_tts` is enabled).
+    ///
+    /// Cancels every send called before this call, queued or still on its way to the queue.
     pub async fn flush_tts(&self) -> SpeechResult<()> {
-        let dropped = self.cancel_pending_tts_synthesis_collect().await;
+        let cut = self.begin_flush_tts();
+        self.flush_tts_from(cut).await
+    }
+
+    /// Takes the flush point synchronously: sends whose ticket was taken before this call are
+    /// cancelled, later ones are kept. Finish with [`flush_tts_from`](Self::flush_tts_from).
+    pub fn begin_flush_tts(&self) -> TtsFlushCut {
+        self.tts_send_order.cut()
+    }
+
+    /// Second half of [`flush_tts`](Self::flush_tts) for a cut taken with
+    /// [`begin_flush_tts`](Self::begin_flush_tts).
+    pub async fn flush_tts_from(&self, cut: TtsFlushCut) -> SpeechResult<()> {
+        let dropped = self.cancel_pending_tts_synthesis_collect_before(cut).await;
         let barge_in = {
             let inner = self.inner.lock().await;
             inner.config.vad.barge_in.clone()

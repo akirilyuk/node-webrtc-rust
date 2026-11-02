@@ -2,7 +2,7 @@
   "stt": "sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06",
   "tts": "vits-piper-en_US-amy-low",
   "tool": "cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example phrase_sweep",
-  "date": "2026-10-26",
+  "date": "2026-10-30",
   "phrases": [
     {
       "phrase": "good morning, this is the recovery test",
@@ -16,7 +16,51 @@
         ["Good morning. This is the recovery test.", 2922],
         ["Good morning. This is the recovery test", 74],
         ["Good morning this is the recovery test.", 4]
-      ]
+      ],
+      "babble": {
+        "relDb": -15,
+        "threshold": 0.75,
+        "leadMs": 750,
+        "tailMs": 1100,
+        "clearMs": 1000,
+        "voices": "test",
+        "seed": 20261031,
+        "levels": [
+          {
+            "callerDb": -20,
+            "n": 1000,
+            "misses": 0,
+            "minObserved": 1,
+            "below075": 0,
+            "below060": 0,
+            "keyword": null,
+            "keywordMissing": null,
+            "topTexts": [
+              ["Good morning. This is the recovery test", 980],
+              ["Good morning. This is the recovery test.", 12],
+              ["Good morning this is the recovery test", 7],
+              ["Good morning. This is the recovery test plat", 1]
+            ]
+          },
+          {
+            "callerDb": -26,
+            "n": 1000,
+            "misses": 0,
+            "minObserved": 1,
+            "below075": 0,
+            "below060": 0,
+            "keyword": null,
+            "keywordMissing": null,
+            "topTexts": [
+              ["Good morning. This is the recovery test", 986],
+              ["Good morning. This is the recovery test.", 8],
+              ["Good morning this is the recovery test", 4],
+              ["Good morning this is the recovery test.", 1],
+              ["coffee. Good morning. This is the recovery test", 1]
+            ]
+          }
+        ]
+      }
     },
     {
       "phrase": "You said: good morning, this is the recovery test",
@@ -32,7 +76,52 @@
         ["You said good morning this is the recovery test.", 354],
         ["You said, good morning, this is the recovery test.", 29],
         ["You said, good morning. This is the recovery test.", 25]
-      ]
+      ],
+      "babble": {
+        "relDb": -15,
+        "threshold": 0.75,
+        "leadMs": 750,
+        "tailMs": 1100,
+        "clearMs": 1000,
+        "voices": "test",
+        "seed": 20261032,
+        "levels": [
+          {
+            "callerDb": -20,
+            "n": 1000,
+            "misses": 0,
+            "minObserved": 0.8888888888888888,
+            "below075": 0,
+            "below060": 0,
+            "keyword": null,
+            "keywordMissing": null,
+            "topTexts": [
+              ["You said good morning. This is the recovery test", 177],
+              ["You said good morning this is the recovery test", 151],
+              ["You said, good morning, this is the recovery test", 131],
+              ["You said good morning, this is the recovery test", 102],
+              ["You said good morning. This is the recovery test.", 96]
+            ]
+          },
+          {
+            "callerDb": -26,
+            "n": 1000,
+            "misses": 0,
+            "minObserved": 0.8888888888888888,
+            "below075": 0,
+            "below060": 0,
+            "keyword": null,
+            "keywordMissing": null,
+            "topTexts": [
+              ["You said good morning. This is the recovery test", 182],
+              ["You said good morning this is the recovery test", 162],
+              ["You said good morning, this is the recovery test", 141],
+              ["You said, good morning, this is the recovery test", 124],
+              ["You said, good morning. This is the recovery test", 73]
+            ]
+          }
+        ]
+      }
     },
     {
       "phrase": "excuse me please",
@@ -46,7 +135,52 @@
         ["Excuse me, please.", 2355],
         ["Excuse me, please", 642],
         ["Excuse me please", 3]
-      ]
+      ],
+      "babble": {
+        "relDb": -15,
+        "threshold": 0.75,
+        "leadMs": 750,
+        "tailMs": 1100,
+        "clearMs": 1000,
+        "voices": "test",
+        "seed": 20261033,
+        "levels": [
+          {
+            "callerDb": -20,
+            "n": 1000,
+            "misses": 0,
+            "minObserved": 1,
+            "below075": 0,
+            "below060": 0,
+            "keyword": null,
+            "keywordMissing": null,
+            "topTexts": [
+              ["Excuse me, please", 988],
+              ["Excuse me please", 5],
+              ["Excuse me, please.", 4],
+              ["Excuse me, please,", 1],
+              ["Excuse, me please", 1]
+            ]
+          },
+          {
+            "callerDb": -26,
+            "n": 1000,
+            "misses": 4,
+            "minObserved": 0.3333333333333333,
+            "below075": 4,
+            "below060": 2,
+            "keyword": null,
+            "keywordMissing": null,
+            "topTexts": [
+              ["Excuse me, please", 982],
+              ["Excuse me, please.", 5],
+              ["Excuse me please", 4],
+              ["XUSE, please", 2],
+              ["But excuse me, please", 1]
+            ]
+          }
+        ]
+      }
     },
     {
       "phrase": "I have finished talking",
@@ -59,7 +193,52 @@
       "topTexts": [
         ["I have finished talking", 2799],
         ["I have finished talking.", 201]
-      ]
+      ],
+      "babble": {
+        "relDb": -15,
+        "threshold": 0.75,
+        "leadMs": 750,
+        "tailMs": 1100,
+        "clearMs": 1000,
+        "voices": "test",
+        "seed": 20261034,
+        "levels": [
+          {
+            "callerDb": -20,
+            "n": 1000,
+            "misses": 1,
+            "minObserved": 0.25,
+            "below075": 1,
+            "below060": 1,
+            "keyword": null,
+            "keywordMissing": null,
+            "topTexts": [
+              ["I have finished talking", 916],
+              ["I have finished talking about", 16],
+              ["I have finished talking.", 12],
+              ["I have finished talking to", 5],
+              ["I have finished talking with", 4]
+            ]
+          },
+          {
+            "callerDb": -26,
+            "n": 1000,
+            "misses": 0,
+            "minObserved": 0.75,
+            "below075": 0,
+            "below060": 0,
+            "keyword": null,
+            "keywordMissing": null,
+            "topTexts": [
+              ["I have finished talking", 924],
+              ["I have finished talking about", 12],
+              ["I have finished talking.", 12],
+              ["I have finished talking with", 4],
+              ["I have finished talking over the", 2]
+            ]
+          }
+        ]
+      }
     },
     {
       "phrase": "charlie one two three",
@@ -73,7 +252,52 @@
         ["Charlie one two three", 2525],
         ["Charlie won two three", 474],
         ["Charlie one, two, three", 1]
-      ]
+      ],
+      "babble": {
+        "relDb": -15,
+        "threshold": 0.75,
+        "leadMs": 750,
+        "tailMs": 1100,
+        "clearMs": 1000,
+        "voices": "test",
+        "seed": 20261035,
+        "levels": [
+          {
+            "callerDb": -20,
+            "n": 1000,
+            "misses": 0,
+            "minObserved": 0.75,
+            "below075": 0,
+            "below060": 0,
+            "keyword": null,
+            "keywordMissing": null,
+            "topTexts": [
+              ["Charlie one two three", 803],
+              ["Charlie won two three", 130],
+              ["Charlie one two three.", 15],
+              ["Charlie one two three boxes", 3],
+              ["Charlie one, two, three.", 3]
+            ]
+          },
+          {
+            "callerDb": -26,
+            "n": 1000,
+            "misses": 0,
+            "minObserved": 0.75,
+            "below075": 0,
+            "below060": 0,
+            "keyword": null,
+            "keywordMissing": null,
+            "topTexts": [
+              ["Charlie one two three", 867],
+              ["Charlie won two three", 93],
+              ["Charlie one two three.", 14],
+              ["Charlie one, two, three", 4],
+              ["Charlie one two three A small", 1]
+            ]
+          }
+        ]
+      }
     },
     {
       "phrase": "bravo four five six",
@@ -83,7 +307,52 @@
       "below060": 0,
       "keyword": "four",
       "keywordMissing": 0,
-      "topTexts": [["Bravo four five six", 3000]]
+      "topTexts": [["Bravo four five six", 3000]],
+      "babble": {
+        "relDb": -15,
+        "threshold": 0.75,
+        "leadMs": 750,
+        "tailMs": 1100,
+        "clearMs": 1000,
+        "voices": "test",
+        "seed": 20261036,
+        "levels": [
+          {
+            "callerDb": -20,
+            "n": 1000,
+            "misses": 0,
+            "minObserved": 0.75,
+            "below075": 0,
+            "below060": 0,
+            "keyword": null,
+            "keywordMissing": null,
+            "topTexts": [
+              ["Bravo four five six", 919],
+              ["Bravo four five six.", 15],
+              ["Bavo four five six", 13],
+              ["Bravo four five six The", 2],
+              ["Bravo four five six and", 2]
+            ]
+          },
+          {
+            "callerDb": -26,
+            "n": 1000,
+            "misses": 0,
+            "minObserved": 0.75,
+            "below075": 0,
+            "below060": 0,
+            "keyword": null,
+            "keywordMissing": null,
+            "topTexts": [
+              ["Bravo four five six", 935],
+              ["Bravo four five six.", 20],
+              ["Bavo four five six", 17],
+              ["Bravo for five six", 3],
+              ["Bravo four five six it", 2]
+            ]
+          }
+        ]
+      }
     },
     {
       "phrase": "victor seven eight nine",
@@ -96,7 +365,52 @@
       "topTexts": [
         ["Victor Seven eight nine", 1798],
         ["Victor seven eight nine", 1202]
-      ]
+      ],
+      "babble": {
+        "relDb": -15,
+        "threshold": 0.75,
+        "leadMs": 750,
+        "tailMs": 1100,
+        "clearMs": 1000,
+        "voices": "test",
+        "seed": 20261037,
+        "levels": [
+          {
+            "callerDb": -20,
+            "n": 1000,
+            "misses": 0,
+            "minObserved": 0.75,
+            "below075": 0,
+            "below060": 0,
+            "keyword": null,
+            "keywordMissing": null,
+            "topTexts": [
+              ["Victor seven eight nine", 973],
+              ["Victor seven eight ninet", 3],
+              ["Victure seven eight nine", 2],
+              ["DickTor seven eight nine", 1],
+              ["Fixture seven eight nine", 1]
+            ]
+          },
+          {
+            "callerDb": -26,
+            "n": 1000,
+            "misses": 0,
+            "minObserved": 0.75,
+            "below075": 0,
+            "below060": 0,
+            "keyword": null,
+            "keywordMissing": null,
+            "topTexts": [
+              ["Victor seven eight nine", 978],
+              ["Victure seven eight nine", 4],
+              ["Victor seven eight nine.", 3],
+              ["Flicker seven eight nine", 1],
+              ["The Victor seven eight nine", 1]
+            ]
+          }
+        ]
+      }
     },
     {
       "phrase": "This is a very long sentence, maybe the longest sentence ever spoken. It is so long, that the lenght of it cannot even be measured.",

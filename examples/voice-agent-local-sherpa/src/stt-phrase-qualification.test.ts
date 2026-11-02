@@ -226,3 +226,51 @@ describe('STT phrase qualification', () => {
     ).toEqual([{ name: 'A_PHRASE', value: 'two words' }])
   })
 })
+
+/**
+ * Babble sweeps (`phrase_sweep --babble`): the noisy-bystander roundtrip judges its caller phrases
+ * over background babble 15 dB below the caller, a condition the clean sweep does not cover
+ * ("excuse me please" was clean in 3000 clean runs and heard as "X cuse me, please." in that scene).
+ * `speaker_fixtures` only draws S3 caller phrases from entries with a clean babble sweep (guarded in
+ * `speaker_fixtures.rs` › `noisy_bystander_scene_judges_only_babble_clean_phrases`); this checks the
+ * recorded sweeps used the scene's conditions and its oracle.
+ */
+describe('babble qualification (noisy-bystander scene)', () => {
+  /** Caller levels of `s3_test_m15` and `s3_test_m15_l26` (dBFS). */
+  const SCENE_CALLER_LEVELS = [-20, -26]
+  const MIN_BABBLE_ROLLS = 1000
+  /** 4 qualified caller turns per scene (16 turns, every other caller turn is a long sentence). */
+  const SCENE_JUDGED_TURNS = 4
+
+  interface BabbleLevel {
+    callerDb: number
+    n: number
+    misses: number
+  }
+  interface BabbleEntry {
+    phrase: string
+    babble?: { relDb: number; threshold: number; levels: BabbleLevel[] }
+  }
+  const entries = table.phrases as unknown as BabbleEntry[]
+  const swept = entries.filter((e) => e.babble !== undefined)
+  const clean = swept.filter((e) =>
+    SCENE_CALLER_LEVELS.every((db) =>
+      e.babble!.levels.some((l) => l.callerDb === db && l.n >= MIN_BABBLE_ROLLS && l.misses === 0),
+    ),
+  )
+
+  it('sweeps ran under the scene conditions and scored with the scene oracle', () => {
+    for (const e of swept) {
+      expect(e.babble!.relDb, e.phrase).toBe(-15)
+      expect(e.babble!.threshold, e.phrase).toBe(DEFAULT_BARGE_PHRASE_MIN_SIMILARITY)
+      expect(e.babble!.levels.map((l) => l.callerDb).sort(), e.phrase).toEqual(
+        [...SCENE_CALLER_LEVELS].sort(),
+      )
+    }
+  })
+
+  it('enough babble-clean short phrases for the scene to judge', () => {
+    const short = clean.filter((e) => e.phrase.split(/\s+/).length <= 12)
+    expect(short.length).toBeGreaterThanOrEqual(SCENE_JUDGED_TURNS)
+  })
+})

@@ -3,6 +3,11 @@ import { describe, expect, test } from 'vitest'
 import { JsSpeechEventType } from '@node-webrtc-rust/bindings'
 
 import { fromJsSpeechEvent } from '../src/voice/VoiceAgent'
+import {
+  SPEAKER_GATE_RECHECK_MAX_WINDOWS,
+  SPEAKER_GATE_RECHECK_WINDOWS,
+  speakerRecheckBargeEarliestMs,
+} from '../src/voice/index'
 
 describe('speaker gate speech events', () => {
   test('user_speech_ignored carries reason and utterance id, no text', () => {
@@ -34,5 +39,62 @@ describe('speaker gate speech events', () => {
     })
     expect(ev.type).toBe('user_speech_final')
     expect(ev.speaker).toBe('other')
+    expect(ev.speakerUnknownReason).toBeUndefined()
+  })
+
+  test('user_speech_final passes speakerUnknownReason through', () => {
+    const ev = fromJsSpeechEvent({
+      eventType: JsSpeechEventType.UserSpeechFinal,
+      text: 'stop',
+      speaker: 'unknown',
+      speakerUnknownReason: 'short',
+    })
+    expect(ev.speaker).toBe('unknown')
+    expect(ev.speakerUnknownReason).toBe('short')
+  })
+
+  test('user_speech_final passes speakerRechecked through, absent when unset', () => {
+    const ev = fromJsSpeechEvent({
+      eventType: JsSpeechEventType.UserSpeechFinal,
+      text: 'hi',
+      speaker: 'caller',
+      speakerRechecked: true,
+    })
+    expect(ev.speakerRechecked).toBe(true)
+    const plain = fromJsSpeechEvent({
+      eventType: JsSpeechEventType.UserSpeechFinal,
+      text: 'hi',
+      speaker: 'other',
+    })
+    expect(plain.speakerRechecked).toBeUndefined()
+  })
+
+  test('deprecated SPEAKER_GATE_RECHECK_WINDOWS is still 2 (the 0.15.0 window count)', () => {
+    expect(SPEAKER_GATE_RECHECK_WINDOWS).toBe(2)
+  })
+
+  test('barge-in bound is checkSpeechMs x window', () => {
+    expect(speakerRecheckBargeEarliestMs(1500, 2)).toBe(3000)
+    expect(speakerRecheckBargeEarliestMs(1500, 8)).toBe(12000)
+  })
+
+  test('default window cap mirrors DEFAULT_RECHECK_MAX_WINDOWS in speaker_gate.rs', () => {
+    // lockstep: crates/speech/src/speaker_gate.rs › default_recheck_max_windows_matches_sdk
+    expect(SPEAKER_GATE_RECHECK_MAX_WINDOWS).toBe(12)
+  })
+
+  test('speakerCheckWindows maps from the native event', () => {
+    const ev = fromJsSpeechEvent({
+      eventType: JsSpeechEventType.UserSpeechFinal,
+      text: 'hi',
+      speaker: 'caller',
+      speakerCheckWindows: 3,
+    })
+    expect(ev.speakerCheckWindows).toBe(3)
+    const plain = fromJsSpeechEvent({
+      eventType: JsSpeechEventType.UserSpeechFinal,
+      text: 'hi',
+    })
+    expect(plain.speakerCheckWindows).toBeUndefined()
   })
 })

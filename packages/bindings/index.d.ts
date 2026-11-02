@@ -369,6 +369,14 @@ export interface JsSpeakerGateConfig {
   enrollSpeechMs?: number
   checkSpeechMs?: number
   minCheckSpeechMs?: number
+  suppressShortBargeIn?: boolean
+  /** Keep re-checking an utterance while its verdict is `other` (default true). */
+  recheckOnOther?: boolean
+  /**
+   * Windows scored per utterance, the first check included (default 12). `0` = no cap; `1` is
+   * rejected by the gate.
+   */
+  recheckMaxWindows?: number
   /** `flag` (default) | `drop`. */
   onMismatch?: string
   verifyTimeoutMs?: number
@@ -476,6 +484,12 @@ export interface JsSpeechEvent {
   interrupted?: boolean
   /** `user_speech_final` with the speaker gate on: `caller` | `other` | `unknown`. */
   speaker?: string
+  /** `speaker` is `unknown`: `short` | `timeout` | `error` | `not_enrolled` | `no_embedding` | `no_check`. */
+  speakerUnknownReason?: string
+  /** `user_speech_final`: `true` when a re-check after a first `other` verdict was scored. */
+  speakerRechecked?: boolean
+  /** `user_speech_final` with the speaker gate on: check windows scored for the utterance. */
+  speakerCheckWindows?: number
 }
 export const enum JsSttHoldMode {
   BufferReplay = 'buffer_replay',

@@ -228,6 +228,7 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
     permissions:
       contents: read
+      packages: read
       actions: write
     steps:
       - uses: actions/checkout@v4

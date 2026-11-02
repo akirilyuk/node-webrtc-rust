@@ -451,6 +451,12 @@ pub struct JsSpeakerGateConfig {
     pub enroll_speech_ms: Option<u32>,
     pub check_speech_ms: Option<u32>,
     pub min_check_speech_ms: Option<u32>,
+    pub suppress_short_barge_in: Option<bool>,
+    /// Keep re-checking an utterance while its verdict is `other` (default true).
+    pub recheck_on_other: Option<bool>,
+    /// Windows scored per utterance, the first check included (default 12). `0` = no cap; `1` is
+    /// rejected by the gate.
+    pub recheck_max_windows: Option<u32>,
     /// `flag` (default) | `drop`.
     pub on_mismatch: Option<String>,
     pub verify_timeout_ms: Option<u32>,
@@ -478,6 +484,11 @@ impl TryFrom<JsSpeakerGateConfig> for SpeakerGateConfig {
             enroll_speech_ms: value.enroll_speech_ms.unwrap_or(d.enroll_speech_ms),
             check_speech_ms: value.check_speech_ms.unwrap_or(d.check_speech_ms),
             min_check_speech_ms: value.min_check_speech_ms.unwrap_or(d.min_check_speech_ms),
+            suppress_short_barge_in: value
+                .suppress_short_barge_in
+                .unwrap_or(d.suppress_short_barge_in),
+            recheck_on_other: value.recheck_on_other.unwrap_or(d.recheck_on_other),
+            recheck_max_windows: value.recheck_max_windows.unwrap_or(d.recheck_max_windows),
             on_mismatch,
             verify_timeout_ms: value.verify_timeout_ms.unwrap_or(d.verify_timeout_ms),
         })
@@ -510,6 +521,47 @@ mod speaker_gate_config_from_tests {
         assert_eq!(cfg.on_mismatch, SpeakerMismatchAction::Drop);
         assert_eq!(cfg.threshold, 0.5);
         assert_eq!(cfg.check_speech_ms, 1500);
+    }
+
+    #[test]
+    fn suppress_short_barge_in_defaults_false_and_maps_through() {
+        let off: SpeakerGateConfig = JsSpeakerGateConfig::default().try_into().unwrap();
+        assert!(!off.suppress_short_barge_in);
+        let on: SpeakerGateConfig = JsSpeakerGateConfig {
+            suppress_short_barge_in: Some(true),
+            ..Default::default()
+        }
+        .try_into()
+        .unwrap();
+        assert!(on.suppress_short_barge_in);
+    }
+
+    #[test]
+    fn recheck_on_other_defaults_true_and_maps_through() {
+        let on: SpeakerGateConfig = JsSpeakerGateConfig::default().try_into().unwrap();
+        assert!(on.recheck_on_other);
+        let off: SpeakerGateConfig = JsSpeakerGateConfig {
+            recheck_on_other: Some(false),
+            ..Default::default()
+        }
+        .try_into()
+        .unwrap();
+        assert!(!off.recheck_on_other);
+    }
+
+    #[test]
+    fn recheck_max_windows_defaults_12_and_maps_through() {
+        let d: SpeakerGateConfig = JsSpeakerGateConfig::default().try_into().unwrap();
+        assert_eq!(d.recheck_max_windows, 12);
+        for n in [2u32, 0] {
+            let c: SpeakerGateConfig = JsSpeakerGateConfig {
+                recheck_max_windows: Some(n),
+                ..Default::default()
+            }
+            .try_into()
+            .unwrap();
+            assert_eq!(c.recheck_max_windows, n);
+        }
     }
 
     #[test]
@@ -846,6 +898,12 @@ pub struct JsSpeechEvent {
     pub interrupted: Option<bool>,
     /// `user_speech_final` with the speaker gate on: `caller` | `other` | `unknown`.
     pub speaker: Option<String>,
+    /// `speaker` is `unknown`: `short` | `timeout` | `error` | `not_enrolled` | `no_embedding` | `no_check`.
+    pub speaker_unknown_reason: Option<String>,
+    /// `user_speech_final`: `true` when a re-check after a first `other` verdict was scored.
+    pub speaker_rechecked: Option<bool>,
+    /// `user_speech_final` with the speaker gate on: check windows scored for the utterance.
+    pub speaker_check_windows: Option<u32>,
 }
 
 #[napi(string_enum)]

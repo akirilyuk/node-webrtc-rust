@@ -111,9 +111,18 @@ FIXTURE_HELPER="scripts/ci/ensure-speaker-fixtures.sh"
 [[ -f "$FIXTURE_HELPER" ]] || fail "missing $FIXTURE_HELPER"
 bash -c "ROOT='$ROOT'; source '$FIXTURE_HELPER'; declare -F ensure_speaker_fixtures >/dev/null" \
   || fail "$FIXTURE_HELPER must define ensure_speaker_fixtures"
-for flag in '--main-levels -26' '--min-turn-gap-ms 2500' '--bystander-db -15' '--babble-clear-ms 1000' '--only s3_test_m15'; do
-  grep -qF -- "$flag" "$FIXTURE_HELPER" || fail "$FIXTURE_HELPER lost the scene arg: $flag"
+for flag in '--main-levels -26' '--min-turn-gap-ms 2500' '--bystander-db -15' '--babble-clear-ms 1000' '--babble-clear-pull' '--long-bystanders 2' '--long-bystander-db -6' '--only s3_test_m15'; do
+  # Code lines only: the helper's header comment names the flags too.
+  grep -v '^[[:space:]]*#' "$FIXTURE_HELPER" | grep -qF -- "$flag" || fail "$FIXTURE_HELPER lost the scene arg: $flag"
 done
+# Re-roll mode: the stress workflow input reaches the helper, which then ignores the stamp and
+# generates from an empty cache (fresh Piper roll per iteration, as on fresh CI containers).
+grep -v '^[[:space:]]*#' "$FIXTURE_HELPER" | grep -qF -- '"${SPEAKER_FIXTURES_REROLL:-0}"' \
+  || fail "$FIXTURE_HELPER must honour SPEAKER_FIXTURES_REROLL"
+grep -q 'args+=(--cache "$cache_dir")' "$FIXTURE_HELPER" \
+  || fail "$FIXTURE_HELPER re-roll must pass a fresh --cache dir"
+grep -qE "SPEAKER_FIXTURES_REROLL: \\$\\{\\{ inputs.reroll_fixtures" .github/workflows/sherpa-e2e-stress.yml \
+  || fail "sherpa-e2e-stress.yml must map input reroll_fixtures to SPEAKER_FIXTURES_REROLL"
 grep -qE '^source "\$ROOT/scripts/ci/ensure-speaker-fixtures.sh"' "$CI_SCRIPT" \
   || fail "$CI_SCRIPT calls ensure_speaker_fixtures but does not source $FIXTURE_HELPER"
 fr="$tmp/fixture-root"
@@ -141,6 +150,66 @@ for s in start:roundtrip-noisy-bystander start:roundtrip-counting; do
   [[ "$(cat "$tmp/fixture-calls")" == "$expected" ]] \
     || fail "run-sherpa-roundtrip-e2e.sh $s: expected calls [$expected], got [$(tr '\n' ' ' <"$tmp/fixture-calls")] (noisy-bystander needs ensure_speaker_fixtures before npm)"
 done
+
+# Re-roll behaviour, driven through the real helper with a stub ci-step.sh: once per process tree,
+# a fresh --cache dir that is removed afterwards (also on failure), no stamp; a normal call after it
+# regenerates and stamps the args.
+rr="$tmp/reroll-root"
+rr_out="$rr/examples/voice-agent-local-sherpa/.models/speaker-fixtures"
+mkdir -p "$rr/scripts/ci" "$rr/examples/voice-agent-local-sherpa/.models/speaker"
+echo model >"$rr/examples/voice-agent-local-sherpa/.models/speaker/nemo_en_titanet_small.onnx"
+rr_phrases="$rr/examples/voice-agent-local-sherpa/stt-phrase-qualification.json"
+echo '{"phrases":[]}' >"$rr_phrases"
+cat >"$rr/scripts/ci/ci-step.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >>"$REROLL_CALLS"
+cache="" out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --cache) cache="$2"; shift ;;
+    --out) out="$2"; shift ;;
+  esac
+  shift
+done
+if [[ -n "$cache" ]]; then
+  [[ -d "$cache" ]] || exit 3
+  echo "$cache" >>"$REROLL_CACHES"
+fi
+mkdir -p "$out" && echo '{}' >"$out/manifest.json"
+exit "${STUB_RC:-0}"
+STUB
+export REROLL_CALLS="$tmp/reroll-calls" REROLL_CACHES="$tmp/reroll-caches"
+: >"$REROLL_CALLS"
+: >"$REROLL_CACHES"
+rr_run() {
+  env -u SPEAKER_FIXTURES_REROLLED bash -c \
+    "ROOT='$rr'; source '$ROOT/$FIXTURE_HELPER'; ensure_speaker_fixtures${2:+ && ensure_speaker_fixtures}" \
+    >/dev/null 2>&1 <<<"" && return 0
+  return 1
+}
+rr_lines() { wc -l <"$REROLL_CALLS" | tr -d ' '; }
+SPEAKER_FIXTURES_REROLL=1 rr_run once twice || fail "re-roll: two calls in one process failed"
+[[ "$(rr_lines)" == 1 ]] || fail "re-roll: two calls in one process must generate once, got $(rr_lines)"
+grep -qF -- '--cache ' "$REROLL_CALLS" || fail "re-roll: generation must pass --cache"
+[[ ! -e "$(tail -n 1 "$REROLL_CACHES")" ]] || fail "re-roll: cache dir $(tail -n 1 "$REROLL_CACHES") left behind"
+[[ ! -e "$rr_out/.speaker-fixtures-args" ]] || fail "re-roll: must not write the stamp"
+SPEAKER_FIXTURES_REROLL=1 rr_run once || fail "re-roll: a second process failed"
+[[ "$(rr_lines)" == 2 ]] || fail "re-roll: a new process must generate again, got $(rr_lines) calls"
+if STUB_RC=1 SPEAKER_FIXTURES_REROLL=1 rr_run once; then fail "re-roll: a failed generation must return non-zero"; fi
+[[ "$(wc -l <"$REROLL_CACHES" | tr -d ' ')" == 3 ]] || fail "re-roll: the failing call did not reach the generator with a cache"
+[[ ! -e "$(tail -n 1 "$REROLL_CACHES")" ]] || fail "re-roll: cache dir of the failed call left behind"
+rr_run once || fail "normal call after re-roll failed"
+[[ "$(rr_lines)" == 4 ]] || fail "normal call after re-roll must generate, got $(rr_lines) calls"
+last="$(tail -n 1 "$REROLL_CALLS")"
+[[ "$last" != *"--cache "* ]] || fail "normal call must not pass --cache"
+rr_sha="$(shasum -a 256 "$rr_phrases" | cut -d' ' -f1)"
+[[ -f "$rr_out/.speaker-fixtures-args" && "$(cat "$rr_out/.speaker-fixtures-args")" == "${last#*--example speaker_fixtures -- } phrases-sha256=$rr_sha" ]] \
+  || fail "normal call must stamp exactly the generator args and the phrase table hash"
+rr_run once || fail "normal call with an unchanged stamp failed"
+[[ "$(rr_lines)" == 4 ]] || fail "unchanged args and phrase table must not regenerate, got $(rr_lines) calls"
+echo '{"phrases":[{"phrase":"x"}]}' >"$rr_phrases"
+rr_run once || fail "normal call after a phrase table change failed"
+[[ "$(rr_lines)" == 5 ]] || fail "a changed phrase table must regenerate the scenes, got $(rr_lines) calls"
 
 if ! bash -c '(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3) ))'; then
   echo "sherpa-e2e-groups.test.sh: bash < 4.3 (no wait -n); skipping the width > 1 cases"

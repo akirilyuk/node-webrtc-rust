@@ -204,8 +204,45 @@ pub struct SpeakerGateConfig {
     pub enroll_speech_ms: u32,
     /// Speech (ms) of an utterance used for one check.
     pub check_speech_ms: u32,
-    /// Clips shorter than this are `unknown` (the gate fails open).
+    /// Clips with less speech than this (ms) are not scored: the verdict is `unknown` and the gate
+    /// fails open (unless `suppress_short_barge_in`). Default 1500. Must not exceed
+    /// `check_speech_ms` (`validate` rejects it).
+    ///
+    /// Measured 2026-10-30 (TitaNet-small, threshold 0.459, `speaker_bench` Part 1 at a fixed
+    /// threshold, 128 genuine / 92 impostor clips per set, bystander at -6/-10/-15/-20 dB pooled):
+    ///
+    /// | check | set  | FRR    | FAR   |
+    /// |-------|------|--------|-------|
+    /// | 1.0 s | test | 11.7 % | 0.0 % |
+    /// | 1.0 s | tune | 18.0 % | 1.1 % |
+    /// | 1.25 s| test | 3.1 %  | 0.0 % |
+    /// | 1.25 s| tune | 7.8 %  | 1.1 % |
+    /// | 1.5 s | test | 0.8 %  | 0.0 % |
+    /// | 1.5 s | tune | 1.6 %  | 2.2 % |
+    ///
+    /// At 1.25 s per bystander level, test (tune) FRR: -6 dB 9.4 % (21.9 %), -10 dB 3.1 % (9.4 %),
+    /// -15 and -20 dB 0 % (0 %). Full reasoning: `packages/sdk/VOICE-VAD-AND-BARGE-IN.md`.
     pub min_check_speech_ms: u32,
+    /// Opt-in. While an utterance is live and has no verdict, a barge-in is deferred. When the
+    /// utterance ends with less speech than `min_check_speech_ms`, the verdict is `unknown` and
+    /// the deferred barge-in is normally released. With this set, it is suppressed instead, like
+    /// `other`, so a short bystander phrase cannot interrupt the agent. Short caller phrases
+    /// stop interrupting too (they are still transcribed). Every other `unknown` (not enrolled,
+    /// embed timeout or error) still proceeds. Default false.
+    pub suppress_short_barge_in: bool,
+    /// When the first check of an utterance says `other` and the utterance keeps going, score the
+    /// next `check_speech_ms` windows of speech, up to `recheck_max_windows`. A `caller` re-check
+    /// releases the held barge-in and labels the final `caller` (`speakerRechecked: true`); any
+    /// other result keeps `other`. It never runs after a `caller` or `unknown` verdict. Covers a
+    /// bystander who opens the VAD before the caller and runs into the caller's words. Default
+    /// true; false is the one-check behaviour of 0.14.
+    pub recheck_on_other: bool,
+    /// Windows scored per utterance, the first check included, while the verdict stays `other`
+    /// (`recheck_on_other`). `2` is the one re-check of 0.15.0 (same window count and barge bound; a
+    /// late first verdict re-checks the latest window, not the one right after the first); `0` keeps checking until the
+    /// final; `1` is rejected (use `recheck_on_other: false`). Default 12 (18 s of speech with the
+    /// default 1.5 s check).
+    pub recheck_max_windows: u32,
     pub on_mismatch: SpeakerMismatchAction,
     /// Bound (ms) on one embedding call and on a final waiting for its verdict.
     pub verify_timeout_ms: u32,
@@ -219,7 +256,10 @@ impl Default for SpeakerGateConfig {
             threshold: 0.459,
             enroll_speech_ms: 3000,
             check_speech_ms: 1500,
-            min_check_speech_ms: 1000,
+            min_check_speech_ms: 1500,
+            suppress_short_barge_in: false,
+            recheck_on_other: true,
+            recheck_max_windows: crate::speaker_gate::DEFAULT_RECHECK_MAX_WINDOWS,
             on_mismatch: SpeakerMismatchAction::Flag,
             verify_timeout_ms: 500,
         }
@@ -244,6 +284,20 @@ impl SpeakerGateConfig {
                 "speakerGate.threshold must be in (0, 1), got {}",
                 self.threshold
             ));
+        }
+        if self.check_speech_ms < self.min_check_speech_ms {
+            return Err(format!(
+                "speakerGate.checkSpeechMs ({}) must be at least speakerGate.minCheckSpeechMs ({}): \
+                 otherwise every utterance is shorter than the minimum and is never checked",
+                self.check_speech_ms, self.min_check_speech_ms
+            ));
+        }
+        if self.recheck_on_other && self.recheck_max_windows == 1 {
+            return Err(
+                "speakerGate.recheckMaxWindows must be 0 (no cap) or at least 2; use \
+                 speakerGate.recheckOnOther: false for one check"
+                    .into(),
+            );
         }
         Ok(())
     }

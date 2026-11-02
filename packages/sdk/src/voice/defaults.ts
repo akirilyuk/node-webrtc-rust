@@ -48,3 +48,26 @@ export const VOICE_AGENT_VAD_PRESET: VadConfig = {
   gateStt: true,
   speechPadMs: 500,
 }
+
+/**
+ * Default `speakerGate.recheckMaxWindows`: windows scored per utterance while the verdict stays
+ * `other`, the first check included. Mirrors `DEFAULT_RECHECK_MAX_WINDOWS` in the speech crate
+ * (`crates/speech/src/speaker_gate.rs`); the Rust unit test cites this file back.
+ */
+export const SPEAKER_GATE_RECHECK_MAX_WINDOWS = 12
+
+/**
+ * Check windows of the 0.15.0 gate: the first check plus one re-check.
+ * @deprecated the 0.15.0 window count; use `speakerCheckWindows` on the final.
+ */
+export const SPEAKER_GATE_RECHECK_WINDOWS = 2
+
+/**
+ * Earliest speech time (ms after the utterance's speech start) at which a barge-in released by
+ * the `window`-th check window can come: `checkSpeechMs × window`. `window` is the
+ * `speakerCheckWindows` of the final (1 = the first check). Mirrors `recheck_barge_earliest_ms`
+ * in `crates/speech/src/speaker_gate.rs`.
+ */
+export function speakerRecheckBargeEarliestMs(checkSpeechMs: number, window: number): number {
+  return checkSpeechMs * window
+}

@@ -3,31 +3,44 @@
  *
  * One client leg plays a generated "conversation" test scene (`speaker_fixtures`, never committed):
  * two enrollment utterances of the caller, then alternating caller and bystander turns at least
- * 2.5 s apart. The bystander's voice is 15 dB below the caller (`--bystander-db -15`) and the
- * background babble is at the scene level, also 15 dB below the caller. No babble sentence starts
- * within 1 s before a caller turn (`--babble-clear-ms 1000`): other speech that starts less than
- * about 1 s before the caller can fall into the 1.5 s check and make it reject the caller, so the
- * barge-in is suppressed and the final is labelled other. The agent answers every
+ * 2.5 s apart. The bystander's voice is 15 dB below the caller (`--bystander-db -15`), except the
+ * first two bystander turns: long sentences at 6 dB below (`--long-bystanders 2
+ * --long-bystander-db -6`), loud enough to open the adaptive VAD over the babble, so each pass has
+ * bystander finals for the gate to label other. The background babble is at the scene level, 15 dB
+ * below the caller. No babble sentence starts
+ * within 1 s before a caller turn (`--babble-clear-ms 1000`). That is below the 1.6 s VAD end
+ * silence on purpose: babble and bystanders merge into caller utterances, the case the speaker
+ * gate's further windows (`recheckMaxWindows`) must catch. Merged utterances are paired by
+ * `utteranceId` and `speakerCheckWindows` (see the helpers); lockstep test
+ * `roundtrip-noisy-bystander-clear.test.ts`. The agent answers every
  * `user_speech_final` with a long reply, like an app, so every turn starts during playback.
  * `barge_in` is paired with turns by `utteranceId`: each turn takes the first `user_speaking_start`
  * inside its scene slot, everything else goes by id.
  *
  * Two passes, each with a fresh agent:
  *   1. caller at the default level (-20 dBFS);
- *   2. quiet caller at -26 dBFS (`_l26` scene), bystander and babble still -15 dB relative.
+ *   2. quiet caller at -26 dBFS (`_l26` scene), bystander and babble levels still relative to the caller.
  *
  * Per pass the script asserts:
  *   - no `barge_in` carries a bystander utterance's id, and its final (when detected) has `speaker: 'other'`;
+ *   - a bystander final `unknown` with `speakerUnknownReason: 'short'` (less speech than
+ *     minCheckSpeechMs) is accepted with its barge-in; any other unknown fails; at least 1
+ *     bystander turn per pass must be `other` without a barge-in (anti-vacuous);
  *   - every caller turn barges in, its final has `speaker: 'caller'`, and qualified phrases match
  *     the manifest text by the roundtrip oracle (`wordSimilarity`; long sentences are not judged);
- *   - the barge-in comes at most 300 ms after the later of speech start + checkSpeechMs and the
- *     first partial with >= minSttPartialTokens tokens on that utterance; at most 3 s after start.
+ *   - the barge-in comes at most 300 ms after the later of the verdict (speech start + checkSpeechMs,
+ *     or + `speakerCheckWindows` x checkSpeechMs for a re-checked final) and the first partial with
+ *     >= minSttPartialTokens tokens on that utterance; at most 3 s after start when not re-checked.
+ *   - TEMPORARY (step B: split on speaker change; plan
+ *     development/node-webrtc-rust/plans/2026-10-31-speaker-gate-continuous-recheck.md step 5): a
+ *     caller turn covered by an earlier `caller` utterance is absorbed into it, at most 25 % of them.
  *
  * Needs the speaker assets (`npm run download-speaker`) and the scenes:
  *   cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
  *     --models .models/speaker --main-tts .models/vits-piper-en_US-amy-low \
  *     --phrases stt-phrase-qualification.json --out .models/speaker-fixtures --main-levels -26 \
- *     --min-turn-gap-ms 2500 --bystander-db -15 --babble-clear-ms 1000 --only s3_test_m15
+ *     --min-turn-gap-ms 2500 --bystander-db -15 --babble-clear-ms 1000 --babble-clear-pull \
+ *     --long-bystanders 2 --long-bystander-db -6 --only s3_test_m15
  * (CI does this in `scripts/ci/ensure-speaker-fixtures.sh`.)
  *
  * Run:
@@ -47,6 +60,7 @@ import {
   VoiceAgent,
   VOICE_AGENT_VAD_PRESET,
   SPEECH_EVENT_TYPE,
+  SPEAKER_GATE_RECHECK_MAX_WINDOWS,
   type VoiceAgentConfig,
 } from '@node-webrtc-rust/sdk/voice'
 
@@ -55,10 +69,12 @@ import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopba
 import { installRoundtripWallClockTimeout } from './roundtrip-counting.js'
 import {
   BYSTANDER_RELATIVE_DB,
+  CHECK_SPEECH_MS,
+  maxBystanderLeadMs,
   QUIET_CALLER_DBFS,
   WARMUP_S,
   evaluateTurns,
-  matchTurnUtterances,
+  pairTurnUtterances,
   MIN_STT_PARTIAL_TOKENS,
   readWavPcm,
   type Seen,
@@ -190,6 +206,13 @@ async function runPass(params: {
       text: s.text,
       kind: s.kind,
     }))
+  const leadBoundMs = (SPEAKER_GATE_RECHECK_MAX_WINDOWS - 2) * CHECK_SPEECH_MS
+  const leadMs = maxBystanderLeadMs(turns)
+  if (leadMs >= leadBoundMs) {
+    throw new Error(
+      `scene: bystander lead ${leadMs} ms into a caller turn >= ${leadBoundMs} ms (outside recheckMaxWindows)`,
+    )
+  }
   const pcm = readWavPcm(join(params.scenesDir, scene.wav48))
   console.log(`--- ${label}: scene ${scene.id}, ${turns.length} judged turns ---`)
 
@@ -221,6 +244,9 @@ async function runPass(params: {
           text: event.text,
           utteranceId: event.utteranceId,
           speaker: event.speaker,
+          speakerUnknownReason: event.speakerUnknownReason,
+          speakerRechecked: event.speakerRechecked,
+          speakerCheckWindows: event.speakerCheckWindows,
         })
       }
     } catch (error) {
@@ -236,10 +262,13 @@ async function runPass(params: {
   await listener.stop().catch(() => undefined)
   await cleanup().catch(() => undefined)
   // Diagnostics: scene clock vs the agent's first user_speaking_start per turn.
-  matchTurnUtterances(turns, seen).forEach((start, i) => {
+  // A merged turn's utterance started in the previous bystander slot (negative lag), see
+  // pairTurnUtterances.
+  const { starts, merged } = pairTurnUtterances(turns, seen)
+  starts.forEach((start, i) => {
     const firstStart = start?.atMs
     console.log(
-      `${label}: lag turn=${i} sceneStart=${turns[i]!.startMs} firstStart=${firstStart ?? 'none'} lagMs=${firstStart != null ? firstStart - turns[i]!.startMs : 'none'}`,
+      `${label}: lag turn=${i} sceneStart=${turns[i]!.startMs} firstStart=${firstStart ?? 'none'} lagMs=${firstStart != null ? firstStart - turns[i]!.startMs : 'none'}${merged.has(i) ? ' merged' : ''}`,
     )
   })
   return evaluateTurns(turns, seen, label)

@@ -738,6 +738,14 @@ export class ListenerUtteranceCollector {
   private bestDeferredTranscript = ''
   /** Final observed while speaker playback was still running (not counted in stats until accepted). */
   private deferredFinalText = ''
+  /**
+   * Arrival times of the first `user_speaking_end` / `user_speech_final` that came while playback
+   * was still running. The backfill in `recordAcceptedUtteranceStats` uses them, so the end→final
+   * gap is measured from the events, not from two `Date.now()` calls at playback finish (which
+   * read final first and could straddle a millisecond tick: gap −1 ms).
+   */
+  private deferredSpeakingEndAtMs: number | null = null
+  private deferredFinalAtMs: number | null = null
   /** The last transcript wait resolved from a wall-clock partial fallback, not from a final. */
   private resolvedViaPartialFallback = false
   /** First `user_speech_final` seen after such a fallback (the pipeline's real answer). */
@@ -894,16 +902,18 @@ export class ListenerUtteranceCollector {
   private recordAcceptedUtteranceStats(text: string): void {
     const trimmed = text.trim()
     if (!trimmed) return
-    if (this.stats.finals.length === 0) {
-      this.stats.finals.push(trimmed)
-      if (this.stats.speechFinalAtMs == null) {
-        this.stats.speechFinalAtMs = Date.now()
-      }
-    }
+    // One clock read for both backfills: without a real event the gap is 0, never negative.
+    const now = Date.now()
     if (this.stats.speakingEndCount === 0) {
       this.stats.speakingEndCount = 1
       if (this.stats.speakingEndAtMs == null) {
-        this.stats.speakingEndAtMs = Date.now()
+        this.stats.speakingEndAtMs = this.deferredSpeakingEndAtMs ?? now
+      }
+    }
+    if (this.stats.finals.length === 0) {
+      this.stats.finals.push(trimmed)
+      if (this.stats.speechFinalAtMs == null) {
+        this.stats.speechFinalAtMs = this.deferredFinalAtMs ?? now
       }
     }
   }
@@ -961,6 +971,11 @@ export class ListenerUtteranceCollector {
 
   private recordEvent(event: SpeechEvent): void {
     if (this.shouldDeferSpeechClose(event)) {
+      if (event.type === 'user_speaking_end' && this.deferredSpeakingEndAtMs == null) {
+        this.deferredSpeakingEndAtMs = Date.now()
+      } else if (event.type === 'user_speech_final' && this.deferredFinalAtMs == null) {
+        this.deferredFinalAtMs = Date.now()
+      }
       if (event.type === 'user_speech_partial' && event.text?.trim()) {
         this.stats.partialCount += 1
       }
@@ -1099,6 +1114,8 @@ export class ListenerUtteranceCollector {
     this.lastPartial = ''
     this.bestDeferredTranscript = ''
     this.deferredFinalText = ''
+    this.deferredSpeakingEndAtMs = null
+    this.deferredFinalAtMs = null
     this.resolvedViaPartialFallback = false
     this.lateFinalText = null
     this.lateFinalWaiters = []

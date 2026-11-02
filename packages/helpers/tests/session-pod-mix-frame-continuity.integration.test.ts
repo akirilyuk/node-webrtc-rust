@@ -149,12 +149,31 @@ const STALL_AT_FRAME = 50
 const STALL_MS = 300
 /** `paced-stall-1200ms`: a stall longer than the 1 s queue capacity. */
 const LONG_STALL_MS = 1_200
+/** Source frames the 1.2 s stall leaves overdue; they are written back to back after it. */
+const LONG_STALL_BACKLOG_FRAMES = LONG_STALL_MS / FRAME_MS
+/** Per-source elastic queue capacity in frames (mixer `QUEUE_CAPACITY`, crates/mixer/src/elastic.rs). */
+const SOURCE_QUEUE_CAPACITY = 50
+/** Bound on waiting for the held backlog to reach the source queue. */
+const BACKLOG_ARRIVAL_TIMEOUT_MS = 10_000
+
+/**
+ * Hooks around the post-stall backlog of `paced-stall-1200ms`: `onStallEnd` runs before the
+ * first overdue frame is written, `onBacklogWritten` after the last one.
+ */
+interface StallHooks {
+  onStallEnd(): Promise<void>
+  onBacklogWritten(): Promise<void>
+}
 
 /** Streams MARKED_FRAMES marked frames through the speaker's real outbound track. */
-async function sendMarkedFrames(mic: LocalAudioTrack, pattern: SendPattern): Promise<void> {
+async function sendMarkedFrames(
+  mic: LocalAudioTrack,
+  pattern: SendPattern,
+  stallHooks?: StallHooks,
+): Promise<void> {
   const gen = new FrameMarkerGenerator()
   const frames = Array.from({ length: MARKED_FRAMES }, (_, i) => gen.next(i))
-  const start = Date.now()
+  let start = Date.now()
   // Coarse timer, then yield-spin for the last 2 ms so the send times are accurate to well
   // under a millisecond (a bare setTimeout can slip by several ms under load).
   const waitUntil = async (offsetMs: number) => {
@@ -179,8 +198,27 @@ async function sendMarkedFrames(mic: LocalAudioTrack, pattern: SendPattern): Pro
           0,
           pattern === 'paced-stall-1200ms' ? LONG_STALL_MS : STALL_MS,
         )
+        if (pattern === 'paced-stall-1200ms') await stallHooks?.onStallEnd()
       }
+      const inBacklog =
+        pattern === 'paced-stall-1200ms' &&
+        i >= STALL_AT_FRAME &&
+        i < STALL_AT_FRAME + LONG_STALL_BACKLOG_FRAMES
+      // Reproduction knob: a CPU-starved host delivers the post-stall backlog slowly. Before
+      // the pumps were held during the backlog, 5 ms here gave `overflowCompressed` 0 on
+      // every run (CI run 41309444180), because the pump drained the queue as it filled.
+      const spacing = Number(process.env.MIX_FC_BURST_SPACING_MS ?? 0)
+      if (spacing > 0 && inBacklog) await delay(spacing)
       await mic.writeSample(frames[i]!, FRAME_MS)
+      if (stallHooks && inBacklog && i === STALL_AT_FRAME + LONG_STALL_BACKLOG_FRAMES - 1) {
+        await stallHooks.onBacklogWritten()
+        // Re-anchor: the frames after the backlog are paced from now. Otherwise the time the
+        // backlog took (and the hold) leaves them overdue too, and each one arriving at
+        // capacity merges into the same head frame again; one frame that swallows 20 or more
+        // indices aliases the mod-40 marker (iteration 37 of the 50-run loop: overflow 40,
+        // `reordered` 2).
+        start = Date.now() - (i + 1) * FRAME_MS
+      }
     }
   } else if (pattern === 'bunched-3x20') {
     // Three 20 ms frames written back-to-back every 60 ms.
@@ -272,6 +310,18 @@ function startListenerRecorder(track: RemoteAudioTrack) {
         resolveFirst = resolve
       })
       return detected.length
+    },
+    /**
+     * Re-arms the end detection without forgetting the stream has started: a hole in the
+     * source stream (the 1.2 s stall) is longer than END_SILENT_FRAMES, so an `ended` armed
+     * before the last frame was sent fires inside the hole and stops the recording while the
+     * queue still holds the backlog. Call once the sender has finished.
+     */
+    rearmEnd(): void {
+      trailingSilent = 0
+      ended = new Promise<void>((resolve) => {
+        resolveEnded = resolve
+      })
     },
     /** Resolves once no frame has arrived for `ms` (a stream with no idle frames has ended). */
     async quiet(ms: number): Promise<void> {
@@ -466,7 +516,7 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
   async function runCase(
     pattern: SendPattern,
     caseKey: string = pattern,
-  ): Promise<{ seq: SequenceAnalysis; stats: MixStats | null }> {
+  ): Promise<{ seq: SequenceAnalysis; stats: MixStats | null; heldBacklogDepth?: number }> {
     const ids = clientIds(caseKey)
     const [speaker, listener] = await connectAllOrCloseAll(
       [
@@ -486,9 +536,59 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
       await waitForVoiceClientActive(pod, ids.speaker)
       await waitForVoiceClientActive(pod, ids.listener)
 
+      const mixer = host!.getClientMixer()
+      const speakerParticipant = host!.resolveParticipantId(ids.speaker)
+      // Every mixer that runs a pump on the shared graph (one per session host).
+      const mixers = [
+        ...new Set(
+          [SPEAKER_SESSION, LISTENER_SESSION]
+            .map((sessionId) => getVoiceHostForSession(pod, sessionId)?.getClientMixer())
+            .filter((m): m is NonNullable<typeof m> => m !== undefined),
+        ),
+      ]
+      let heldBacklogDepth: number | undefined
+      let pushedAtStallEnd = 0
+      // The overflow precondition is that the backlog reaches the source queue faster than the
+      // pump drains it. On a CPU-starved host the backlog trickles in and the pump keeps the
+      // depth under capacity (overflow 0). Hold every pump on the graph while the backlog is
+      // written and wait until all of it has been pushed, so the queue fills past capacity on
+      // every host. The hold is shorter than the pump's slot-skip threshold, so the resumed
+      // pumps skip nothing (`listenerSkipped` 0); the 50-frame queue drains through counted
+      // pop compression (`compressed`).
+      const stallHooks: StallHooks | undefined =
+        pattern === 'paced-stall-1200ms'
+          ? {
+              async onStallEnd() {
+                await Promise.all(mixers.map((m) => m.pauseAllMixPumps()))
+                pushedAtStallEnd = mixer?.mixStats(speakerParticipant)?.pushed ?? 0
+              },
+              async onBacklogWritten() {
+                try {
+                  const deadline = Date.now() + BACKLOG_ARRIVAL_TIMEOUT_MS
+                  for (;;) {
+                    const s = mixer?.mixStats(speakerParticipant)
+                    if (s && s.pushed - pushedAtStallEnd >= LONG_STALL_BACKLOG_FRAMES) {
+                      heldBacklogDepth = s.depth
+                      break
+                    }
+                    if (Date.now() > deadline) {
+                      throw new Error(
+                        `${pattern}: held backlog did not reach the source queue within ` +
+                          `${BACKLOG_ARRIVAL_TIMEOUT_MS}ms (${JSON.stringify(s)})`,
+                      )
+                    }
+                    await delay(5)
+                  }
+                } finally {
+                  for (const m of mixers) m.resumeAllMixPumps()
+                }
+              },
+            }
+          : undefined
+
       const recorder = startListenerRecorder(listener.agentAudio)
       try {
-        const sending = sendMarkedFrames(speaker.mic, pattern)
+        const sending = sendMarkedFrames(speaker.mic, pattern, stallHooks)
         // Surface a rejected write (e.g. an unsupported packet size) instead of timing out.
         const sendFailed = sending.then(() => new Promise<never>(() => undefined))
         await withDeadline(
@@ -496,6 +596,7 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
           `${pattern}: first marker frame`,
         )
         await sending
+        recorder.rearmEnd()
         await withDeadline(
           Promise.race([recorder.ended, recorder.quiet(500)]),
           `${pattern}: end of marked stream`,
@@ -520,8 +621,8 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
       if (process.env.MIX_FC_DUMP) {
         console.log(`SEQ ${pattern} ${JSON.stringify(recorder.detected)}`)
       }
-      console.log(`MIXSTATS ${JSON.stringify({ pattern, ...result, stats })}`)
-      return { seq: result, stats }
+      console.log(`MIXSTATS ${JSON.stringify({ pattern, ...result, stats, heldBacklogDepth })}`)
+      return { seq: result, stats, heldBacklogDepth }
     } finally {
       closeClient(speaker)
       closeClient(listener)
@@ -632,14 +733,21 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
     'a 1.2 s stall of the sender thread: the queue overflow merge is counted, not a loss',
     { timeout: 90_000 },
     async () => {
-      // The stall leaves ~60 frames to arrive as one burst, more than the 50-frame (1 s)
-      // source queue holds, so the two oldest frames are merged (`overflowCompressed`).
+      // The stall leaves 60 frames overdue. They are written back to back while every mix
+      // pump is held (see `stallHooks` in runCase), so the source queue receives all 60 with
+      // no pop in between: more than its 50-frame (1 s) capacity, and the two oldest frames
+      // are merged (`overflowCompressed`). Without the hold the outcome depended on how fast
+      // the backlog arrived (CI run 41309444180: overflow 0, the pump drained it in time).
       // A CPU-starved CI host does the same to any case (run 39394607747: overflow 1,
       // compressed 23 on a plain paced case).
       const r = await runCase('paced-stall-1200ms')
+      const detail = JSON.stringify(r)
+      // Precondition first: the queue was at capacity when the backlog had arrived.
+      expect(r.heldBacklogDepth, detail).toBe(SOURCE_QUEUE_CAPACITY)
       // The 1.2 s hole in the source stream is not a continuity failure of the mixer (the
       // recorder sees it as interior silence), so only the accounting is asserted.
-      expect(r.stats!.overflowCompressed, JSON.stringify(r)).toBeGreaterThanOrEqual(1)
+      expect(r.stats!.overflowCompressed, detail).toBeGreaterThanOrEqual(1)
+      expect(r.stats!.listenerSkipped, detail).toBe(0)
       expectAccounted(r)
     },
   )

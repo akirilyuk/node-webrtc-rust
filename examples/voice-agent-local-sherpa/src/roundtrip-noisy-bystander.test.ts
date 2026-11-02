@@ -642,10 +642,21 @@ describe('merged caller utterance (VAD opened in the bystander slot)', () => {
     )
   })
 
-  it('(d5) a re-checked merged utterance that barges 690 ms after expected fails', () => {
-    const { failures, seen } = run(u7({ partialAt: 68_000, bargeAt: 69_500 }))
+  it('(d5) a re-checked merged utterance is bounded by voiced audio, not by the wall-clock partial bound', () => {
+    // Iteration 15 (run 41365730208): windows 2, the verdict lands 350 ms after start + 3000 ms
+    // of wall clock (the windows count voiced audio and the utterance has pauses).
+    const { failures, seen } = run(u7({ partialAt: 68_000, bargeAt: 69_160 }))
+    expect(failures).toBe('')
+    expect([...pairTurnUtterances(SCENE, seen).merged]).toEqual([2])
+  })
+
+  it('(d6) a re-checked merged utterance that barges beyond the voiced bound fails', () => {
+    // Window 1 ends 67 400; caller voiced 1848 ms by 69 200, 348 ms over the 1500 ms window.
+    const { failures, seen } = run(
+      u7({ startAt: 65_900, windows: 1, partialAt: 68_000, bargeAt: 69_300 }),
+    )
     expect(failures).toMatch(
-      /turn 2 .*barge-in 690 ms after expected \(max of verdict and qualifying partial\) > 300/,
+      /turn 2 .*barge \d+ ms of voiced scene audio after the deciding window \(> 300 ms\)/,
     )
     expect([...pairTurnUtterances(SCENE, seen).merged]).toEqual([2])
   })

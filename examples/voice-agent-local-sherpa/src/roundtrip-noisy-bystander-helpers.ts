@@ -484,8 +484,8 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
         // The gate counts every frame while its VAD segment is open (speech, babble, pauses under minSilenceDurationMs; not the pre-roll) and restarts at the last window boundary when a segment rejoins the key after SpeechEnd. Voiced scene time is therefore usually at most the counted speech, so this check understates lateness; it can overstate it only after a rejoin. The speech-end and final checks below bound a barge after the audio stops.
         const windowEnd = verdictAfterMs(start, seen)!
         const late = voicedMsBetween(turns, start.atMs, barge.atMs) - windowEnd
-        if (isMerged) {
-          // merged: the barge waits on the first qualifying STT partial of an utterance that began on bystander speech; partial lag is tracked in followups/2026-11-02-speaker-gate-mostly-bystander-first-window.md
+        if (isMerged && !isRechecked(start, seen)) {
+          // merged, not re-checked (a re-checked merged utterance keeps the voiced-audio bound below): the barge waits on the first qualifying STT partial of an utterance that began on bystander speech; partial lag is tracked in followups/2026-11-02-speaker-gate-mostly-bystander-first-window.md
           if (barge.atMs - expected > BARGE_SLACK_MS) {
             failures.push(
               `${tag}: barge-in ${barge.atMs - expected} ms after expected (max of verdict and qualifying partial) > ${BARGE_SLACK_MS}`,

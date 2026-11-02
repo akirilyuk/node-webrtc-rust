@@ -187,6 +187,8 @@ export interface BargeLatencyResult {
 export function evaluateBargeLatency(params: {
   agent1Events: CollectedSpeechEvent[]
   agent2Events: CollectedSpeechEvent[]
+  /** agent2 speaking span of the full round 1 echo ({@link agentSpeakingSpanMs}). */
+  fullEchoDurationMs: number | null
   latencyBoundMs?: number
 }): BargeLatencyResult {
   const latencyBoundMs = params.latencyBoundMs ?? SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS
@@ -209,6 +211,27 @@ export function evaluateBargeLatency(params: {
     failures.push(
       `interrupted leg B: barge_in ${latencyMs}ms after barge onset > SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS ${latencyBoundMs}ms`,
     )
+  }
+  // Truncation is the product's own signal: the barge flush ends agent2's playback
+  // (`agent_speaking_end` follows `barge_in` within 1 ms on CI), well before the full echo would.
+  if (barge) {
+    const flushEnd = params.agent2Events.find(
+      (e) => e.type === SPEECH_EVENT_TYPE.agentSpeakingEnd && e.atMs >= barge.atMs,
+    )
+    const span = agentSpeakingSpanMs(params.agent2Events)
+    if (!flushEnd) {
+      failures.push(
+        'interrupted leg B: playback not truncated (no agent_speaking_end after barge_in)',
+      )
+    } else if (
+      span !== null &&
+      params.fullEchoDurationMs !== null &&
+      span >= params.fullEchoDurationMs
+    ) {
+      failures.push(
+        `interrupted leg B: playback not truncated (agent2 spoke ${span}ms >= full echo ${params.fullEchoDurationMs}ms)`,
+      )
+    }
   }
   return { onsetAfterSpeakStartMs, latencyMs, failures }
 }
@@ -532,21 +555,24 @@ async function main(): Promise<void> {
   const bargeLatency = evaluateBargeLatency({
     agent1Events: legB2.agent1Events,
     agent2Events: legB2.agent2Events,
+    fullEchoDurationMs,
   })
   const caps = deriveInterruptedLegCaps({
     fullEchoWords: fullEchoText.split(/\s+/).filter(Boolean).length,
     fullEchoDurationMs: fullEchoDurationMs ?? 0,
     bargeOnsetAfterSpeakStartMs: bargeLatency.onsetAfterSpeakStartMs ?? 0,
     prefixWords:
-      fullEchoText.split(/\s+/).length - echoPayloadForCompare(fullEchoText).split(/\s+/).length,
+      fullEchoText.split(/\s+/).filter(Boolean).length -
+      echoPayloadForCompare(fullEchoText).split(/\s+/).filter(Boolean).length,
   })
   console.log(
     `Leg B caps: barge latency=${bargeLatency.latencyMs}ms (bound ${SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS}ms) onset=+${bargeLatency.onsetAfterSpeakStartMs}ms window=${caps.windowMs}ms maxNumbers=${caps.maxNumberWords} maxSim=${caps.maxSimilarity.toFixed(2)}`,
   )
   failures.push(...bargeLatency.failures)
   if (!caps.provesTruncation) {
-    failures.push(
-      `interrupted leg B: window ${caps.windowMs}ms covers the whole echo; raise nothing, shorten the barge delay`,
+    // Truncation is still asserted by evaluateBargeLatency (flush end); only the word cap is moot.
+    console.log(
+      `Leg B word cap skipped: window ${caps.windowMs}ms covers the whole echo (onset +${bargeLatency.onsetAfterSpeakStartMs}ms)`,
     )
   }
   const interrupted = evaluateInterruptedEchoLeg({
@@ -577,7 +603,7 @@ async function main(): Promise<void> {
     )
   }
 
-  if (!interrupted.passed) failures.push(...interrupted.failures)
+  if (caps.provesTruncation && !interrupted.passed) failures.push(...interrupted.failures)
   else console.log('✓ Round 2: barge-in truncated You said playback')
 
   if (!bargePhraseEval.passed) failures.push(...bargePhraseEval.failures)

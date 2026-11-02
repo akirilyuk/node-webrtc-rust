@@ -221,12 +221,14 @@ describe('interrupted leg B oracle — partial-grid offset sweep', () => {
 describe('evaluateBargeLatency', () => {
   const ev = (type: string, atMs: number) => ({ type, atMs }) as never
 
-  it('passes the CI pass 1 timeline (2624 ms, worst grid phase)', () => {
+  it('passes the CI pass 1 timeline with flush end (2624 ms, worst grid phase)', () => {
     const r = evaluateBargeLatency({
+      fullEchoDurationMs: 4064,
       agent1Events: [ev(SPEECH_EVENT_TYPE.agentSpeakingStart, 30628)],
       agent2Events: [
         ev(SPEECH_EVENT_TYPE.agentSpeakingStart, 30108),
         ev(SPEECH_EVENT_TYPE.bargeIn, 33252),
+        ev(SPEECH_EVENT_TYPE.agentSpeakingEnd, 33253),
       ],
     })
     expect(r.failures).toEqual([])
@@ -236,6 +238,7 @@ describe('evaluateBargeLatency', () => {
 
   it('fails when barge_in fires later than the bound', () => {
     const r = evaluateBargeLatency({
+      fullEchoDurationMs: 4064,
       agent1Events: [ev(SPEECH_EVENT_TYPE.agentSpeakingStart, 1000)],
       agent2Events: [
         ev(SPEECH_EVENT_TYPE.agentSpeakingStart, 500),
@@ -247,10 +250,49 @@ describe('evaluateBargeLatency', () => {
 
   it('fails when barge_in never fires', () => {
     const r = evaluateBargeLatency({
+      fullEchoDurationMs: 4064,
       agent1Events: [ev(SPEECH_EVENT_TYPE.agentSpeakingStart, 1000)],
       agent2Events: [ev(SPEECH_EVENT_TYPE.agentSpeakingStart, 500)],
     })
     expect(r.failures).toContain('interrupted leg B: barge_in never fired')
+  })
+
+  it('fails when agent2 keeps speaking after barge_in', () => {
+    const r = evaluateBargeLatency({
+      fullEchoDurationMs: 4064,
+      agent1Events: [ev(SPEECH_EVENT_TYPE.agentSpeakingStart, 500)],
+      agent2Events: [
+        ev(SPEECH_EVENT_TYPE.agentSpeakingStart, 0),
+        ev(SPEECH_EVENT_TYPE.bargeIn, 2000),
+        ev(SPEECH_EVENT_TYPE.agentSpeakingEnd, 4064),
+      ],
+    })
+    expect(r.failures.join(' ')).toMatch(/playback not truncated/)
+  })
+
+  it('fails when no agent_speaking_end follows barge_in', () => {
+    const r = evaluateBargeLatency({
+      fullEchoDurationMs: 4064,
+      agent1Events: [ev(SPEECH_EVENT_TYPE.agentSpeakingStart, 500)],
+      agent2Events: [
+        ev(SPEECH_EVENT_TYPE.agentSpeakingStart, 0),
+        ev(SPEECH_EVENT_TYPE.bargeIn, 2000),
+      ],
+    })
+    expect(r.failures.join(' ')).toMatch(/playback not truncated/)
+  })
+
+  it('onset 700 ms with prompt flush passes', () => {
+    const r = evaluateBargeLatency({
+      fullEchoDurationMs: 4064,
+      agent1Events: [ev(SPEECH_EVENT_TYPE.agentSpeakingStart, 700)],
+      agent2Events: [
+        ev(SPEECH_EVENT_TYPE.agentSpeakingStart, 0),
+        ev(SPEECH_EVENT_TYPE.bargeIn, 3300),
+        ev(SPEECH_EVENT_TYPE.agentSpeakingEnd, 3301),
+      ],
+    })
+    expect(r.failures).toEqual([])
   })
 
   it('agentSpeakingSpanMs measures start → end', () => {

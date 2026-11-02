@@ -20,7 +20,9 @@ export interface SignalingServerOptions {
   pingIntervalMs?: number
   /**
    * Upper bound for `close()`: clients still open after this are terminated and the HTTP server's
-   * remaining connections are closed. Default 2000.
+   * remaining connections are closed with `httpServer.closeAllConnections()`. In attached mode
+   * (`server` option) this also drops the caller's other in-flight HTTP requests on that server.
+   * Default 2000.
    */
   closeTimeoutMs?: number
 }

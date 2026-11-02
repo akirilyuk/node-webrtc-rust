@@ -1,5 +1,5 @@
-import { createServer, request, Agent } from 'http'
-import net from 'net'
+import { createServer, request, Agent, type Server as HttpServer } from 'http'
+import type { Socket } from 'net'
 
 import { describe, expect, it } from 'vitest'
 import { WebSocket } from 'ws'
@@ -41,7 +41,7 @@ for (const mode of ['own', 'attached'] as Mode[]) {
       const server = await start(mode, 300)
       const client = await opened(`ws://127.0.0.1:${server.port}`)
       // Stop reading so the close handshake never completes from the client side.
-      ;(client as unknown as { _socket: net.Socket })._socket.pause()
+      ;(client as unknown as { _socket: Socket })._socket.pause()
       const t0 = Date.now()
       await server.close()
       expect(Date.now() - t0).toBeLessThan(1500)
@@ -84,3 +84,31 @@ describe('SignalingServer.close with idle keep-alive HTTP connection', () => {
     agent.destroy()
   })
 })
+
+for (const mode of ['own', 'attached'] as Mode[]) {
+  describe(`SignalingServer.close with in-flight HTTP request (${mode} http server)`, () => {
+    it('close resolves within the bound with an in-flight HTTP request that never gets a response', async () => {
+      const http: HttpServer | undefined = mode === 'attached' ? createServer(() => {}) : undefined
+      const server =
+        http !== undefined
+          ? new SignalingServer({ server: http, closeTimeoutMs: 300, pingIntervalMs: 0 })
+          : new SignalingServer({ closeTimeoutMs: 300, pingIntervalMs: 0 })
+      await server.listen(0, '127.0.0.1')
+      const inner = http ?? (server as unknown as { httpServer: HttpServer }).httpServer
+      const seen = new Promise<void>((resolve) => inner.once('request', () => resolve()))
+      const agent = new Agent({ keepAlive: false })
+      const req = request({ host: '127.0.0.1', port: server.port, agent, path: '/hang' })
+      const failed = new Promise<void>((resolve) => {
+        req.on('error', () => resolve())
+        req.on('close', () => resolve())
+      })
+      req.end()
+      await seen
+      const t0 = Date.now()
+      await server.close()
+      expect(Date.now() - t0).toBeLessThan(1500)
+      await failed
+      agent.destroy()
+    }, 5000)
+  })
+}

@@ -110,7 +110,8 @@ export class SignalingServer extends EventEmitter {
   /**
    * Closes every client socket (joined or not) and the underlying HTTP/WebSocket servers.
    * Resolves within `closeTimeoutMs` plus a short grace: sockets still open after the bound are
-   * terminated and the HTTP server's remaining connections are closed.
+   * terminated and `httpServer.closeAllConnections()` is called. In attached mode this also drops
+   * the caller's other in-flight HTTP requests on that server.
    */
   close(): Promise<void> {
     debugFn('signaling::SignalingServer', 'close')

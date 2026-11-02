@@ -78,6 +78,26 @@ fn default_agent_playback_guard_ms() -> u32 {
     0
 }
 
+/// Interval between decoded partials of the default local streaming STT (Sherpa Kroko
+/// zipformer `sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06`). Measured on CI: partials
+/// arrive 1.27–1.28 s apart on every leg (nwr CI run 41462309917).
+pub const SHERPA_STREAMING_PARTIAL_INTERVAL_MS: u32 = 1_280;
+
+/// Time from caller speech onset until a decoded partial can hold `min_stt_partial_tokens` (2)
+/// tokens of a short phrase ("excuse me"). Measured: 1437 ms on CI (the onset fell well on the
+/// partial grid).
+pub const SEMANTIC_BARGE_IN_TIME_TO_MIN_TOKENS_MS: u32 = 1_440;
+
+/// Documented worst-case latency of semantic barge-in (`require_stt_partial`), from caller speech
+/// onset to `barge_in`: barge-in fires on the **first** qualifying partial, and when the first
+/// partial after onset holds only one token ("Excuse") the next qualifying one arrives one
+/// partial interval later. So: time to min tokens + one partial interval = 2720 ms (about 2.6 s
+/// was observed: 2624 ms on CI). Lockstep: SDK `SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS`
+/// (`packages/sdk/src/voice/defaults.ts`) and the Sherpa e2e oracle in
+/// `examples/voice-agent-local-sherpa/src/roundtrip-counting-barge-recovery.ts` read this value.
+pub const SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS: u32 =
+    SEMANTIC_BARGE_IN_TIME_TO_MIN_TOKENS_MS + SHERPA_STREAMING_PARTIAL_INTERVAL_MS;
+
 impl Default for BargeInConfig {
     fn default() -> Self {
         Self {

@@ -626,11 +626,13 @@ When the agent is **not** speaking, VAD opens STT normally; no barge unless conf
 
 | Topic            | Detail                                                                                                                                                                          |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Latency**      | Interrupt happens after the first partial (~200–800 ms+), not at the first voiced frame.                                                                                        |
+| **Latency**      | Interrupt happens on the first qualifying partial, not at the first voiced frame. Worst case: `SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS` (see below).                            |
 | **STT required** | Without `stt` on the agent, instant VAD barge still applies when `requireSttPartial: false`.                                                                                    |
 | **Echo**         | Speaker bleed can still yield partials that match agent wording; use headphones, `gateStt`, or raise `agentPlaybackGuardMs`.                                                    |
 | **Disable**      | `requireSttPartial: false` restores instant energy-VAD barge (noisier).                                                                                                         |
 | **C1 / C2**      | `sttListenTimeoutMs` (4000) closes listen with `user_stt_not_found`; `utteranceFinalizeTimeoutMs` (1500) forces `user_speech_final` from last partial when vendor final stalls. |
+
+**Worst-case latency (`SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS` = 2720 ms).** With the default local Sherpa streaming STT (Kroko zipformer), decoded partials arrive about every 1280 ms. A short phrase needs about 1440 ms after speech onset before a partial can hold two tokens. If the first partial after onset holds only one token (`"Excuse"`), barge-in waits for the next partial, one interval later: 1440 + 1280 = 2720 ms from caller onset to `barge_in` (2624 ms observed on CI). Exported from `@node-webrtc-rust/sdk/voice`; Rust `node_webrtc_rust_speech::config::SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS`. Cloud STT vendors with faster partials barge sooner; the bound is for the local default.
 
 E2E: `npm run start:roundtrip-barge-in` — tone must **not** barge; spoken TTS phrase must barge.
 

@@ -605,6 +605,11 @@ pub struct VoiceAgent {
     tts_drain_wake: Arc<Notify>,
     tts_drain_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     tts_synthesis_queue: Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
+    /// The job the synthesis worker has dequeued but not started yet (it is awaiting the
+    /// pre-synthesis hook or the LID wait). Only read or written while holding
+    /// `tts_synthesis_queue`'s lock, so a flush sees every job either queued, held here, or
+    /// started (and then cut through `tts_synthesis_epoch`).
+    tts_held_job: Arc<std::sync::Mutex<Option<TtsSynthesisJob>>>,
     tts_synthesis_wake: Arc<Notify>,
     tts_synthesis_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     tts_synthesis_busy: Arc<AtomicBool>,
@@ -802,6 +807,7 @@ impl VoiceAgent {
             tts_drain_wake: Arc::new(Notify::new()),
             tts_drain_worker: Arc::new(Mutex::new(None)),
             tts_synthesis_queue: Arc::new(Mutex::new(VecDeque::new())),
+            tts_held_job: Arc::new(std::sync::Mutex::new(None)),
             tts_synthesis_wake: Arc::new(Notify::new()),
             tts_synthesis_worker: Arc::new(Mutex::new(None)),
             tts_synthesis_busy: Arc::new(AtomicBool::new(false)),
@@ -2292,6 +2298,7 @@ impl VoiceAgent {
         }
         let wake = Arc::clone(&self.tts_synthesis_wake);
         let queue = Arc::clone(&self.tts_synthesis_queue);
+        let held_job = Arc::clone(&self.tts_held_job);
         let tts = Arc::clone(&self.tts);
         let tts_buffer = self.tts_buffer.clone();
         let tts_drain_wake = Arc::clone(&self.tts_drain_wake);
@@ -2335,17 +2342,22 @@ impl VoiceAgent {
                     if shutdown.load(Ordering::SeqCst) || weak_self.strong_count() == 0 {
                         break;
                     }
-                    let job = {
+                    // Pop into the held slot (under the queue lock) rather than a local: until
+                    // synthesis starts, the job belongs to whichever comes first, this worker or
+                    // a flush/barge-in/stop pass, which settles it there.
+                    let ticket = {
                         let mut pending = queue.lock().await;
                         let job = pending.pop_front();
                         // Mark while still holding the queue lock so idle checks never see the
                         // job in neither the queue nor a busy/dequeued state.
+                        let ticket = job.as_ref().map(|j| j.ticket);
                         if job.is_some() {
                             job_dequeued.store(true, Ordering::SeqCst);
+                            *held_job.lock().unwrap_or_else(|e| e.into_inner()) = job;
                         }
-                        job
+                        ticket
                     };
-                    let Some(job) = job else {
+                    let Some(ticket) = ticket else {
                         break;
                     };
 
@@ -2354,18 +2366,38 @@ impl VoiceAgent {
                         .unwrap_or_else(|e| e.into_inner())
                         .clone();
                     if let Some(hook) = hook {
-                        hook(job.ticket).await;
+                        hook(ticket).await;
                     }
 
                     Self::await_in_flight_lid_before_tts(&weak_self, &inner, &lid_notify).await;
 
-                    synthesis_busy.store(true, Ordering::SeqCst);
-                    job_dequeued.store(false, Ordering::SeqCst);
+                    // Invariant: a cut pass bumps `synthesis_epoch` and settles the held job in
+                    // one critical section under the queue lock
+                    // (`cancel_pending_tts_synthesis_collect_before`). Taking the job back and
+                    // reading the epoch here, under the same lock, therefore sees either
+                    //   - no job: a cut settled it (done + reply end are the cut's); emit
+                    //     nothing, or
+                    //   - the job and the epoch after every cut that kept it: start it with that
+                    //     epoch, so a later cut is caught by the in-flight discard checks.
+                    let taken = {
+                        let _pending = queue.lock().await;
+                        let job = held_job.lock().unwrap_or_else(|e| e.into_inner()).take();
+                        job.map(|job| {
+                            synthesis_busy.store(true, Ordering::SeqCst);
+                            job_dequeued.store(false, Ordering::SeqCst);
+                            (job, synthesis_epoch.load(Ordering::SeqCst))
+                        })
+                    };
+                    let Some((job, epoch_at_start)) = taken else {
+                        continue;
+                    };
+
                     protected_active.store(!job.interruptible, Ordering::SeqCst);
                     let result = Self::run_tts_synthesis_job(
                         &job.text,
                         job.requested_at,
                         job.reply_id.as_ref(),
+                        epoch_at_start,
                         &tts,
                         &tts_buffer,
                         &tts_drain_wake,
@@ -2397,9 +2429,13 @@ impl VoiceAgent {
                     break;
                 }
             }
-            // Cancel any leftovers so waiters are not stranded.
+            // Cancel any leftovers (held or queued) so waiters are not stranded.
             let mut pending = queue.lock().await;
-            for job in pending.drain(..) {
+            let held = held_job.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if held.is_some() {
+                job_dequeued.store(false, Ordering::SeqCst);
+            }
+            for job in held.into_iter().chain(pending.drain(..)) {
                 if let Some(done) = job.done {
                     let _ = done.send(Err(SpeechError::Internal("TTS cancelled".into())));
                 }
@@ -2412,6 +2448,7 @@ impl VoiceAgent {
         text: &str,
         requested_at: Instant,
         reply_id: Option<&Arc<str>>,
+        epoch_at_start: u64,
         tts: &Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
         tts_buffer: &TtsBuffer,
         tts_drain_wake: &Arc<Notify>,
@@ -2437,6 +2474,7 @@ impl VoiceAgent {
                 text,
                 requested_at,
                 reply_id,
+                epoch_at_start,
                 tts,
                 tts_buffer,
                 tts_drain_wake,
@@ -2459,6 +2497,7 @@ impl VoiceAgent {
                 text,
                 requested_at,
                 reply_id,
+                epoch_at_start,
                 tts,
                 tts_buffer,
                 tts_drain_wake,
@@ -2485,6 +2524,7 @@ impl VoiceAgent {
         text: &str,
         requested_at: Instant,
         reply_id: Option<&Arc<str>>,
+        epoch_at_start: u64,
         tts: &Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
         tts_buffer: &TtsBuffer,
         tts_drain_wake: &Arc<Notify>,
@@ -2500,7 +2540,6 @@ impl VoiceAgent {
         tts_synthesis_busy: &Arc<AtomicBool>,
         tts_synthesis_queue: &Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
     ) -> SpeechResult<()> {
-        let epoch_at_start = synthesis_epoch.load(Ordering::SeqCst);
         let generation_at_start = tts_buffer.current_generation().await;
         let tts_started = Instant::now();
         let chunks = {
@@ -2612,6 +2651,7 @@ impl VoiceAgent {
         text: &str,
         requested_at: Instant,
         reply_id: Option<&Arc<str>>,
+        epoch_at_start: u64,
         tts: &Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
         tts_buffer: &TtsBuffer,
         tts_drain_wake: &Arc<Notify>,
@@ -2628,7 +2668,6 @@ impl VoiceAgent {
         tts_synthesis_busy: &Arc<AtomicBool>,
         tts_synthesis_queue: &Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
     ) -> SpeechResult<()> {
-        let epoch_at_start = synthesis_epoch.load(Ordering::SeqCst);
         let generation_at_start = tts_buffer.current_generation().await;
         // Capture before drain can abort this job's PCM (streaming starts drain early).
         let failure_gen_at_start = {
@@ -3149,11 +3188,32 @@ impl VoiceAgent {
     /// Drops the queued jobs whose ticket is before `cut` (all of them unless a later send was
     /// queued after the cut was taken). Sends still on their way to the queue were cancelled by
     /// the cut itself. A job already synthesizing or playing is cut regardless of its ticket.
+    ///
+    /// The job the worker holds (dequeued, synthesis not started) is settled here like a queued
+    /// one when its ticket is before `cut`: it rejects "TTS cancelled" and its reply id comes
+    /// first (its ticket is below every queued one). The epoch bump and the held-job check
+    /// share one critical section under the queue lock, which the worker also holds when it
+    /// takes the job back to start it; see the invariant in `ensure_tts_synthesis_worker`.
     async fn cancel_pending_tts_synthesis_collect_before(&self, cut: TtsFlushCut) -> Vec<Arc<str>> {
-        self.invalidate_inflight_tts_synthesis();
         Self::clear_pending_first_audio(&mut *self.inner.lock().await);
         let mut queue = self.tts_synthesis_queue.lock().await;
+        self.invalidate_inflight_tts_synthesis();
         let mut dropped = Vec::new();
+        {
+            let mut held = self.tts_held_job.lock().unwrap_or_else(|e| e.into_inner());
+            if held.as_ref().is_some_and(|j| j.ticket < cut.below) {
+                if let Some(job) = held.take() {
+                    // The job is gone, not handed to the next stage.
+                    self.tts_job_dequeued.store(false, Ordering::SeqCst);
+                    if let Some(id) = job.reply_id {
+                        dropped.push(id);
+                    }
+                    if let Some(done) = job.done {
+                        let _ = done.send(Err(SpeechError::Internal("TTS cancelled".into())));
+                    }
+                }
+            }
+        }
         let keep_from = queue
             .iter()
             .position(|j| j.ticket >= cut.below)

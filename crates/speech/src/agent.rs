@@ -619,6 +619,9 @@ pub struct VoiceAgent {
     /// Test-only hook run by the synthesis worker after it dequeued a job and before it takes
     /// the TTS lock (see [`VoiceAgent::set_tts_pre_synthesis_hook`]).
     tts_pre_synthesis_hook: Arc<std::sync::Mutex<Option<TtsPreEnqueueHook>>>,
+    /// Test-only hook run by the synthesis worker right after it took the held job back (see
+    /// [`VoiceAgent::set_tts_post_take_hook`]).
+    tts_post_take_hook: Arc<std::sync::Mutex<Option<TtsPreEnqueueHook>>>,
     /// True from the moment the worker pops a job (under the queue lock) until it marks
     /// `tts_synthesis_busy`. Closes the window in which a job is in neither the queue nor busy.
     tts_job_dequeued: Arc<AtomicBool>,
@@ -814,6 +817,7 @@ impl VoiceAgent {
             tts_send_order: Arc::new(TtsSendOrder::default()),
             tts_pre_enqueue_hook: std::sync::Mutex::new(None),
             tts_pre_synthesis_hook: Arc::new(std::sync::Mutex::new(None)),
+            tts_post_take_hook: Arc::new(std::sync::Mutex::new(None)),
             lid_completion_notify: Arc::new(Notify::new()),
             lid_gate_bound_hits: Arc::new(AtomicUsize::new(0)),
             tts_synthesis_epoch: Arc::new(AtomicU64::new(0)),
@@ -2260,6 +2264,17 @@ impl VoiceAgent {
             .unwrap_or_else(|e| e.into_inner()) = hook;
     }
 
+    /// Installs (or clears) a hook the synthesis worker awaits with the job's ticket id right
+    /// after it took the job back to start synthesis (epoch already read), before the synthesis
+    /// job runs (tests only).
+    #[doc(hidden)]
+    pub fn set_tts_post_take_hook(&self, hook: Option<TtsPreEnqueueHook>) {
+        *self
+            .tts_post_take_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = hook;
+    }
+
     /// Ticket ids of the queued synthesis jobs, front first (tests only).
     #[doc(hidden)]
     pub async fn queued_tts_tickets(&self) -> Vec<u64> {
@@ -2319,6 +2334,7 @@ impl VoiceAgent {
         let weak_self = self.weak_self.clone();
         let lid_notify = Arc::clone(&self.lid_completion_notify);
         let pre_synthesis_hook = Arc::clone(&self.tts_pre_synthesis_hook);
+        let post_take_hook = Arc::clone(&self.tts_post_take_hook);
         *slot = Some(tokio::spawn(async move {
             let _alive_guard = TtsWorkerAliveGuard::enter(&alive);
             loop {
@@ -2378,7 +2394,10 @@ impl VoiceAgent {
                     //   - no job: a cut settled it (done + reply end are the cut's); emit
                     //     nothing, or
                     //   - the job and the epoch after every cut that kept it: start it with that
-                    //     epoch, so a later cut is caught by the in-flight discard checks.
+                    //     epoch. A later cut no longer finds the job held; the synthesis job owns
+                    //     its reply end then and catches the cut through the epoch: the streaming
+                    //     path checks it right after resetting `generate_cancel` (before the
+                    //     vendor call) and per chunk, the buffered path before it enqueues PCM.
                     let taken = {
                         let _pending = queue.lock().await;
                         let job = held_job.lock().unwrap_or_else(|e| e.into_inner()).take();
@@ -2391,6 +2410,13 @@ impl VoiceAgent {
                     let Some((job, epoch_at_start)) = taken else {
                         continue;
                     };
+                    let hook = post_take_hook
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
+                    if let Some(hook) = hook {
+                        hook(job.ticket).await;
+                    }
 
                     protected_active.store(!job.interruptible, Ordering::SeqCst);
                     let result = Self::run_tts_synthesis_job(
@@ -2675,6 +2701,15 @@ impl VoiceAgent {
             guard.tts_playback_failure_gen
         };
         generate_cancel.store(false, Ordering::SeqCst);
+        // A cut between the worker's take-back (where `epoch_at_start` was read) and here has
+        // already set `generate_cancel` (cleared just above) and flushed the buffer (the
+        // generation above is post-flush), so nothing later would stop this job. Checked after
+        // the reset: a cut that bumps the epoch after this load also sets the cancel flag again.
+        if synthesis_epoch.load(Ordering::SeqCst) != epoch_at_start {
+            voice_debug("TTS streaming synthesis discarded (cut before start)");
+            Self::emit_discarded_reply_end(event_bus, reply_id.map(|id| &**id));
+            return Ok(());
+        }
 
         Self::ensure_tts_drain_worker_shared(
             tts_drain_worker,

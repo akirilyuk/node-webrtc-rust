@@ -996,3 +996,86 @@ async fn flush_after_worker_started_job_ends_it_once() {
     );
     agent.stop().await.unwrap();
 }
+
+/// The worker has taken A ("park a", r1) back and read the epoch, but the streaming job has not
+/// started yet (parked in the post-take hook) when a whole flush runs. The held slot is empty,
+/// so the flush settles nothing for A; the streaming job must see the epoch moved before it
+/// produces anything. A never reaches the vendor and r1 ends exactly once, interrupted, from
+/// the worker's discard path (the flush emits none for it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn flush_after_take_back_before_streaming_start_cancels_job() {
+    assert!(
+        node_webrtc_rust_speech::pipeline::tts_stream_chunks_enabled(),
+        "this test covers the streaming path (VOICE_TTS_STREAM_CHUNKS unset)"
+    );
+    let (agent, probe) = probe_agent(CutBy::Flush).await;
+    let mut rx = agent.subscribe_events();
+    let (release_tx, release_rx) = oneshot::channel::<()>();
+    let (parked_tx, parked_rx) = oneshot::channel::<()>();
+    let slot = Arc::new(Mutex::new(Some((release_rx, parked_tx))));
+    let hook: TtsPreEnqueueHook = Arc::new(move |ticket| {
+        let taken = if ticket == 0 {
+            slot.lock().unwrap().take()
+        } else {
+            None
+        };
+        Box::pin(async move {
+            if let Some((release_rx, parked_tx)) = taken {
+                let _ = parked_tx.send(());
+                let _ = release_rx.await;
+            }
+        })
+    });
+    agent.set_tts_post_take_hook(Some(hook));
+    let a = {
+        let agent = Arc::clone(&agent);
+        tokio::spawn(async move {
+            agent
+                .send_text_to_tts_with_options("park a", blocking("r1"))
+                .await
+        })
+    };
+    timeout(BOUND, parked_rx)
+        .await
+        .expect("worker parks after taking A back")
+        .unwrap();
+    timeout(BOUND, agent.flush_tts())
+        .await
+        .expect("flush bounded")
+        .unwrap();
+    let at_flush = drain_now(&mut rx);
+    assert_eq!(
+        events_for(&at_flush, "r1").count(),
+        0,
+        "the flush emits nothing for a started job: {at_flush:?}"
+    );
+
+    let _ = release_tx.send(());
+    let _ = timeout(BOUND, a).await.expect("A bounded").unwrap();
+    timeout(
+        BOUND,
+        agent.send_text_to_tts_with_options("z", blocking("rz")),
+    )
+    .await
+    .expect("z bounded")
+    .unwrap();
+    let later = recv_until_reply_end(&mut rx, "rz").await;
+    let r1: Vec<_> = later
+        .iter()
+        .filter(|(_, id, _)| id.as_deref() == Some("r1"))
+        .collect();
+    assert_eq!(
+        r1,
+        vec![&(
+            SpeechEventKind::AgentReplyEnd,
+            Some("r1".to_string()),
+            Some(true)
+        )],
+        "r1: one interrupted reply end and nothing else (no start, no audio): {later:?}"
+    );
+    assert!(
+        !probe.reached_vendor("park a"),
+        "A never reaches the vendor"
+    );
+    agent.stop().await.unwrap();
+}

@@ -101,20 +101,18 @@ pub(crate) fn redact(message: &str, api_key: Option<&str>) -> String {
 /// `429: …` (numeric status first), or after `HTTP ` / `http ` (`speech HTTP 429 …`,
 /// `fishaudio http 429: …`, `HTTP error: 429 …`). Digits elsewhere in the text are ignored.
 fn status_of(message: &str) -> Option<u16> {
-    let after_http = ["HTTP ", "http "]
-        .iter()
-        .find_map(|marker| message.find(marker).map(|i| &message[i + marker.len()..]))
-        .map(|s| s.trim_start_matches("error: "));
-    [after_http, Some(message)]
-        .into_iter()
-        .flatten()
-        .find_map(|s| {
-            let digits = s
-                .get(..3)
-                .filter(|d| d.bytes().all(|b| b.is_ascii_digit()))?;
-            matches!(s.as_bytes().get(3), Some(b' ' | b':')).then_some(())?;
-            digits.parse().ok()
-        })
+    fn lead(s: &str) -> Option<u16> {
+        let d = s
+            .get(..3)
+            .filter(|d| d.bytes().all(|b| b.is_ascii_digit()))?;
+        matches!(s.as_bytes().get(3), Some(b' ' | b':')).then_some(())?;
+        d.parse().ok()
+    }
+    lead(message).or_else(|| {
+        // ASCII lowercasing keeps byte offsets.
+        let i = message.to_ascii_lowercase().find("http ")?;
+        lead(message[i + 5..].trim_start_matches("error: "))
+    })
 }
 
 /// Class of a vendor failure from the HTTP status in the vendor's own error text.
@@ -350,6 +348,18 @@ mod tests {
                 SynthesizeCode::VendorError,
             ),
             ("401 Unauthorized: bad", SynthesizeCode::VendorKeyInvalid),
+            (
+                "500: upstream said HTTP 401 Unauthorized",
+                SynthesizeCode::VendorError,
+            ),
+            (
+                "fishaudio http 500: proxy HTTP 401 x",
+                SynthesizeCode::VendorError,
+            ),
+            (
+                "fishaudio http request failed: error sending request",
+                SynthesizeCode::VendorError,
+            ),
             ("429: slow down", SynthesizeCode::VendorRateLimited),
             (
                 "fishaudio http 429: slow down",

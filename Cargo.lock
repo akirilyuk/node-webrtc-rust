@@ -3765,6 +3765,7 @@ dependencies = [
 name = "node-webrtc-rust-bindings"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytes",
  "env_logger",
  "log",

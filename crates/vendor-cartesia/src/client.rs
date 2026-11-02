@@ -178,7 +178,7 @@ impl CartesiaClient {
             let status = response.status();
             if !status.is_success() {
                 let message = response.text().await.unwrap_or_else(|_| status.to_string());
-                return Err(vendor_err(message));
+                return Err(vendor_err(http_status_message(status.as_u16(), &message)));
             }
 
             let mut mono = Vec::new();
@@ -549,5 +549,22 @@ mod tests {
     fn default_api_version_matches_matrix() {
         let client = CartesiaClient::new(Some("k".into()));
         assert_eq!(client.api_version, DEFAULT_API_VERSION);
+    }
+}
+
+/// Error text of a non-2xx answer: `<numeric status>: <body>`, so callers can read the status.
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+fn http_status_message(status: u16, body: &str) -> String {
+    format!("{status}: {body}")
+}
+
+#[cfg(test)]
+mod http_status_message_tests {
+    use super::http_status_message;
+
+    #[test]
+    fn error_text_starts_with_the_numeric_status() {
+        let text = http_status_message(429, "slow down");
+        assert_eq!(text, "429: slow down");
     }
 }

@@ -602,9 +602,20 @@ pub struct VoiceAgent {
     /// Test hook: verdicts the handler has finished applying.
     speaker_verdicts_applied: AtomicU64,
     tts: Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
+    /// Whether `tts` holds a provider. Written while holding the `tts` lock at every writer of
+    /// `tts` (constructor, `apply_pending_tts_config_if_any`), read by sends without that lock:
+    /// the synthesis worker holds `tts` for a whole vendor call, and a send must reach the
+    /// queue without waiting for it (`rt.serial-queue-head-of-line`). The worker still checks
+    /// the provider itself before synthesis.
+    tts_configured: AtomicBool,
     tts_drain_wake: Arc<Notify>,
     tts_drain_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     tts_synthesis_queue: Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
+    /// The job the synthesis worker has dequeued but not started yet (it is awaiting the
+    /// pre-synthesis hook or the LID wait). Only read or written while holding
+    /// `tts_synthesis_queue`'s lock, so a flush sees every job either queued, held here, or
+    /// started (and then cut through `tts_synthesis_epoch`).
+    tts_held_job: Arc<std::sync::Mutex<Option<TtsSynthesisJob>>>,
     tts_synthesis_wake: Arc<Notify>,
     tts_synthesis_worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     tts_synthesis_busy: Arc<AtomicBool>,
@@ -614,6 +625,9 @@ pub struct VoiceAgent {
     /// Test-only hook run by the synthesis worker after it dequeued a job and before it takes
     /// the TTS lock (see [`VoiceAgent::set_tts_pre_synthesis_hook`]).
     tts_pre_synthesis_hook: Arc<std::sync::Mutex<Option<TtsPreEnqueueHook>>>,
+    /// Test-only hook run by the synthesis worker right after it took the held job back (see
+    /// [`VoiceAgent::set_tts_post_take_hook`]).
+    tts_post_take_hook: Arc<std::sync::Mutex<Option<TtsPreEnqueueHook>>>,
     /// True from the moment the worker pops a job (under the queue lock) until it marks
     /// `tts_synthesis_busy`. Closes the window in which a job is in neither the queue nor busy.
     tts_job_dequeued: Arc<AtomicBool>,
@@ -798,16 +812,19 @@ impl VoiceAgent {
             speaker_finals_parked: std::sync::atomic::AtomicBool::new(false),
             speaker_finals_release: Notify::new(),
             speaker_verdicts_applied: AtomicU64::new(0),
+            tts_configured: AtomicBool::new(tts.is_some()),
             tts: Arc::new(Mutex::new(tts)),
             tts_drain_wake: Arc::new(Notify::new()),
             tts_drain_worker: Arc::new(Mutex::new(None)),
             tts_synthesis_queue: Arc::new(Mutex::new(VecDeque::new())),
+            tts_held_job: Arc::new(std::sync::Mutex::new(None)),
             tts_synthesis_wake: Arc::new(Notify::new()),
             tts_synthesis_worker: Arc::new(Mutex::new(None)),
             tts_synthesis_busy: Arc::new(AtomicBool::new(false)),
             tts_send_order: Arc::new(TtsSendOrder::default()),
             tts_pre_enqueue_hook: std::sync::Mutex::new(None),
             tts_pre_synthesis_hook: Arc::new(std::sync::Mutex::new(None)),
+            tts_post_take_hook: Arc::new(std::sync::Mutex::new(None)),
             lid_completion_notify: Arc::new(Notify::new()),
             lid_gate_bound_hits: Arc::new(AtomicUsize::new(0)),
             tts_synthesis_epoch: Arc::new(AtomicU64::new(0)),
@@ -1422,7 +1439,11 @@ impl VoiceAgent {
         let session_ctx = self.inner.lock().await.otel.session_context.clone();
         let new_tts = wrap_tts_for_agent(self.registry.create_tts(&config)?, &config);
         new_tts.bind_session_context(&session_ctx);
-        *self.tts.lock().await = Some(new_tts);
+        {
+            let mut tts = self.tts.lock().await;
+            *tts = Some(new_tts);
+            self.tts_configured.store(true, Ordering::SeqCst);
+        }
         {
             let mut inner = self.inner.lock().await;
             inner.config.tts = Some(config.clone());
@@ -2179,11 +2200,9 @@ impl VoiceAgent {
             hook(ticket.id()).await;
         }
 
-        {
-            let tts = self.tts.lock().await;
-            if tts.is_none() {
-                return Err(SpeechError::Config("TTS not configured".into()));
-            }
+        // Not `self.tts.lock()`: the worker holds that lock for a whole synthesis.
+        if !self.tts_configured.load(Ordering::SeqCst) {
+            return Err(SpeechError::Config("TTS not configured".into()));
         }
 
         let (done_tx, done_rx) = if options.non_blocking {
@@ -2254,6 +2273,17 @@ impl VoiceAgent {
             .unwrap_or_else(|e| e.into_inner()) = hook;
     }
 
+    /// Installs (or clears) a hook the synthesis worker awaits with the job's ticket id right
+    /// after it took the job back to start synthesis (epoch already read), before the synthesis
+    /// job runs (tests only).
+    #[doc(hidden)]
+    pub fn set_tts_post_take_hook(&self, hook: Option<TtsPreEnqueueHook>) {
+        *self
+            .tts_post_take_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = hook;
+    }
+
     /// Ticket ids of the queued synthesis jobs, front first (tests only).
     #[doc(hidden)]
     pub async fn queued_tts_tickets(&self) -> Vec<u64> {
@@ -2292,6 +2322,7 @@ impl VoiceAgent {
         }
         let wake = Arc::clone(&self.tts_synthesis_wake);
         let queue = Arc::clone(&self.tts_synthesis_queue);
+        let held_job = Arc::clone(&self.tts_held_job);
         let tts = Arc::clone(&self.tts);
         let tts_buffer = self.tts_buffer.clone();
         let tts_drain_wake = Arc::clone(&self.tts_drain_wake);
@@ -2312,6 +2343,7 @@ impl VoiceAgent {
         let weak_self = self.weak_self.clone();
         let lid_notify = Arc::clone(&self.lid_completion_notify);
         let pre_synthesis_hook = Arc::clone(&self.tts_pre_synthesis_hook);
+        let post_take_hook = Arc::clone(&self.tts_post_take_hook);
         *slot = Some(tokio::spawn(async move {
             let _alive_guard = TtsWorkerAliveGuard::enter(&alive);
             loop {
@@ -2335,17 +2367,22 @@ impl VoiceAgent {
                     if shutdown.load(Ordering::SeqCst) || weak_self.strong_count() == 0 {
                         break;
                     }
-                    let job = {
+                    // Pop into the held slot (under the queue lock) rather than a local: until
+                    // synthesis starts, the job belongs to whichever comes first, this worker or
+                    // a flush/barge-in/stop pass, which settles it there.
+                    let ticket = {
                         let mut pending = queue.lock().await;
                         let job = pending.pop_front();
                         // Mark while still holding the queue lock so idle checks never see the
                         // job in neither the queue nor a busy/dequeued state.
+                        let ticket = job.as_ref().map(|j| j.ticket);
                         if job.is_some() {
                             job_dequeued.store(true, Ordering::SeqCst);
+                            *held_job.lock().unwrap_or_else(|e| e.into_inner()) = job;
                         }
-                        job
+                        ticket
                     };
-                    let Some(job) = job else {
+                    let Some(ticket) = ticket else {
                         break;
                     };
 
@@ -2354,18 +2391,50 @@ impl VoiceAgent {
                         .unwrap_or_else(|e| e.into_inner())
                         .clone();
                     if let Some(hook) = hook {
-                        hook(job.ticket).await;
+                        hook(ticket).await;
                     }
 
                     Self::await_in_flight_lid_before_tts(&weak_self, &inner, &lid_notify).await;
 
-                    synthesis_busy.store(true, Ordering::SeqCst);
-                    job_dequeued.store(false, Ordering::SeqCst);
+                    // Invariant: a cut pass bumps `synthesis_epoch` and settles the held job in
+                    // one critical section under the queue lock
+                    // (`cancel_pending_tts_synthesis_collect_before`). Taking the job back and
+                    // reading the epoch here, under the same lock, therefore sees either
+                    //   - no job: a cut settled it (done + reply end are the cut's); emit
+                    //     nothing, or
+                    //   - the job and the epoch after every cut that kept it: start it with that
+                    //     epoch. A later cut no longer finds the job held; the synthesis job owns
+                    //     its reply end then and catches the cut through the epoch: the streaming
+                    //     path checks it right after resetting `generate_cancel` (before the
+                    //     vendor call) and once more after the vendor call ends (per chunk it
+                    //     checks the buffer generation, not the epoch); the buffered path checks
+                    //     it before it enqueues PCM.
+                    let taken = {
+                        let _pending = queue.lock().await;
+                        let job = held_job.lock().unwrap_or_else(|e| e.into_inner()).take();
+                        job.map(|job| {
+                            synthesis_busy.store(true, Ordering::SeqCst);
+                            job_dequeued.store(false, Ordering::SeqCst);
+                            (job, synthesis_epoch.load(Ordering::SeqCst))
+                        })
+                    };
+                    let Some((job, epoch_at_start)) = taken else {
+                        continue;
+                    };
+                    let hook = post_take_hook
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
+                    if let Some(hook) = hook {
+                        hook(job.ticket).await;
+                    }
+
                     protected_active.store(!job.interruptible, Ordering::SeqCst);
                     let result = Self::run_tts_synthesis_job(
                         &job.text,
                         job.requested_at,
                         job.reply_id.as_ref(),
+                        epoch_at_start,
                         &tts,
                         &tts_buffer,
                         &tts_drain_wake,
@@ -2397,9 +2466,13 @@ impl VoiceAgent {
                     break;
                 }
             }
-            // Cancel any leftovers so waiters are not stranded.
+            // Cancel any leftovers (held or queued) so waiters are not stranded.
             let mut pending = queue.lock().await;
-            for job in pending.drain(..) {
+            let held = held_job.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if held.is_some() {
+                job_dequeued.store(false, Ordering::SeqCst);
+            }
+            for job in held.into_iter().chain(pending.drain(..)) {
                 if let Some(done) = job.done {
                     let _ = done.send(Err(SpeechError::Internal("TTS cancelled".into())));
                 }
@@ -2412,6 +2485,7 @@ impl VoiceAgent {
         text: &str,
         requested_at: Instant,
         reply_id: Option<&Arc<str>>,
+        epoch_at_start: u64,
         tts: &Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
         tts_buffer: &TtsBuffer,
         tts_drain_wake: &Arc<Notify>,
@@ -2437,6 +2511,7 @@ impl VoiceAgent {
                 text,
                 requested_at,
                 reply_id,
+                epoch_at_start,
                 tts,
                 tts_buffer,
                 tts_drain_wake,
@@ -2459,6 +2534,7 @@ impl VoiceAgent {
                 text,
                 requested_at,
                 reply_id,
+                epoch_at_start,
                 tts,
                 tts_buffer,
                 tts_drain_wake,
@@ -2485,6 +2561,7 @@ impl VoiceAgent {
         text: &str,
         requested_at: Instant,
         reply_id: Option<&Arc<str>>,
+        epoch_at_start: u64,
         tts: &Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
         tts_buffer: &TtsBuffer,
         tts_drain_wake: &Arc<Notify>,
@@ -2500,7 +2577,6 @@ impl VoiceAgent {
         tts_synthesis_busy: &Arc<AtomicBool>,
         tts_synthesis_queue: &Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
     ) -> SpeechResult<()> {
-        let epoch_at_start = synthesis_epoch.load(Ordering::SeqCst);
         let generation_at_start = tts_buffer.current_generation().await;
         let tts_started = Instant::now();
         let chunks = {
@@ -2612,6 +2688,7 @@ impl VoiceAgent {
         text: &str,
         requested_at: Instant,
         reply_id: Option<&Arc<str>>,
+        epoch_at_start: u64,
         tts: &Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
         tts_buffer: &TtsBuffer,
         tts_drain_wake: &Arc<Notify>,
@@ -2628,7 +2705,6 @@ impl VoiceAgent {
         tts_synthesis_busy: &Arc<AtomicBool>,
         tts_synthesis_queue: &Arc<Mutex<VecDeque<TtsSynthesisJob>>>,
     ) -> SpeechResult<()> {
-        let epoch_at_start = synthesis_epoch.load(Ordering::SeqCst);
         let generation_at_start = tts_buffer.current_generation().await;
         // Capture before drain can abort this job's PCM (streaming starts drain early).
         let failure_gen_at_start = {
@@ -2636,6 +2712,15 @@ impl VoiceAgent {
             guard.tts_playback_failure_gen
         };
         generate_cancel.store(false, Ordering::SeqCst);
+        // A cut between the worker's take-back (where `epoch_at_start` was read) and here has
+        // already set `generate_cancel` (cleared just above) and flushed the buffer (the
+        // generation above is post-flush), so nothing later would stop this job. Checked after
+        // the reset: a cut that bumps the epoch after this load also sets the cancel flag again.
+        if synthesis_epoch.load(Ordering::SeqCst) != epoch_at_start {
+            voice_debug("TTS streaming synthesis discarded (cut before start)");
+            Self::emit_discarded_reply_end(event_bus, reply_id.map(|id| &**id));
+            return Ok(());
+        }
 
         Self::ensure_tts_drain_worker_shared(
             tts_drain_worker,
@@ -3149,11 +3234,32 @@ impl VoiceAgent {
     /// Drops the queued jobs whose ticket is before `cut` (all of them unless a later send was
     /// queued after the cut was taken). Sends still on their way to the queue were cancelled by
     /// the cut itself. A job already synthesizing or playing is cut regardless of its ticket.
+    ///
+    /// The job the worker holds (dequeued, synthesis not started) is settled here like a queued
+    /// one when its ticket is before `cut`: it rejects "TTS cancelled" and its reply id comes
+    /// first (its ticket is below every queued one). The epoch bump and the held-job check
+    /// share one critical section under the queue lock, which the worker also holds when it
+    /// takes the job back to start it; see the invariant in `ensure_tts_synthesis_worker`.
     async fn cancel_pending_tts_synthesis_collect_before(&self, cut: TtsFlushCut) -> Vec<Arc<str>> {
-        self.invalidate_inflight_tts_synthesis();
         Self::clear_pending_first_audio(&mut *self.inner.lock().await);
         let mut queue = self.tts_synthesis_queue.lock().await;
+        self.invalidate_inflight_tts_synthesis();
         let mut dropped = Vec::new();
+        {
+            let mut held = self.tts_held_job.lock().unwrap_or_else(|e| e.into_inner());
+            if held.as_ref().is_some_and(|j| j.ticket < cut.below) {
+                if let Some(job) = held.take() {
+                    // The job is gone, not handed to the next stage.
+                    self.tts_job_dequeued.store(false, Ordering::SeqCst);
+                    if let Some(id) = job.reply_id {
+                        dropped.push(id);
+                    }
+                    if let Some(done) = job.done {
+                        let _ = done.send(Err(SpeechError::Internal("TTS cancelled".into())));
+                    }
+                }
+            }
+        }
         let keep_from = queue
             .iter()
             .position(|j| j.ticket >= cut.below)

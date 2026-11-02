@@ -97,17 +97,33 @@ pub(crate) fn redact(message: &str, api_key: Option<&str>) -> String {
     result
 }
 
-/// Class of a vendor failure from the HTTP status the vendor crates print in their messages
-/// (`speech HTTP 429 Too Many Requests: …`). No other field is read.
+/// HTTP status at the start of a vendor error text: `500 Internal Server Error: …`,
+/// `429: …` (numeric status first), or after `HTTP ` / `http ` (`speech HTTP 429 …`,
+/// `fishaudio http 429: …`, `HTTP error: 429 …`). Digits elsewhere in the text are ignored.
+fn status_of(message: &str) -> Option<u16> {
+    let after_http = ["HTTP ", "http "]
+        .iter()
+        .find_map(|marker| message.find(marker).map(|i| &message[i + marker.len()..]))
+        .map(|s| s.trim_start_matches("error: "));
+    [after_http, Some(message)]
+        .into_iter()
+        .flatten()
+        .find_map(|s| {
+            let digits = s
+                .get(..3)
+                .filter(|d| d.bytes().all(|b| b.is_ascii_digit()))?;
+            matches!(s.as_bytes().get(3), Some(b' ' | b':')).then_some(())?;
+            digits.parse().ok()
+        })
+}
+
+/// Class of a vendor failure from the HTTP status in the vendor's own error text.
 fn classify_vendor_message(message: &str) -> SynthesizeCode {
-    for token in message.split(|c: char| !c.is_ascii_digit()) {
-        match token {
-            "429" => return SynthesizeCode::VendorRateLimited,
-            "401" | "403" => return SynthesizeCode::VendorKeyInvalid,
-            _ => {}
-        }
+    match status_of(message) {
+        Some(429) => SynthesizeCode::VendorRateLimited,
+        Some(401 | 403) => SynthesizeCode::VendorKeyInvalid,
+        _ => SynthesizeCode::VendorError,
     }
-    SynthesizeCode::VendorError
 }
 
 /// Stereo 48 kHz s16le to mono 24 kHz s16le (average of each 2-frame, 2-channel group).
@@ -149,21 +165,19 @@ pub(crate) async fn run_synthesis(
                 ))
             }
             Ok(Err(error)) => {
-                let message = redact(&error.to_string(), api_key);
-                let code = match error {
-                    SpeechError::Vendor { .. } | SpeechError::Tts(_) => {
-                        classify_vendor_message(&message)
-                    }
+                let code = match &error {
+                    SpeechError::Vendor { message, .. } => classify_vendor_message(message),
                     _ => SynthesizeCode::VendorError,
                 };
-                return Err(err(code, message));
+                return Err(err(code, redact(&error.to_string(), api_key)));
             }
             Ok(Ok(chunks)) => chunks,
         };
-    let mut pcm = Vec::new();
+    let mut stereo = Vec::new();
     for chunk in &chunks {
-        pcm.extend_from_slice(&stereo_48k_to_mono_24k(&chunk.pcm));
+        stereo.extend_from_slice(&chunk.pcm);
     }
+    let pcm = stereo_48k_to_mono_24k(&stereo);
     if pcm.is_empty() {
         return Err(err(SynthesizeCode::VendorError, "vendor returned no audio"));
     }
@@ -172,9 +186,12 @@ pub(crate) async fn run_synthesis(
 
 /// Synthesizes `text` once and returns mono 24 kHz s16le PCM.
 ///
-/// Rejects with an error whose message starts with `<code>: `, code one of `invalid_input`, `vendor_rate_limited` (HTTP 429),
-/// `vendor_key_invalid` (HTTP 401/403), `vendor_timeout`, `vendor_error`. Messages never contain
-/// the api key. `timeoutMs` bounds the whole call (default 15000).
+/// Rejects with an error whose message starts with `<code>: `, code one of `invalid_input`,
+/// `vendor_rate_limited`, `vendor_key_invalid`, `vendor_timeout`, `vendor_error`. The two status
+/// codes are set when the vendor error text carries the HTTP status (429; 401 or 403): OpenAI,
+/// Azure, Groq, Deepgram, ElevenLabs, Cartesia, Fish Audio and Mistral do. Any other failure is
+/// `vendor_error`. Messages never contain the api key. `timeoutMs` bounds the whole call
+/// (default 15000).
 #[napi]
 pub async fn synthesize_tts(
     config: JsTtsConfig,
@@ -324,6 +341,24 @@ mod tests {
                 "speech HTTP 500 Internal Server Error",
                 SynthesizeCode::VendorError,
             ),
+            (
+                "speech HTTP 500 Internal Server Error: request 9a-401-bc",
+                SynthesizeCode::VendorError,
+            ),
+            (
+                "{\"err_code\":\"INVALID_AUTH\",\"request_id\":\"x-403-y\"}",
+                SynthesizeCode::VendorError,
+            ),
+            ("401 Unauthorized: bad", SynthesizeCode::VendorKeyInvalid),
+            ("429: slow down", SynthesizeCode::VendorRateLimited),
+            (
+                "fishaudio http 429: slow down",
+                SynthesizeCode::VendorRateLimited,
+            ),
+            (
+                "HTTP error: 429 Too Many Requests",
+                SynthesizeCode::VendorRateLimited,
+            ),
         ];
         for (message, want) in cases {
             let e = run_synthesis(&Failing(message.into()), "hi", Duration::from_secs(5), None)
@@ -361,5 +396,30 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(e.code, SynthesizeCode::VendorError);
+    }
+
+    struct Odd;
+    #[async_trait]
+    impl TtsProvider for Odd {
+        fn vendor_name(&self) -> &'static str {
+            "odd"
+        }
+        async fn synthesize(&self, _text: &str) -> SpeechResult<Vec<TtsAudioChunk>> {
+            // 3 stereo frames (12 bytes) per chunk.
+            let chunk = TtsAudioChunk {
+                pcm: Bytes::from(vec![0u8; 12]),
+                duration_ms: 0,
+            };
+            Ok(vec![chunk.clone(), chunk])
+        }
+    }
+
+    #[tokio::test]
+    async fn odd_frame_chunks_keep_every_sample_pair() {
+        let out = run_synthesis(&Odd, "hi", Duration::from_secs(5), None)
+            .await
+            .unwrap();
+        // 6 stereo frames -> 3 mono 24 kHz samples (2 bytes each).
+        assert_eq!(out.len(), 6);
     }
 }

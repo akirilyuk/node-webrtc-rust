@@ -88,7 +88,7 @@ try {
 
 - `text` is 1 to 1000 characters.
 - The vendor key goes in `config.apiKey` (never read from the environment by the caller's choice); error messages never contain it.
-- `error.code` is one of `invalid_input`, `vendor_rate_limited` (the vendor answered HTTP 429), `vendor_key_invalid` (HTTP 401 or 403), `vendor_timeout` (the call did not finish within `timeoutMs`) or `vendor_error`. The status is read from the vendor crate's error text; other failures are `vendor_error`.
+- `error.code` is one of `invalid_input`, `vendor_rate_limited`, `vendor_key_invalid`, `vendor_timeout` (the call did not finish within `timeoutMs`) or `vendor_error`. The rate-limit and key codes are set when the vendor error carries the HTTP status (429; 401 or 403): OpenAI, Azure, Groq, Deepgram, ElevenLabs, Cartesia, Fish Audio and Mistral do. Google and AWS errors, and any other failure, are `vendor_error`.
 - Native name: `synthesizeTts` in `@node-webrtc-rust/bindings`; it rejects with a message starting `<code>: `, which the SDK wrapper turns into `error.code`.
 
 ## Speech events

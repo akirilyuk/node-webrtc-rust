@@ -181,7 +181,7 @@ impl DeepgramTts {
             if !response.status().is_success() {
                 let status = response.status();
                 let message = response.text().await.unwrap_or_else(|_| status.to_string());
-                return Err(vendor_error(message));
+                return Err(vendor_error(http_status_message(status.as_u16(), &message)));
             }
 
             let mut mono = Vec::new();
@@ -512,6 +512,12 @@ fn vendor_error(message: impl Into<String>) -> SpeechError {
     }
 }
 
+/// Error text of a non-2xx answer: `<numeric status>: <body>`, so callers can read the status.
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+fn http_status_message(status: u16, body: &str) -> String {
+    format!("{status}: {body}")
+}
+
 fn pcm_chunk_from_mono(mono: &[u8]) -> TtsAudioChunk {
     let duration_ms = duration_ms_from_mono_s16le(mono.len(), WEBRTC_PCM_SAMPLE_RATE);
     let pcm = mono_s16le_to_stereo(mono);
@@ -555,5 +561,16 @@ mod tests {
             })
             .is_ok());
         }
+    }
+}
+
+#[cfg(test)]
+mod http_status_message_tests {
+    use super::http_status_message;
+
+    #[test]
+    fn error_text_starts_with_the_numeric_status() {
+        let text = http_status_message(429, "slow down");
+        assert_eq!(text, "429: slow down");
     }
 }

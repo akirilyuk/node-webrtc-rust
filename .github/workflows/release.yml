@@ -612,6 +612,7 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
     permissions:
       contents: write
+      packages: read
       pull-requests: write
       # createWorkflowDispatch (build.yml) on the bot PR branch
       actions: write

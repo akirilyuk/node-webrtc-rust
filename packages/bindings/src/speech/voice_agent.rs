@@ -286,7 +286,7 @@ impl JsVoiceAgent {
         interruptible: Option<bool>,
         reply_id: Option<String>,
     ) -> Result<JsObject> {
-        let ticket = self.inner.reserve_tts_send();
+        let ticket = self.inner.reserve_tts_send_for_reply(reply_id.as_deref());
         let options = SendTextToTtsOptions {
             non_blocking: non_blocking.unwrap_or(false),
             interruptible: interruptible.unwrap_or(true),

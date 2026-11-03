@@ -49,3 +49,7 @@ webrtc = "0.17"
 axum = "0.8"
 napi = { version = "2", features = ["async", "napi4"] }
 napi-derive = "2"
+
+[profile.dev]
+# line tables only: backtraces keep file:line, test binaries shrink (disk budget).
+debug = "line-tables-only"

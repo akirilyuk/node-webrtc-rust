@@ -19,7 +19,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use log::{Log, Metadata, Record};
 
@@ -55,51 +55,126 @@ pub(crate) fn expand_path(template: &str, pid: u32) -> PathBuf {
     PathBuf::from(template.replace("{pid}", &pid.to_string()))
 }
 
-/// Append-only file capped at two segments (see module docs).
+/// Opens (creating if needed) a segment for appending. Seam so tests can inject open failures.
+type SegmentOpener = fn(&Path) -> io::Result<File>;
+
+fn open_append(path: &Path) -> io::Result<File> {
+    OpenOptions::new().create(true).append(true).open(path)
+}
+
+/// Append-only file capped at two segments (see module docs). A failed rotation never fails a
+/// write: the sink keeps writing within `2 * segment_bytes` plus one record, retries the rotation
+/// after another segment, and warns once per episode on stderr.
 struct RotatingFile {
     path: PathBuf,
     file: File,
+    /// Bytes written since the last rotation attempt.
     written: u64,
+    /// Length of the current handle's file.
+    handle_len: u64,
     segment_bytes: u64,
+    open_segment: SegmentOpener,
+    /// True after a rename succeeded but the following open failed: `file` is the renamed `.1`
+    /// segment, so the retry only needs to open `path`.
+    renamed_pending: bool,
+    /// True while a rotation failure episode is ongoing (stderr line already printed).
+    degraded: bool,
 }
 
 impl RotatingFile {
     fn open(path: PathBuf, segment_bytes: u64) -> io::Result<Self> {
+        Self::open_with(path, segment_bytes, open_append)
+    }
+
+    fn open_with(
+        path: PathBuf,
+        segment_bytes: u64,
+        open_segment: SegmentOpener,
+    ) -> io::Result<Self> {
         if let Some(dir) = path.parent() {
             if !dir.as_os_str().is_empty() {
                 fs::create_dir_all(dir)?;
             }
         }
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let file = open_segment(&path)?;
         let written = file.metadata().map(|m| m.len()).unwrap_or(0);
         Ok(Self {
             path,
             file,
             written,
+            handle_len: written,
             segment_bytes,
+            open_segment,
+            renamed_pending: false,
+            degraded: false,
         })
     }
 
-    fn rotate(&mut self) -> io::Result<()> {
+    fn older_path(&self) -> PathBuf {
         let mut older = self.path.clone().into_os_string();
         older.push(".1");
-        fs::rename(&self.path, PathBuf::from(older))?;
-        self.file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
+        PathBuf::from(older)
+    }
+
+    /// Rotates, or degrades to bounded writing when the rename or reopen fails. Never errors.
+    fn rotate(&mut self, incoming: u64) {
+        let older = self.older_path();
+        if !self.renamed_pending {
+            if let Err(e) = fs::rename(&self.path, &older) {
+                self.degrade("rename", &e, incoming);
+                return;
+            }
+            self.renamed_pending = true;
+        }
+        match (self.open_segment)(&self.path) {
+            Ok(file) => {
+                self.file = file;
+                self.written = 0;
+                self.handle_len = 0;
+                self.renamed_pending = false;
+                self.degraded = false;
+            }
+            Err(e) => self.degrade("open", &e, incoming),
+        }
+    }
+
+    /// Keeps the current handle, warns once per episode and trims it so the total stays bounded.
+    fn degrade(&mut self, op: &str, err: &io::Error, incoming: u64) {
+        if !self.degraded {
+            self.degraded = true;
+            let bound = self.segment_bytes.saturating_mul(2);
+            eprintln!(
+                "native trace: rotating {} failed ({op}: {err}); still writing, bounded to {bound} bytes",
+                self.path.display()
+            );
+        }
+        // While degraded the next attempt is triggered by the handle itself reaching
+        // `segment_bytes`, so the handle must have room for the incoming record afterwards.
+        if self.handle_len.saturating_add(incoming) > self.segment_bytes
+            && self.file.set_len(0).is_ok()
+        {
+            self.handle_len = 0;
+        }
         self.written = 0;
-        Ok(())
     }
 }
 
 impl Write for RotatingFile {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.written > 0 && self.written + buf.len() as u64 > self.segment_bytes {
-            self.rotate()?;
+        let incoming = buf.len() as u64;
+        // Healthy: rotate after `segment_bytes` written. Degraded: the handle itself is the
+        // bound, so a persistent failure retries once per `segment_bytes` and never grows.
+        let full = if self.degraded {
+            self.handle_len > 0 && self.handle_len + incoming > self.segment_bytes
+        } else {
+            self.written > 0 && self.written + incoming > self.segment_bytes
+        };
+        if full {
+            self.rotate(incoming);
         }
         let n = self.file.write(buf)?;
         self.written += n as u64;
+        self.handle_len += n as u64;
         Ok(n)
     }
 
@@ -206,6 +281,163 @@ mod tests {
         let newest = fs::read_to_string(&path).unwrap();
         assert!(newest.contains("line-49"));
         assert!(!dir.join("n.log.2").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    thread_local! {
+        /// Opens that should still fail on this test's thread (`usize::MAX` = always).
+        static FAIL_OPENS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    fn failing_opener(path: &Path) -> io::Result<File> {
+        let fail = FAIL_OPENS.with(|c| {
+            let n = c.get();
+            if n > 0 && n != usize::MAX {
+                c.set(n - 1);
+            }
+            n > 0
+        });
+        if fail {
+            return Err(io::Error::other("injected open failure"));
+        }
+        open_append(path)
+    }
+
+    fn test_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "wnr-trace-{label}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn dir_files(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn total_bytes(dir: &Path) -> u64 {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().metadata().unwrap().len())
+            .sum()
+    }
+
+    fn on_disk(dir: &Path, needle: &str) -> bool {
+        fs::read_dir(dir).unwrap().any(|e| {
+            fs::read_to_string(e.unwrap().path())
+                .map(|t| t.contains(needle))
+                .unwrap_or(false)
+        })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unwritable_dir_after_first_segment_keeps_newest_records() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = test_dir("ro");
+        // Root ignores directory permissions, so the failure cannot be provoked.
+        let probe = dir.join("probe");
+        fs::write(&probe, b"x").unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        let root = fs::write(dir.join("probe2"), b"x").is_ok();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = fs::remove_file(&probe);
+        let _ = fs::remove_file(dir.join("probe2"));
+        if root {
+            eprintln!("skipping: running as root, directory permissions are not enforced");
+            let _ = fs::remove_dir_all(&dir);
+            return;
+        }
+        let path = dir.join("n.log");
+        let mut f = RotatingFile::open(path.clone(), 64).unwrap();
+        let mut locked = false;
+        for i in 0..100u32 {
+            if !locked && dir.join("n.log.1").exists() {
+                fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+                locked = true;
+            }
+            let r = f.write_all(format!("r{i:03}\n").as_bytes());
+            if r.is_err() {
+                fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            r.unwrap();
+        }
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(locked, "first rotation never happened");
+        assert!(on_disk(&dir, "r099"));
+        let names = dir_files(&dir);
+        assert!(
+            names.iter().all(|n| n == "n.log" || n == "n.log.1"),
+            "{names:?}"
+        );
+        assert!(
+            total_bytes(&dir) <= 2 * 64 + 5,
+            "total={}",
+            total_bytes(&dir)
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reopen_failure_after_rename_keeps_writing_and_recovers() {
+        let dir = test_dir("reopen");
+        let path = dir.join("n.log");
+        let mut f = RotatingFile::open_with(path.clone(), 64, failing_opener).unwrap();
+        let mut armed = false;
+        for i in 0..100u32 {
+            if !armed && dir.join("n.log.1").exists() {
+                FAIL_OPENS.with(|c| c.set(3));
+                armed = true;
+            }
+            f.write_all(format!("r{i:03}\n").as_bytes()).unwrap();
+            let names = dir_files(&dir);
+            assert!(
+                names.iter().all(|n| n == "n.log" || n == "n.log.1"),
+                "{names:?}"
+            );
+            assert!(
+                total_bytes(&dir) <= 2 * 64 + 5,
+                "total={}",
+                total_bytes(&dir)
+            );
+        }
+        assert!(armed);
+        assert!(on_disk(&dir, "r099"));
+        assert_eq!(FAIL_OPENS.with(|c| c.get()), 0, "failures not consumed");
+        assert!(path.exists(), "rotation did not recover");
+        assert!(fs::read_to_string(&path).unwrap().contains("r099"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn persistent_reopen_failure_stays_bounded() {
+        let dir = test_dir("persist");
+        let path = dir.join("n.log");
+        let mut f = RotatingFile::open_with(path, 64, failing_opener).unwrap();
+        let mut armed = false;
+        for i in 0..1000u32 {
+            if !armed && dir.join("n.log.1").exists() {
+                FAIL_OPENS.with(|c| c.set(usize::MAX));
+                armed = true;
+            }
+            f.write_all(format!("r{i:03}\n").as_bytes()).unwrap();
+            assert!(
+                total_bytes(&dir) <= 2 * 64 + 5,
+                "total={}",
+                total_bytes(&dir)
+            );
+        }
+        assert!(armed);
+        assert!(on_disk(&dir, "r999"));
+        assert!(dir_files(&dir).len() <= 2);
         let _ = fs::remove_dir_all(&dir);
     }
 }

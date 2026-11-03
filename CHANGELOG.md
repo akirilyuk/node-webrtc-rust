@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.16.2] - 2026-11-03
+
 ### Fixed
 
 - **signaling:** `SignalingServer.close()` is bounded by `closeTimeoutMs` (default 2000 ms): WebSocket clients that have not closed by then are terminated and `httpServer.closeAllConnections()` is called, so a client that never answers the close frame or an idle or hung HTTP connection no longer keeps `close()` pending. In attached mode this also drops the caller's other in-flight HTTP requests on that server.

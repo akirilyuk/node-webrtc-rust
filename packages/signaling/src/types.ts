@@ -18,6 +18,13 @@ export interface SignalingServerOptions {
   path?: string
   /** WebSocket ping interval; set to 0 to disable liveness checks. */
   pingIntervalMs?: number
+  /**
+   * Upper bound for `close()`: clients still open after this are terminated and the HTTP server's
+   * remaining connections are closed with `httpServer.closeAllConnections()`. In attached mode
+   * (`server` option) this also drops the caller's other in-flight HTTP requests on that server.
+   * Default 2000.
+   */
+  closeTimeoutMs?: number
 }
 
 /** Options for {@link SignalingClient}. */

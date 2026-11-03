@@ -21,6 +21,12 @@
 //! Limits (text scan): a lock reached through a free function, another module, a parameter alias
 //! (`fn helper(a: &Arc<...>)`) or a macro is not seen. Only `VoiceAgent` methods in `agent.rs`
 //! are followed. That covers the whole send path today.
+//!
+//! A spawned task whose handle the send path awaits (`tokio::spawn(..).await`,
+//! `spawn_blocking(..).await`) is excluded even though the path waits on it. A lock through a
+//! non-self receiver (`agent.tts` after `weak_self.upgrade()`) is not seen.
+//!
+//! The scan fails closed on source it cannot parse: unbalanced delimiters panic.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -114,7 +120,11 @@ fn blank_comments_and_literals(src: &str) -> Vec<char> {
             }
             blank_range(&mut c, i, j);
             i = j;
-        } else if ch == 'r' && (i == 0 || !is_ident(c[i - 1])) && raw_string_start(&c, i).is_some()
+        } else if ch == 'r'
+            && (i == 0
+                || !is_ident(c[i - 1])
+                || (c[i - 1] == 'b' && (i < 2 || !is_ident(c[i - 2]))))
+            && raw_string_start(&c, i).is_some()
         {
             let (hashes, body) = raw_string_start(&c, i).unwrap();
             let mut j = body;
@@ -138,7 +148,7 @@ fn blank_comments_and_literals(src: &str) -> Vec<char> {
         } else if ch == '\'' {
             // Char literal or lifetime.
             if i + 1 < n && c[i + 1] == '\\' {
-                let mut j = i + 2;
+                let mut j = i + 3;
                 while j < n && c[j] != '\'' {
                     j += 1;
                 }
@@ -187,7 +197,7 @@ fn matching(c: &[char], open: usize) -> usize {
             }
         }
     }
-    c.len() - 1
+    panic!("unbalanced `{o}` opened at line {}", line_of(c, open));
 }
 
 /// Blanks the argument list of every `spawn(` / `spawn_blocking(` call: that code runs on the
@@ -625,6 +635,20 @@ fn scan_flags_a_lock_on_the_send_path() {
     let quiet = "fn send_text_to_tts(&self) {\n    // self.tts.lock().await\n    /* self.tts.lock() */\n    let _s = \"self.tts.lock()\";\n    let _c = '\"';\n    self.queue.lock().await;\n}\n";
     assert!(scan(quiet, &tts).findings.is_empty());
 
+    // An escaped-quote char literal must not hide the rest of the body.
+    let escaped =
+        "fn send_text_to_tts(&self) {\n    let _p = ['\\'','}'];\n    self.tts.lock();\n}\n";
+    let found = scan(escaped, &tts);
+    assert_eq!(found.findings.len(), 1, "{:?}", found.findings);
+    assert_eq!(found.findings[0].line, 3);
+
+    // A byte raw string holding a brace must not end the body early.
+    let byte_raw =
+        "fn send_text_to_tts(&self) {\n    let _b = br#\"x\"}\"#;\n    self.tts.lock();\n}\n";
+    let found = scan(byte_raw, &tts);
+    assert_eq!(found.findings.len(), 1, "{:?}", found.findings);
+    assert_eq!(found.findings[0].line, 3);
+
     // A function the send path does not call is not scanned.
     let unrelated = "fn send_text_to_tts(&self) {}\nfn worker(&self) { self.tts.lock(); }\n";
     assert!(scan(unrelated, &tts).findings.is_empty());
@@ -660,4 +684,13 @@ fn scan_rejects_stale_allowlist_entries() {
     assert!(remaining.is_empty());
     assert_eq!(stale.len(), 1);
     assert!(stale[0].contains("no reason"));
+}
+
+#[test]
+#[should_panic(expected = "unbalanced")]
+fn scan_panics_on_unbalanced_source() {
+    scan(
+        "fn send_text_to_tts(&self) { tokio::spawn(async { }\n",
+        &strings(&["tts"]),
+    );
 }

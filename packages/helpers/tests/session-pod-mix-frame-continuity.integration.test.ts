@@ -165,11 +165,16 @@ interface StallHooks {
   onBacklogWritten(): Promise<void>
 }
 
-/** Streams MARKED_FRAMES marked frames through the speaker's real outbound track. */
+/**
+ * Streams MARKED_FRAMES marked frames through the speaker's real outbound track.
+ * `onFirstWritten` (paced patterns) runs after the first frame is written and before the
+ * second, so a caller can read the source queue after exactly one push.
+ */
 async function sendMarkedFrames(
   mic: LocalAudioTrack,
   pattern: SendPattern,
   stallHooks?: StallHooks,
+  onFirstWritten?: () => Promise<void>,
 ): Promise<void> {
   const gen = new FrameMarkerGenerator()
   const frames = Array.from({ length: MARKED_FRAMES }, (_, i) => gen.next(i))
@@ -210,6 +215,7 @@ async function sendMarkedFrames(
       const spacing = Number(process.env.MIX_FC_BURST_SPACING_MS ?? 0)
       if (spacing > 0 && inBacklog) await delay(spacing)
       await mic.writeSample(frames[i]!, FRAME_MS)
+      if (i === 0) await onFirstWritten?.()
       if (stallHooks && inBacklog && i === STALL_AT_FRAME + LONG_STALL_BACKLOG_FRAMES - 1) {
         await stallHooks.onBacklogWritten()
         // Re-anchor: the frames after the backlog are paced from now. Otherwise the time the
@@ -633,13 +639,18 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
   /**
    * One speaker connection that streams a marked burst, stays silent for `pauseMs`, then
    * streams again under the SAME speaker (mix source) id. Returns one result per burst plus
-   * the time from the first write of that burst to the first marker frame heard.
+   * the time from the first write of that burst to the first marker frame heard (logged
+   * only: it includes host scheduling). After the pause, `resume` holds the source stats
+   * read just before the second burst and right after its first frame was pushed.
    */
   async function runPausedCase(
     pattern: SendPattern,
     caseKey: string,
     pauseMs: number,
-  ): Promise<Array<{ seq: SequenceAnalysis; stats: MixStats | null; firstFrameMs: number }>> {
+  ): Promise<{
+    bursts: Array<{ seq: SequenceAnalysis; stats: MixStats | null; firstFrameMs: number }>
+    resume: { beforeFirstPush: MixStats; afterFirstPush: MixStats }
+  }> {
     const ids = clientIds(caseKey)
     const [speaker, listener] = await connectAllOrCloseAll(
       [
@@ -656,21 +667,61 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
       await waitForVoiceClientActive(pod, ids.speaker)
       await waitForVoiceClientActive(pod, ids.listener)
 
+      const speakerStats = () =>
+        host!.getClientMixer()?.mixStats(host!.resolveParticipantId(ids.speaker)) ?? null
       const recorder = startListenerRecorder(listener.agentAudio)
       const results: Array<{
         seq: SequenceAnalysis
         stats: MixStats | null
         firstFrameMs: number
       }> = []
+      let resume: { beforeFirstPush: MixStats; afterFirstPush: MixStats } | undefined
       try {
         let from = 0
         for (let burst = 0; burst < 2; burst++) {
+          let onFirstWritten: (() => Promise<void>) | undefined
           if (burst > 0) {
             await delay(pauseMs)
             from = recorder.nextStream()
+            // The first push after the pause is the only one whose arrival gap spans the
+            // pause, and host load can only make that gap longer. Hold the sender after its
+            // first frame until that frame is in the source queue, so the queue state read
+            // here follows exactly that one push on every host.
+            const beforeFirstPush = speakerStats()
+            expect(
+              beforeFirstPush,
+              `${caseKey}: speaker stats before the second burst`,
+            ).toBeTruthy()
+            onFirstWritten = async () => {
+              const deadline = Date.now() + BACKLOG_ARRIVAL_TIMEOUT_MS
+              for (;;) {
+                const s = speakerStats()
+                if (s && s.pushed > beforeFirstPush!.pushed) {
+                  resume = { beforeFirstPush: beforeFirstPush!, afterFirstPush: s }
+                  return
+                }
+                if (Date.now() > deadline) {
+                  throw new Error(
+                    `${caseKey}: first frame after the pause did not reach the source queue ` +
+                      `within ${BACKLOG_ARRIVAL_TIMEOUT_MS}ms (${JSON.stringify(s)})`,
+                  )
+                }
+                await delay(1)
+              }
+            }
           }
           const startedAt = Date.now()
-          const sending = sendMarkedFrames(speaker.mic, pattern)
+          const sending = sendMarkedFrames(speaker.mic, pattern, undefined, onFirstWritten)
+          // Reproduction knob: block the JS thread (sender and listener reader) shortly after
+          // the second burst starts, like the CI host stall of run 41546081846 (first frame
+          // heard 263 ms after the write, 25 frames merged, target 2).
+          const pauseStallMs = Number(process.env.MIX_FC_PAUSE_STALL_MS ?? 0)
+          if (burst > 0 && pauseStallMs > 0) {
+            setTimeout(
+              () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, pauseStallMs),
+              5,
+            )
+          }
           const sendFailed = sending.then(() => new Promise<never>(() => undefined))
           await withDeadline(
             Promise.race([recorder.firstMarker, sendFailed]),
@@ -682,21 +733,21 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
             Promise.race([recorder.ended, recorder.quiet(500)]),
             `${pattern}: burst ${burst} end of marked stream`,
           )
-          const stats =
-            host!.getClientMixer()?.mixStats(host!.resolveParticipantId(ids.speaker)) ?? null
+          const stats = speakerStats()
           const seq = analyseSequence(recorder.detected.slice(from), {
             mergedFrames: mergedFrames(stats),
             listenerCatchupFrames: stats?.listenerCatchupCompressed ?? 0,
           })
           console.log(
-            `MIXSTATS ${JSON.stringify({ pattern: `${caseKey}-burst${burst}`, ...seq, firstFrameMs, stats })}`,
+            `MIXSTATS ${JSON.stringify({ pattern: `${caseKey}-burst${burst}`, ...seq, firstFrameMs, stats, resume: burst > 0 ? resume : undefined })}`,
           )
           results.push({ seq, stats, firstFrameMs })
         }
       } finally {
         await recorder.stop()
       }
-      return results
+      expect(resume, `${caseKey}: no first push observed after the pause`).toBeDefined()
+      return { bursts: results, resume: resume! }
     } finally {
       closeClient(speaker)
       closeClient(listener)
@@ -781,15 +832,26 @@ describe.skipIf(!nativeAvailable())('SessionPod mix frame continuity (JS to JS)'
     'after a 1 s pause the same speaker is heard without gaps or duplicates',
     { timeout: 120_000 },
     async () => {
-      const [before, after] = await runPausedCase('paced', 'same-speaker-pause', 1_000)
+      const {
+        bursts: [before, after],
+        resume,
+      } = await runPausedCase('paced', 'same-speaker-pause', 1_000)
       expectContinuous(before!)
       expectContinuous(after!)
-      // A pause is not jitter: the first frame after it waits for the normal prefill (2 frames
-      // at 20 ms) plus transport, not the 160 ms an inflated target would add. Both bursts
-      // include the same two Opus hops, so compare against the first burst.
-      const detail = JSON.stringify({ before: before!.firstFrameMs, after: after!.firstFrameMs })
+      // A pause is not jitter: the queue keeps its target and the first frame after the pause
+      // waits only for the normal prefill (at most `target` ticks), not the 160 ms an inflated
+      // target would add. The prefill bound itself is asserted with a frozen clock in the
+      // mixer (`a_pause_does_not_count_as_jitter`, crates/mixer/src/elastic.rs). Here the
+      // oracle is the queue state right after the one push whose gap spans the pause. A
+      // wall-clock latency comparison between the bursts also measures host stalls of the
+      // sender, transport and reader (CI run 41546081846: 66 ms vs 263 ms, target 2).
+      const detail = JSON.stringify({
+        resume,
+        firstFrameMs: [before!.firstFrameMs, after!.firstFrameMs],
+      })
+      expect(resume.afterFirstPush.pushed - resume.beforeFirstPush.pushed, detail).toBe(1)
+      expect(resume.afterFirstPush.target, detail).toBe(resume.beforeFirstPush.target)
       expect(after!.stats!.target, detail).toBeLessThanOrEqual(3)
-      expect(after!.firstFrameMs, detail).toBeLessThanOrEqual(before!.firstFrameMs + 60)
     },
   )
 })

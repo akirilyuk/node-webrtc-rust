@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-11-03
+
 ### Fixed
 
 - **speech:** `flushTts`, barge-in and `stop` now also cancel a send the synthesis worker has dequeued but not started yet. Before, such a send still played after the interruption and got no `agent_reply_end`. It now rejects with "TTS cancelled" and gets its interrupted `agent_reply_end` from the flush, before the queued replies' ends.

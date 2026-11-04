@@ -100,6 +100,7 @@ run_step "check-native-exports" "$ELOG" node scripts/ci/check-native-exports.mjs
 run_step "run-pr-quality.sh" "$QLOG" bash scripts/ci/run-pr-quality.sh
 run_step "run-pr-tests-full.sh" "$TLOG" bash scripts/ci/run-pr-tests-full.sh
 
-bash scripts/ci/write-release-tag-gate.sh 0 0 0
+# Pin the SHA this run tested: the shared checkout can be pulled mid-run.
+bash scripts/ci/write-release-tag-gate.sh "$HEAD_SHA" 0 0 0
 echo "OK: local release-tag CI passed for ${HEAD_SHA}"
 echo "You may now: git tag release/X.Y.Z && git push origin refs/tags/release/X.Y.Z"

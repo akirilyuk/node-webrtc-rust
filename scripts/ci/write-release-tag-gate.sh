@@ -1,18 +1,25 @@
 #!/usr/bin/env bash
-# Write .test-logs/release-tag-gate/<HEAD sha>.json after local release-tag CI.
+# Write .test-logs/release-tag-gate/<tested sha>.json after local release-tag CI.
 # Do not call this unless quality, native, and tests-full exited 0 for this SHA.
+# The tested SHA is a required argument: the stamp names the SHA the gate ran on, never a
+# HEAD re-read at the end. If HEAD moved during the run, this refuses and writes nothing.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
-QUALITY="${1:-}"
-NATIVE="${2:-}"
-TESTS="${3:-}"
+TESTED_SHA="${1:-}"
+QUALITY="${2:-}"
+NATIVE="${3:-}"
+TESTS="${4:-}"
 
-if [[ -z "$QUALITY" || -z "$NATIVE" || -z "$TESTS" ]]; then
-  echo "usage: write-release-tag-gate.sh <quality-exit> <native-exit> <tests-exit>" >&2
-  echo "example: bash scripts/ci/write-release-tag-gate.sh 0 0 0" >&2
+if [[ -z "$TESTED_SHA" || -z "$QUALITY" || -z "$NATIVE" || -z "$TESTS" ]]; then
+  echo "usage: write-release-tag-gate.sh <tested-sha> <quality-exit> <native-exit> <tests-exit>" >&2
+  echo 'example: bash scripts/ci/write-release-tag-gate.sh "$(git rev-parse HEAD)" 0 0 0' >&2
+  exit 2
+fi
+if [[ ! "$TESTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "write-release-tag-gate: <tested-sha> must be a full 40-hex SHA (got ${TESTED_SHA})" >&2
   exit 2
 fi
 
@@ -23,6 +30,10 @@ if [[ "$BRANCH" != "main" ]]; then
 fi
 
 SHA="$(git rev-parse HEAD)"
+if [[ "$SHA" != "$TESTED_SHA" ]]; then
+  echo "write-release-tag-gate: HEAD moved during the gate run (tested ${TESTED_SHA}, now ${SHA})" >&2
+  exit 1
+fi
 ORIGIN_MAIN="$(git rev-parse origin/main 2>/dev/null || true)"
 if [[ -z "$ORIGIN_MAIN" ]]; then
   echo "write-release-tag-gate: fetch origin/main first" >&2

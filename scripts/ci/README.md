@@ -166,6 +166,10 @@ On PRs, [`compute-pr-job-gates.sh`](compute-pr-job-gates.sh) emits `test_suites`
 - `build-main.yml`, `release.yml`, local runs and the release-tag local gate never set `CI_TEST_SUITES`, so they always run everything.
 - A new crate, package, example or vendored directory needs a `<dir>/*` line in the map. [`pr-test-suites-map.test.sh`](pr-test-suites-map.test.sh) fails otherwise, and also fails on a rule that matches no tracked file.
 
+### Release-tag local gate
+
+[`run-release-tag-local-ci.sh`](run-release-tag-local-ci.sh) records HEAD at start and passes that SHA to [`write-release-tag-gate.sh`](write-release-tag-gate.sh) (`<tested-sha> <quality> <native> <tests>`), which stamps only that SHA. If HEAD moves during the run (e.g. the shared checkout is pulled) the writer refuses with no stamp; re-run on the new HEAD. Test: [`write-release-tag-gate.test.sh`](write-release-tag-gate.test.sh).
+
 ### Sherpa roundtrip E2E (integration job)
 
 After `cargo test`, `npm test`, and helpers `test:integration`, [`run-pr-integration.sh`](run-pr-integration.sh) runs [`run-sherpa-example-ci.sh e2e`](run-sherpa-example-ci.sh):

@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.16.3] - 2026-11-04
+
 ### Fixed
 
 - **bindings:** the native trace log (`WNR_LOG_FILE`) keeps writing when a segment rotation fails (rename or reopen error, e.g. an unwritable log directory): it stays within two segments, retries the rotation and prints one warning to stderr, instead of silently dropping every later record.

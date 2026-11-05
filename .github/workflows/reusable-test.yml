@@ -32,7 +32,7 @@ on:
         type: string
         default: ''
       runner:
-        description: runs-on override; empty = vars.NWR_RUNNER_LARGE or nwr-large
+        description: runs-on override for both jobs; empty = vars.NWR_RUNNER_RUST or eu-ci (rust job), vars.NWR_RUNNER_LARGE or nwr-large (node-sherpa job)
         type: string
         default: ''
 
@@ -47,7 +47,10 @@ jobs:
   # with CI_TEST_SUITES limited to the suites it owns. A caller's `needs.<job>.result` covers both.
   rust:
     name: Rust tests
-    runs-on: ${{ inputs.runner || vars.NWR_RUNNER_LARGE || 'nwr-large' }}
+    # Runs on the EU runners (label eu-ci) because this job wrote ~20 GB per run to the staging node's
+    # single SSD RAID (plan development/webrtc-cloud/plans/2026-11-04-staging-node-write-load.md, A2e).
+    # Set repo variable NWR_RUNNER_RUST=nwr-large to move it back without a PR.
+    runs-on: ${{ inputs.runner || vars.NWR_RUNNER_RUST || 'eu-ci' }}
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:test
       credentials:

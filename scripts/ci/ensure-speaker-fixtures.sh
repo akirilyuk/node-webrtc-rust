@@ -82,8 +82,7 @@ ensure_speaker_fixtures() {
     echo "==> SPEAKER_FIXTURES_REROLL=1: fresh Piper roll (empty cache $cache_dir)"
   fi
   # Dev profile on purpose: a second (release) build of the sherpa crate wrote ~0.5 GB per job. Measured
-  # 2026-11-05: same scenes for the same TTS cache, run time within 1.3x. Plan:
-  # development/webrtc-cloud/plans/2026-11-04-staging-node-write-load.md (chunk A2).
+  # 2026-11-05: same scenes for the same TTS cache, run time within 1.3x.
   bash "$ci_step" --timeout "$timeout" \
     "sherpa speaker_fixtures" -- \
     cargo run -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- "${args[@]}" \

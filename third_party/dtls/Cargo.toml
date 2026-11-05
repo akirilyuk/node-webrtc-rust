@@ -154,3 +154,7 @@ features = ["static_secrets"]
 version = "0.16"
 
 [dev-dependencies]
+
+[profile.dev]
+# line tables only: backtraces keep file:line, test binaries shrink (CI disk-write budget; same as the root Cargo.toml).
+debug = "line-tables-only"

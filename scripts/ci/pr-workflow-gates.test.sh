@@ -133,8 +133,14 @@ for job in rust node-sherpa; do
     echo "$reusable: job $job must have a container: block" >&2
     exit 1
   fi
-  if ! grep -Fq "runs-on: \${{ inputs.runner || vars.NWR_RUNNER_LARGE || 'nwr-large' }}" <<<"$block"; then
-    echo "$reusable: job $job must use runs-on: \${{ inputs.runner || vars.NWR_RUNNER_LARGE || 'nwr-large' }}" >&2
+  # The rust job runs on the EU runners (eu-ci, A2e: it was the biggest ARC writer); node-sherpa stays on nwr-large.
+  if [[ "$job" == rust ]]; then
+    expected_runs_on="runs-on: \${{ inputs.runner || vars.NWR_RUNNER_RUST || 'eu-ci' }}"
+  else
+    expected_runs_on="runs-on: \${{ inputs.runner || vars.NWR_RUNNER_LARGE || 'nwr-large' }}"
+  fi
+  if ! grep -Fq "$expected_runs_on" <<<"$block"; then
+    echo "$reusable: job $job must use $expected_runs_on" >&2
     exit 1
   fi
   if ! grep -Eq "^[[:space:]]*TURN_AVAILABLE:[[:space:]]*'1'" <<<"$block"; then

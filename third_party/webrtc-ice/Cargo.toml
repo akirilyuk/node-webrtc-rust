@@ -133,3 +133,7 @@ version = "1.9.5"
 
 [dev-dependencies.sha1]
 version = "0.10"
+
+[profile.dev]
+# line tables only: backtraces keep file:line, test binaries shrink (CI disk-write budget; same as the root Cargo.toml).
+debug = "line-tables-only"

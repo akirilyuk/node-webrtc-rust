@@ -51,8 +51,21 @@ impl SpeakerEmbedder for CallerEmbedder {
 }
 
 /// Never emits a partial; answers each `finalize_utterance` with the scripted final.
+/// How the scripted vendor answers `finalize_utterance`.
+#[derive(Clone, Copy, PartialEq)]
+enum Answer {
+    /// One final with the scripted text (empty text = an empty vendor final).
+    Final,
+    /// Never answers: the STT actor's finalize wait (`finalize_wait_ms`) bounds it.
+    Never,
+}
+
+/// Short finalize wait so the never-answering vendor times out inside the test window.
+const FINALIZE_WAIT_MS: u64 = 300;
+
 struct FinalsOnlyStt {
     emits_partials: bool,
+    answer: Answer,
     text: Arc<Mutex<String>>,
     queue: VecDeque<SttTranscript>,
 }
@@ -64,6 +77,9 @@ impl SttProvider for FinalsOnlyStt {
     }
     fn emits_partials(&self) -> bool {
         self.emits_partials
+    }
+    fn finalize_wait_ms(&self) -> u64 {
+        FINALIZE_WAIT_MS
     }
     async fn start(&mut self) -> SpeechResult<()> {
         Ok(())
@@ -78,6 +94,9 @@ impl SttProvider for FinalsOnlyStt {
         Ok(self.queue.pop_front())
     }
     async fn finalize_utterance(&mut self) -> SpeechResult<()> {
+        if self.answer == Answer::Never {
+            return Ok(());
+        }
         let text = self.text.lock().unwrap().clone();
         self.queue.push_back(SttTranscript::Final(text));
         Ok(())
@@ -86,6 +105,7 @@ impl SttProvider for FinalsOnlyStt {
 
 struct Factory {
     emits_partials: bool,
+    answer: Answer,
     text: Arc<Mutex<String>>,
 }
 
@@ -96,6 +116,7 @@ impl VendorFactory for Factory {
     ) -> SpeechResult<Box<dyn SttProvider>> {
         Ok(Box::new(FinalsOnlyStt {
             emits_partials: self.emits_partials,
+            answer: self.answer,
             text: Arc::clone(&self.text),
             queue: VecDeque::new(),
         }))
@@ -188,12 +209,17 @@ impl Rig {
     }
 
     async fn with_provider(config: VoiceAgentConfig, emits_partials: bool) -> Self {
+        Self::with_answer(config, emits_partials, Answer::Final).await
+    }
+
+    async fn with_answer(config: VoiceAgentConfig, emits_partials: bool, answer: Answer) -> Self {
         let text = Arc::new(Mutex::new(String::new()));
         let mut registry = VendorRegistry::new();
         registry.register_stt(
             SttVendor::LocalSherpa,
             Arc::new(Factory {
                 emits_partials,
+                answer,
                 text: Arc::clone(&text),
             }),
         );
@@ -322,11 +348,26 @@ fn trace(log: &[SpeechEvent]) -> Vec<String> {
 
 /// The user speaks 400 ms over the agent, then is silent; returns the utterance id.
 async fn held_utterance(rig: &mut Rig) -> String {
+    held_utterance_with(rig, HELD_TEXT, 20, 0).await
+}
+
+/// `loud` speech frames over the agent reply, each followed by `frame_sleep_ms` of wall time.
+async fn held_utterance_with(
+    rig: &mut Rig,
+    text: &str,
+    loud: usize,
+    frame_sleep_ms: u64,
+) -> String {
     rig.drain();
     let before = rig.log.len();
     rig.start_agent_speech().await;
-    *rig.text.lock().unwrap() = HELD_TEXT.into();
-    rig.feed(&loud_stereo_frame(), 20).await;
+    *rig.text.lock().unwrap() = text.into();
+    for _ in 0..loud {
+        rig.feed(&loud_stereo_frame(), 1).await;
+        if frame_sleep_ms > 0 {
+            sleep(Duration::from_millis(frame_sleep_ms)).await;
+        }
+    }
     rig.feed(&silent_stereo_frame(), 30).await;
     // Let playback (or the barge-in) and the vendor finalize settle.
     assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
@@ -438,7 +479,6 @@ async fn partial_less_utterance_product_defaults_gate_on_gets_final() {
 /// playback longer than `stt_listen_timeout_ms`: C1 runs on the wall clock while the close
 /// (and so the vendor final) is blocked by `agent_speaking`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "C1 repro: C1 fires on wall clock while agent playback blocks the close; fix in chunk G"]
 async fn no_partial_phrase_held_past_listen_timeout_during_playback_gets_final() {
     let mut config = agent_config(false);
     config.vad.barge_in.enabled = false;
@@ -446,5 +486,79 @@ async fn no_partial_phrase_held_past_listen_timeout_during_playback_gets_final()
     let mut rig = Rig::with_provider(config, true).await;
     let id = held_utterance(&mut rig).await;
     assert_one_final(&rig, &id);
+    rig.agent.stop().await.unwrap();
+}
+
+fn no_partial_held_config() -> VoiceAgentConfig {
+    let mut config = agent_config(false);
+    config.vad.barge_in.enabled = false;
+    config.vad.stt_listen_timeout_ms = 1000;
+    config
+}
+
+fn stream_end_reasons(log: &[SpeechEvent], id: &str) -> Vec<Option<String>> {
+    log.iter()
+        .filter(|e| {
+            e.kind == SpeechEventKind::SttStreamEnd && e.utterance_id.as_deref() == Some(id)
+        })
+        .map(|e| e.reason.clone())
+        .collect()
+}
+
+/// Held past the listen timeout, the vendor answers the finalize with an empty final: one
+/// `user_stt_not_found{empty_final}` from the close (the product reason for an empty vendor
+/// final), not C1.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_partial_phrase_held_empty_vendor_final_is_empty_final() {
+    let mut rig = Rig::with_provider(no_partial_held_config(), true).await;
+    let id = held_utterance_with(&mut rig, "", 20, 0).await;
+    let (finals, not_found) = terminals(&rig.log, &id);
+    assert_eq!(
+        (finals, not_found),
+        (vec![], vec![Some("empty_final".to_string())]),
+        "{:#?}",
+        trace(&rig.log)
+    );
+    assert!(
+        !stream_end_reasons(&rig.log, &id).contains(&Some("listen_timeout".to_string())),
+        "{:#?}",
+        trace(&rig.log)
+    );
+    rig.agent.stop().await.unwrap();
+}
+
+/// VAD still hears speech past the listen timeout during playback: C1 runs as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_partial_speech_past_listen_timeout_during_playback_c1_fires() {
+    let mut rig = Rig::with_provider(no_partial_held_config(), true).await;
+    // 80 x 20 ms frames over >= 1.6 s of wall time: media and wall clock both pass 1000 ms.
+    let id = held_utterance_with(&mut rig, HELD_TEXT, 80, 20).await;
+    let (finals, not_found) = terminals(&rig.log, &id);
+    assert_eq!(
+        (finals, not_found),
+        (vec![], vec![Some("no_partial".to_string())]),
+        "{:#?}",
+        trace(&rig.log)
+    );
+    assert!(stream_end_reasons(&rig.log, &id).contains(&Some("listen_timeout".to_string())));
+    rig.agent.stop().await.unwrap();
+}
+
+/// After playback ends the close sends the finalize; a vendor that never answers is bounded by
+/// the STT actor's finalize wait (`finalize_wait_ms`, here FINALIZE_WAIT_MS), not by a new timer:
+/// exactly one `user_stt_not_found`, inside the 1.5 s the test feeds after playback.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_partial_phrase_held_vendor_never_answers_is_bounded() {
+    let mut rig = Rig::with_answer(no_partial_held_config(), true, Answer::Never).await;
+    let id = held_utterance(&mut rig).await;
+    let (finals, not_found) = terminals(&rig.log, &id);
+    assert!(finals.is_empty(), "{:#?}", trace(&rig.log));
+    assert_eq!(not_found.len(), 1, "{:#?}", trace(&rig.log));
+    assert_ne!(
+        not_found,
+        vec![Some("no_partial".to_string())],
+        "{:#?}",
+        trace(&rig.log)
+    );
     rig.agent.stop().await.unwrap();
 }

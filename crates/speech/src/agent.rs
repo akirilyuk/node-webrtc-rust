@@ -388,6 +388,8 @@ struct AgentInner {
     stt_listen_media_ms: u32,
     /// One `voice_debug` line per utterance when C1 is deferred due to STT decode backlog.
     c1_backlog_deferred_logged: bool,
+    /// "C1 deferred: … agent playback" logged for the current pause.
+    c1_playback_hold_logged: bool,
     /// When the STT stream open was first seen refused for this wait (`None` = not pending).
     stt_open_wait_started_at: Option<Instant>,
     /// C2: ms remaining until forced `user_speech_final` after last partial or `SpeechEnd`.
@@ -818,6 +820,7 @@ impl VoiceAgent {
                 stt_listen_started_at: None,
                 stt_listen_media_ms: 0,
                 c1_backlog_deferred_logged: false,
+                c1_playback_hold_logged: false,
                 stt_open_wait_started_at: None,
                 utterance_finalize_deadline_ms: 0,
                 utterance_finalize_armed_at: None,
@@ -1556,7 +1559,20 @@ impl VoiceAgent {
     /// Hold C1 while the STT stream open is refused and retried (latency instead of failure).
     /// Returns `true` when C1 must not fire this tick. While holding, the listen clock restarts,
     /// so once the stream opens the normal timeout and hard timeout count from that point.
+    ///
+    /// Both C1 paths (tick and media) call this, so it also holds C1 while the utterance's close
+    /// is blocked by agent playback (`c1_close_blocked_by_playback`); see there.
     fn c1_hold_for_stt_open(inner: &mut AgentInner, open_pending: bool) -> bool {
+        if Self::c1_close_blocked_by_playback(inner) {
+            if !inner.c1_playback_hold_logged {
+                inner.c1_playback_hold_logged = true;
+                voice_debug("C1 deferred: utterance close waits for agent playback to end");
+            }
+            inner.stt_listen_started_at = Some(Instant::now());
+            inner.stt_listen_media_ms = 0;
+            return true;
+        }
+        inner.c1_playback_hold_logged = false;
         if !open_pending {
             inner.stt_open_wait_started_at = None;
             return false;
@@ -1619,6 +1635,20 @@ impl VoiceAgent {
             return true;
         }
         stopped && !Self::vad_is_speaking(inner) && wall_at_least(timeout_ms) && backlog_ms <= slack
+    }
+
+    /// The utterance ended (VAD silent, close pending) but `should_finalize_utterance` cannot
+    /// close it while the agent plays, so the vendor has not been asked for its final yet. C1
+    /// must not answer "no transcript" for it (`rt.stt-terminal-before-late-final`): the bound is
+    /// the playback end, after which the listen clock (timeout and hard timeout) starts again
+    /// and the normal close sends the finalize, answered or timed out by the STT actor. While VAD
+    /// still hears speech this is false and C1 runs as before.
+    fn c1_close_blocked_by_playback(inner: &AgentInner) -> bool {
+        inner.config.vad.gate_stt
+            && inner.agent_speaking
+            && inner.stt_finalize_pending
+            && !inner.live_flag(|r| r.final_emitted)
+            && !Self::vad_is_speaking(inner)
     }
 
     fn maybe_log_c1_backlog_deferred(inner: &mut AgentInner, backlog_ms: u32) {

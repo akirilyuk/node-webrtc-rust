@@ -313,7 +313,11 @@ export interface AdaptiveVadLimit {
 export const ADAPTIVE_VAD_LIMITS: {
   readonly noiseMarginDb: AdaptiveVadLimit
   readonly stuckActiveMs: AdaptiveVadLimit
-} = adaptiveVadLimitsCatalog
+} = adaptiveVadLimitsCatalog.limits
 
-/** Keys of the `vad.adaptive` object, as sent to the runtime (camelCase). */
-export const ADAPTIVE_VAD_KEYS = ['noiseMarginDb', 'useSpeechLevel', 'stuckActiveMs'] as const
+/**
+ * The subset of `vad.adaptive` keys that the platform exposes and validates (not the full
+ * `AdaptiveVadConfig`), from `catalog/adaptive-vad-limits.json`. A Rust test asserts each
+ * one is a serialized field of `AdaptiveVadConfig`, so a Rust rename fails it.
+ */
+export const ADAPTIVE_VAD_KEYS: readonly string[] = adaptiveVadLimitsCatalog.keys

@@ -425,13 +425,14 @@ describe('adaptive VAD limits', () => {
       noiseMarginDb: { min: 0, max: 30, integer: false },
       stuckActiveMs: { min: 1000, max: 4294967295, integer: true },
     })
-    expect([...ADAPTIVE_VAD_KEYS]).toEqual(['noiseMarginDb', 'useSpeechLevel', 'stuckActiveMs'])
+    expect([...ADAPTIVE_VAD_KEYS]).toEqual(['noiseMarginDb', 'stuckActiveMs', 'useSpeechLevel'])
   })
 
   test('matches the published JSON file the Rust test reads', () => {
     const file = JSON.parse(
       readFileSync(new URL('../catalog/adaptive-vad-limits.json', import.meta.url), 'utf8'),
     )
-    expect(ADAPTIVE_VAD_LIMITS).toEqual(file)
+    expect(ADAPTIVE_VAD_LIMITS).toEqual(file.limits)
+    expect([...ADAPTIVE_VAD_KEYS]).toEqual(file.keys)
   })
 })

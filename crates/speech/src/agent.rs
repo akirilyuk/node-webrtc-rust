@@ -15,12 +15,11 @@ use tokio::sync::{broadcast, oneshot, Mutex, Notify};
 
 use crate::audio_tap::{audio_tap_dir_from_env, next_tap_agent_id, ContinuousTap, TtsOutTap};
 use crate::config::{
-    SpeakerGateUpdate,
     effective_stt_listen_hard_timeout_ms, language_id_allowlist_accepts, language_id_continuous,
     language_id_early, language_id_enabled, resolved_language_id_min_speech_ms,
     resolved_post_utterance_silence_ms, BargeInConfig, EventDeliveryMode, NoiseSuppressionProvider,
-    SendTextToTtsOptions, SttConfig, TtsConfig, TtsVendor, UpdateTtsConfigOptions, VadConfig,
-    VoiceAgentConfig, VoiceSessionContext,
+    SendTextToTtsOptions, SpeakerGateUpdate, SttConfig, TtsConfig, TtsVendor,
+    UpdateTtsConfigOptions, VadConfig, VoiceAgentConfig, VoiceSessionContext,
 };
 use crate::error::{SpeechError, SpeechResult};
 use crate::events::{SpeechEvent, SpeechEventBus};
@@ -3381,9 +3380,12 @@ impl VoiceAgent {
     /// - Enabling needs `speakerGate.modelPath`. The first enable loads the model on a blocking
     ///   task bounded by `model_load_timeout_ms`; until it loads, finals are `unknown` /
     ///   `loading`. A failed or timed-out load leaves the gate inactive, emits an `error` event
-    ///   (`reason: speaker_model_load_failed`), and a later enable retries.
-    /// - Disabling stops scoring at once. A barge-in held for the live utterance fires now if
-    ///   its reply is still playing (else it is dropped); that utterance's final keeps the
+    ///   (`reason: speaker_model_load_failed`), and a later enable retries. A timed-out load
+    ///   keeps its thread: an enable while it still runs reuses it (no second thread) and applies
+    ///   its result when it returns; once it returned, the next enable starts a fresh load.
+    /// - Disabling stops scoring at once. Before this returns, every utterance that started
+    ///   active is marked cut, so a barge-in held for it fires exactly once (if its reply is
+    ///   still playing, else it is dropped), before that utterance's final; the final keeps the
     ///   verdict it has, else `unknown` / `no_check`.
     pub fn set_speaker_gate(&self, update: SpeakerGateUpdate) -> SpeechResult<()> {
         let Some(gate) = self.speaker_gate.as_ref() else {
@@ -3403,10 +3405,9 @@ impl VoiceAgent {
                 }
             }
             Some(false) => {
-                // Utterances that start from now are off. The live one is cut on its own task,
-                // under the step lock: a final that already started reading its verdict owns its
-                // held barge-in (it fires before that final); the others are settled here, before
-                // any later final reserves its slot.
+                // Off from now, and every utterance that started active is cut synchronously, so
+                // a final that reads its verdict after this returns fires its held barge-in. The
+                // held barge-ins no final took are settled on a task, under the step lock.
                 gate.set_disabled();
                 let weak = self.weak_self.clone();
                 tokio::spawn(async move {
@@ -3449,6 +3450,10 @@ impl VoiceAgent {
     /// Loads the speaker model off the frame path, bounded by `model_load_timeout_ms`, then
     /// starts the verifier. Failure or timeout: the gate stays inactive and an `error` event
     /// with `reason: speaker_model_load_failed` is emitted.
+    ///
+    /// One load thread at a time: a timed-out load keeps waiting for its thread (`loading`
+    /// stays set, so an enable meanwhile does not spawn another). When it returns, its result is
+    /// applied if an enable came in meanwhile, else dropped.
     fn spawn_speaker_model_load(&self) {
         let weak = self.weak_self.clone();
         let registry = Arc::clone(&self.registry);
@@ -3460,41 +3465,87 @@ impl VoiceAgent {
             let bound = Duration::from_millis(u64::from(cfg.model_load_timeout_ms));
             drop(agent);
             let started = std::time::Instant::now();
-            let load = tokio::task::spawn_blocking(move || {
-                registry.create_speaker_embedder(&cfg)
-            });
-            let result = tokio::time::timeout(bound, load).await;
+            let mut load =
+                tokio::task::spawn_blocking(move || registry.create_speaker_embedder(&cfg));
+            let joined = match tokio::time::timeout(bound, &mut load).await {
+                Ok(joined) => joined,
+                Err(_) => {
+                    {
+                        let Some(agent) = weak.upgrade() else {
+                            return;
+                        };
+                        let Some(gate) = agent.speaker_gate.as_ref() else {
+                            return;
+                        };
+                        gate.load_timed_out();
+                        agent.report_speaker_model_load_failure(
+                            started,
+                            &format!("timed out after {} ms", bound.as_millis()),
+                        );
+                    }
+                    let joined = load.await;
+                    let Some(agent) = weak.upgrade() else {
+                        return;
+                    };
+                    let Some(gate) = agent.speaker_gate.as_ref() else {
+                        return;
+                    };
+                    if !gate.late_load_returned() {
+                        eprintln!(
+                            "[speaker-gate] info: timed-out speaker model load returned waitedMs={}; no enable pending, result dropped",
+                            started.elapsed().as_millis()
+                        );
+                        return;
+                    }
+                    joined
+                }
+            };
             let Some(agent) = weak.upgrade() else {
                 return;
             };
-            let Some(gate) = agent.speaker_gate.as_ref() else {
-                return;
-            };
-            let waited_ms = started.elapsed().as_millis();
-            let failure = match result {
-                Ok(Ok(Ok(Some(embedder)))) => {
-                    *agent
-                        .speaker_embedder
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner()) = Some(embedder);
-                    agent.start_speaker_gate();
-                    gate.finish_load(true);
-                    eprintln!("[speaker-gate] info: speaker model loaded waitedMs={waited_ms}");
-                    return;
-                }
-                Ok(Ok(Ok(None))) => "the vendor provides no speaker embedder".to_string(),
-                Ok(Ok(Err(e))) => e.to_string(),
-                Ok(Err(e)) => format!("load task failed: {e}"),
-                Err(_) => format!("timed out after {} ms", bound.as_millis()),
-            };
-            gate.finish_load(false);
-            eprintln!(
-                "[speaker-gate] warn: speaker model load failed waitedMs={waited_ms}: {failure}"
-            );
-            let mut event = SpeechEvent::error(format!("speaker_model_load_failed: {failure}"));
-            event.reason = Some("speaker_model_load_failed".into());
-            agent.emit(event);
+            agent.apply_speaker_model_load(joined, started);
         });
+    }
+
+    /// Applies a finished model load: starts the verifier on success, else reports the failure.
+    fn apply_speaker_model_load(
+        &self,
+        joined: Result<SpeechResult<Option<Box<dyn SpeakerEmbedder>>>, tokio::task::JoinError>,
+        started: std::time::Instant,
+    ) {
+        let Some(gate) = self.speaker_gate.as_ref() else {
+            return;
+        };
+        let failure = match joined {
+            Ok(Ok(Some(embedder))) => {
+                *self
+                    .speaker_embedder
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(embedder);
+                self.start_speaker_gate();
+                gate.finish_load(true);
+                eprintln!(
+                    "[speaker-gate] info: speaker model loaded waitedMs={}",
+                    started.elapsed().as_millis()
+                );
+                return;
+            }
+            Ok(Ok(None)) => "the vendor provides no speaker embedder".to_string(),
+            Ok(Err(e)) => e.to_string(),
+            Err(e) => format!("load task failed: {e}"),
+        };
+        gate.finish_load(false);
+        self.report_speaker_model_load_failure(started, &failure);
+    }
+
+    fn report_speaker_model_load_failure(&self, started: std::time::Instant, failure: &str) {
+        eprintln!(
+            "[speaker-gate] warn: speaker model load failed waitedMs={}: {failure}",
+            started.elapsed().as_millis()
+        );
+        let mut event = SpeechEvent::error(format!("speaker_model_load_failed: {failure}"));
+        event.reason = Some("speaker_model_load_failed".into());
+        self.emit(event);
     }
 
     /// Forget the enrolled caller; the next utterances enroll again. No-op with the gate off.
@@ -3514,6 +3565,13 @@ impl VoiceAgent {
     #[doc(hidden)]
     pub fn speaker_gate_loaded(&self) -> bool {
         self.speaker_gate.as_ref().is_some_and(|g| g.is_loaded())
+    }
+
+    /// True while a speaker model load thread runs, including one past its timeout (tests and
+    /// diagnostics).
+    #[doc(hidden)]
+    pub fn speaker_gate_load_in_flight(&self) -> bool {
+        self.speaker_gate.as_ref().is_some_and(|g| g.is_loading())
     }
 
     /// True once the caller's voice is enrolled (tests and diagnostics).
@@ -4420,9 +4478,8 @@ impl VoiceAgent {
         slot: Option<u64>,
     ) {
         let settings = self.speaker_gate.as_ref().map(|g| g.utt_settings(key));
-        let drop_mismatch = settings.is_some_and(|s| {
-            s.on_mismatch == crate::config::SpeakerMismatchAction::Drop
-        });
+        let drop_mismatch =
+            settings.is_some_and(|s| s.on_mismatch == crate::config::SpeakerMismatchAction::Drop);
         // Disabled while this utterance was live: a held barge-in fires (if its reply still
         // plays), no enrollment from it.
         let cut = settings.is_some_and(|s| s.cut);
@@ -4456,8 +4513,12 @@ impl VoiceAgent {
         // (`short_caller_verdict_fires_after_next_utterance_started`); otherwise it is dropped.
         if let Some(gate) = self.speaker_gate.as_ref() {
             if let Some(epoch) = gate.take_pending_barge(key) {
-                let allow =
-                    cut || gate.barge_allowed(&gate.verdict_read_by_final(key, outcome));
+                // Re-read after taking it: a disable that returned before this point cut it.
+                // Defensive: in the tested sequences a cut final reads `unknown` (barge allowed)
+                // or the disable path took the barge-in first; this keeps a cut `other` from
+                // dropping it.
+                let cut = cut || gate.is_cut(key);
+                let allow = cut || gate.barge_allowed(&gate.verdict_read_by_final(key, outcome));
                 self.settle_pending_barge(
                     key,
                     epoch,

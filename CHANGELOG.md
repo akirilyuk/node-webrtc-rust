@@ -13,6 +13,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **speech, bindings, sdk:** `VoiceAgent.setSpeakerGate({ enabled?, onMismatch?, bargeIn? })` changes the caller speaker gate during a call. Changes apply from the next utterance and enrollment is kept. With `speakerGate.modelPath` set and `enabled: false`, the gate is built inactive (no model load, no speaker fields); the first enable loads the model off the audio path, bounded by the new `speakerGate.modelLoadTimeoutMs` (default 10000). Finals say `speakerUnknownReason: 'loading'` until it is loaded; a failed load emits `error` with `reason: 'speaker_model_load_failed'`. Turning the gate off releases a barge-in held for the live utterance if its reply is still playing.
+- **speech:** a speaker model load that timed out but is still running is reused by the next `setSpeakerGate({ enabled: true })` instead of starting a second load, and its model is used if it loads.
 - **speech, bindings, sdk:** `speakerGate.bargeIn: 'caller_only' | 'anyone'` (default `'caller_only'`, the existing behaviour). `'anyone'` never holds a barge-in for the speaker verdict; scoring, labels and `onMismatch: 'drop'` still apply.
 
 ## [0.16.3] - 2026-11-04

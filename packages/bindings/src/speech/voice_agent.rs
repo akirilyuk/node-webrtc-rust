@@ -20,8 +20,9 @@ use crate::mixer::JsMixGraph;
 use crate::speech::events::{speech_event_to_js, wire_speech_callback};
 use crate::speech::registry::default_vendor_registry;
 use crate::speech::types::{
-    speech_err, JsBeginSttHoldOptions, JsSpeakerGateUpdate, JsReleaseSttHoldOptions, JsSpeechEvent, JsSttConfig,
-    JsSttHoldMode, JsTtsConfig, JsUpdateTtsOptions, JsVoiceAgentConfig, JsVoiceSessionContext,
+    speech_err, JsBeginSttHoldOptions, JsReleaseSttHoldOptions, JsSpeakerGateUpdate, JsSpeechEvent,
+    JsSttConfig, JsSttHoldMode, JsTtsConfig, JsUpdateTtsOptions, JsVoiceAgentConfig,
+    JsVoiceSessionContext,
 };
 
 /// `VOICE_DEBUG=1|true|yes`, read once per process.

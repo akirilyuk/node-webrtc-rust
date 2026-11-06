@@ -423,6 +423,13 @@ impl SpeakerGate {
             .any(|(k, s)| *k == key && s.cut)
     }
 
+    /// True while a model load thread runs, including one past its timeout (tests and
+    /// diagnostics).
+    #[doc(hidden)]
+    pub fn is_loading(&self) -> bool {
+        lock(&self.runtime).loading
+    }
+
     /// True when the speaker model is loaded (the verifier can run).
     pub fn is_loaded(&self) -> bool {
         lock(&self.runtime).loaded
@@ -455,8 +462,27 @@ impl SpeakerGate {
         true
     }
 
-    /// The model load finished. `ok == false` (failure or timeout): the gate stays inactive and a
-    /// later enable retries.
+    /// The model load passed its bound while its thread still runs: the gate is inactive from
+    /// now on. `loading` stays set until the thread returns, so an enable meanwhile reuses this
+    /// load instead of starting another thread (see [`Self::late_load_returned`]).
+    pub fn load_timed_out(&self) {
+        lock(&self.runtime).enabled = false;
+    }
+
+    /// The thread of a timed-out load returned. True when an enable came in meanwhile: the caller
+    /// applies the result and settles with [`Self::finish_load`] (`loading` stays set until then).
+    /// False: the result is dropped and the next enable starts a fresh load.
+    pub fn late_load_returned(&self) -> bool {
+        let mut rt = lock(&self.runtime);
+        if rt.enabled {
+            return true;
+        }
+        rt.loading = false;
+        false
+    }
+
+    /// The model load finished. `ok == false` (failure): the gate stays inactive and a later
+    /// enable retries.
     pub fn finish_load(&self, ok: bool) {
         let mut rt = lock(&self.runtime);
         rt.loading = false;
@@ -474,45 +500,50 @@ impl SpeakerGate {
         cfg.validate()
     }
 
-    /// Utterances that start from now are off (see [`Self::cut_live`] for the live one).
+    /// Disable, synchronously: utterances that start from now are off, every utterance that
+    /// started active is marked cut under the same lock (its final keeps the verdict it has, else
+    /// `unknown` / `no_check`, and a held barge-in it settles fires), the live utterance stops
+    /// collecting PCM (no further check), and finals waiting for a verdict are woken. Once this
+    /// returns, every final reads `cut`. Enrollment is kept. See [`Self::cut_live`] for the held
+    /// barge-ins no final owns.
     pub fn set_disabled(&self) {
-        lock(&self.runtime).enabled = false;
-    }
-
-    /// After [`Self::set_disabled`]: no new scoring or hold. Every utterance that started active is marked
-    /// cut (its final keeps the verdict it has, else `unknown` / `no_check`), the live utterance
-    /// stops collecting PCM (no further check), and finals waiting for a verdict are woken.
-    /// Returns the held barge-ins (key, playback epoch) that no reading final owns; the caller
-    /// settles them. Enrollment is kept.
-    pub fn cut_live(&self) -> Vec<(u64, u64)> {
         {
             let mut rt = lock(&self.runtime);
-            if rt.enabled {
-                // Re-enabled before the cut ran: nothing to cut.
-                return Vec::new();
-            }
+            rt.enabled = false;
             for (_, s) in rt.utts.iter_mut() {
                 if s.gate == UttGate::Active {
                     s.cut = true;
                 }
             }
         }
-        let taken = {
+        {
             let mut feed = lock(&self.feed);
             feed.cur = None;
             feed.shorts.clear();
-            let keys: Vec<u64> = feed
-                .pending_barge
-                .keys()
-                .copied()
-                .filter(|k| !self.recheck_closed(*k))
-                .collect();
-            keys.into_iter()
-                .filter_map(|k| feed.pending_barge.remove(&k).map(|e| (k, e)))
-                .collect()
-        };
+        }
         self.shared.notify.notify_waiters();
-        taken
+    }
+
+    /// After [`Self::set_disabled`]: takes the held barge-ins (key, playback epoch) of cut
+    /// utterances that no reading final owns; the caller settles them. A barge-in a final already
+    /// took is settled by that final (it reads `cut`), so each fires at most once.
+    pub fn cut_live(&self) -> Vec<(u64, u64)> {
+        let cut: Vec<u64> = lock(&self.runtime)
+            .utts
+            .iter()
+            .filter(|(_, s)| s.cut)
+            .map(|(k, _)| *k)
+            .collect();
+        let mut feed = lock(&self.feed);
+        let keys: Vec<u64> = feed
+            .pending_barge
+            .keys()
+            .copied()
+            .filter(|k| cut.contains(k) && !self.recheck_closed(*k))
+            .collect();
+        keys.into_iter()
+            .filter_map(|k| feed.pending_barge.remove(&k).map(|e| (k, e)))
+            .collect()
     }
 
     fn send(&self, msg: Msg) {

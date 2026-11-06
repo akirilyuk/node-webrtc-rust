@@ -5,9 +5,9 @@ use napi_derive::napi;
 use node_webrtc_rust_speech::config::AdaptiveVadConfig;
 use node_webrtc_rust_speech::{
     BargeInConfig, EventDeliveryMode, EventsConfig, NoiseSuppressionConfig,
-    NoiseSuppressionProvider, SentenceCase, SpeakerGateBargeIn, SpeakerGateConfig, SpeakerGateUpdate, SpeakerMismatchAction,
-    SpeechTransport, SttConfig, SttVendor, TtsConfig, TtsVendor, VadConfig, VadSampleRate,
-    VoiceAgentConfig, VoiceSessionContext,
+    NoiseSuppressionProvider, SentenceCase, SpeakerGateBargeIn, SpeakerGateConfig,
+    SpeakerGateUpdate, SpeakerMismatchAction, SpeechTransport, SttConfig, SttVendor, TtsConfig,
+    TtsVendor, VadConfig, VadSampleRate, VoiceAgentConfig, VoiceSessionContext,
 };
 
 #[napi(string_enum)]
@@ -518,8 +518,7 @@ impl TryFrom<JsSpeakerGateConfig> for SpeakerGateConfig {
 
     fn try_from(value: JsSpeakerGateConfig) -> Result<Self> {
         let d = SpeakerGateConfig::default();
-        let on_mismatch =
-            parse_on_mismatch(value.on_mismatch.as_deref())?.unwrap_or(d.on_mismatch);
+        let on_mismatch = parse_on_mismatch(value.on_mismatch.as_deref())?.unwrap_or(d.on_mismatch);
         let barge_in = parse_barge_in(value.barge_in.as_deref())?.unwrap_or(d.barge_in);
         Ok(Self {
             enabled: value.enabled.unwrap_or(d.enabled),

@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'vitest'
 import { readFileSync } from 'node:fs'
 import {
+  ADAPTIVE_VAD_KEYS,
+  ADAPTIVE_VAD_LIMITS,
   VOICE_VENDORS,
   allVendorIds,
   azureTtsVoices,
@@ -414,5 +416,22 @@ describe('ttsPresetVoices', () => {
     )
     const errors = validateVoiceCatalogPresets(mutated)
     expect(errors.some((e) => e.vendorId === 'mistral' && e.value === 'not_a_preset')).toBe(true)
+  })
+})
+
+describe('adaptive VAD limits', () => {
+  test('export shape and values', () => {
+    expect(ADAPTIVE_VAD_LIMITS).toEqual({
+      noiseMarginDb: { min: 0, max: 30, integer: false },
+      stuckActiveMs: { min: 1000, max: 4294967295, integer: true },
+    })
+    expect([...ADAPTIVE_VAD_KEYS]).toEqual(['noiseMarginDb', 'useSpeechLevel', 'stuckActiveMs'])
+  })
+
+  test('matches the published JSON file the Rust test reads', () => {
+    const file = JSON.parse(
+      readFileSync(new URL('../catalog/adaptive-vad-limits.json', import.meta.url), 'utf8'),
+    )
+    expect(ADAPTIVE_VAD_LIMITS).toEqual(file)
   })
 })

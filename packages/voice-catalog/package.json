@@ -30,6 +30,7 @@
       "require": "./dist/cjs/src/index.js"
     },
     "./catalog/vendors.json": "./catalog/vendors.json",
+    "./catalog/adaptive-vad-limits.json": "./catalog/adaptive-vad-limits.json",
     "./catalog/azure-tts-voices.json": "./catalog/azure-tts-voices.json",
     "./catalog/google-tts-voices.json": "./catalog/google-tts-voices.json"
   },

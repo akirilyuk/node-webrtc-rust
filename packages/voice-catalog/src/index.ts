@@ -1,4 +1,5 @@
 import vendorsCatalog from '../catalog/vendors.json'
+import adaptiveVadLimitsCatalog from '../catalog/adaptive-vad-limits.json'
 import azureTtsVoicesCatalog from '../catalog/azure-tts-voices.json'
 import googleTtsVoicesCatalog from '../catalog/google-tts-voices.json'
 
@@ -295,3 +296,24 @@ export {
   azureTtsVoicesJson as loadAzureTtsVoicesCatalog,
   googleTtsVoicesJson as loadGoogleTtsVoicesCatalog,
 }
+
+/** Range of one numeric `vad.adaptive.*` key. */
+export interface AdaptiveVadLimit {
+  readonly min: number
+  readonly max: number
+  readonly integer: boolean
+}
+
+/**
+ * Accepted ranges of the numeric `vad.adaptive.*` keys, from
+ * `catalog/adaptive-vad-limits.json`. Mirrors `AdaptiveVadConfig::validate()` in
+ * `crates/speech/src/config.rs`; the Rust test `adaptive_vad_limits_match_catalog`
+ * fails when either side changes alone. `stuckActiveMs.max` is the `u32` maximum.
+ */
+export const ADAPTIVE_VAD_LIMITS: {
+  readonly noiseMarginDb: AdaptiveVadLimit
+  readonly stuckActiveMs: AdaptiveVadLimit
+} = adaptiveVadLimitsCatalog
+
+/** Keys of the `vad.adaptive` object, as sent to the runtime (camelCase). */
+export const ADAPTIVE_VAD_KEYS = ['noiseMarginDb', 'useSpeechLevel', 'stuckActiveMs'] as const

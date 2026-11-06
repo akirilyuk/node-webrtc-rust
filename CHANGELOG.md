@@ -8,6 +8,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-11-06
+
+### Fixed
+
+- **speech:** an utterance that ends while the agent is still speaking, with no STT partial, no longer closes as `user_stt_not_found` (`reason: 'no_partial'`, stream end `listen_timeout`) before the STT vendor was asked for its final. The close of such an utterance waits for playback to end. Until then the `sttListenTimeoutMs` check is paused, and it starts counting again when playback ends. The vendor final now becomes `user_speech_final`; an empty final ends as `user_stt_not_found` (`reason: 'empty_final'`); a vendor that never answers is bounded by the STT finalize wait as before. Speech that is still going on past the timeout during playback is cut by the timeout as before. This mostly affected short phrases over a reply that was not interrupted (barge-in off, playback guard, or a held barge-in).
+
 ## [0.17.1] - 2026-11-06
 
 ### Added

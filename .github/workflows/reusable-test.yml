@@ -209,6 +209,9 @@ jobs:
       - uses: actions/checkout@v4
         if: steps.gate.outputs.skip != 'true'
 
+      - uses: ./.github/actions/ram-target-dir
+        if: steps.gate.outputs.skip != 'true'
+
       - name: Download native binding artifact
         id: binding-artifact
         if: steps.gate.outputs.skip != 'true' && steps.gate.outputs.needs_native == 'true' && inputs.binding_artifact != ''

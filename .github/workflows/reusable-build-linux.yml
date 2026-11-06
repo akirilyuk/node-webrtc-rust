@@ -54,6 +54,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: ./.github/actions/ram-target-dir
+
       - uses: ./.github/actions/native-binding-cache
         id: native-cache
         if: inputs.use_native_cache
@@ -83,6 +85,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: ./.github/actions/ram-target-dir
+
       - name: Ensure Sherpa ONNX musl shared libs
         run: bash scripts/ci/build-sherpa-onnx-musl-libs.sh
 
@@ -109,6 +113,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/ram-target-dir
 
       - uses: ./.github/actions/native-binding-cache
         id: native-cache

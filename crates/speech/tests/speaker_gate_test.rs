@@ -10,7 +10,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::{
-    SpeakerGateConfig, SpeakerMismatchAction, SttVendor, TtsConfig, TtsVendor, VadConfig,
+    SpeakerGateBargeIn, SpeakerGateConfig, SpeakerGateUpdate, SpeakerMismatchAction, SttVendor, TtsConfig, TtsVendor, VadConfig,
     VoiceAgentConfig,
 };
 use node_webrtc_rust_speech::events::{SpeechEvent, SpeechEventKind};
@@ -141,7 +141,12 @@ impl SttProvider for ScriptedStt {
     }
 }
 
+/// Test hook for the runtime model load: while a receiver is set, the next
+/// `create_speaker_embedder` takes it and blocks until a message arrives or the sender drops.
+type LoadBlock = Arc<Mutex<Option<std::sync::mpsc::Receiver<()>>>>;
+
 struct GateFactory {
+    load_block: LoadBlock,
     script: Arc<Mutex<Script>>,
     default: Arc<Mutex<Behavior>>,
     queue: Arc<Mutex<VecDeque<Behavior>>>,
@@ -168,6 +173,10 @@ impl VendorFactory for GateFactory {
         &self,
         _config: &SpeakerGateConfig,
     ) -> SpeechResult<Option<Box<dyn SpeakerEmbedder>>> {
+        let block = self.load_block.lock().unwrap().take();
+        if let Some(rx) = block {
+            let _ = rx.recv();
+        }
         Ok(Some(Box::new(FakeEmbedder {
             default: Arc::clone(&self.default),
             queue: Arc::clone(&self.queue),
@@ -178,6 +187,7 @@ impl VendorFactory for GateFactory {
 
 struct Rig {
     agent: Arc<VoiceAgent>,
+    load_block: LoadBlock,
     script: Arc<Mutex<Script>>,
     default: Arc<Mutex<Behavior>>,
     queue: Arc<Mutex<VecDeque<Behavior>>>,
@@ -199,6 +209,7 @@ fn gate_cfg(on_mismatch: SpeakerMismatchAction) -> SpeakerGateConfig {
         recheck_max_windows: 2,
         on_mismatch,
         verify_timeout_ms: 300,
+        ..SpeakerGateConfig::default()
     }
 }
 
@@ -248,10 +259,12 @@ async fn rig_with(config: VoiceAgentConfig) -> Rig {
     let default = Arc::new(Mutex::new(Behavior::Vector(REF.to_vec())));
     let queue = Arc::new(Mutex::new(VecDeque::new()));
     let lens = Arc::new(Mutex::new(Vec::new()));
+    let load_block: LoadBlock = Arc::new(Mutex::new(None));
     let mut registry = VendorRegistry::new();
     registry.register_stt(
         SttVendor::LocalSherpa,
         Arc::new(GateFactory {
+            load_block: Arc::clone(&load_block),
             script: Arc::clone(&script),
             default: Arc::clone(&default),
             queue: Arc::clone(&queue),
@@ -269,6 +282,7 @@ async fn rig_with(config: VoiceAgentConfig) -> Rig {
     agent.start(None).await.unwrap();
     Rig {
         agent,
+        load_block,
         script,
         default,
         queue,
@@ -3575,6 +3589,228 @@ async fn short_unknown_stt_partial_during_hold_waits_for_hold_expiry() {
         pos(&|e| e.kind == SpeechEventKind::BargeIn)
             < pos(&|e| e.kind == SpeechEventKind::UserSpeechFinal),
         "barge_in precedes the final"
+    );
+    rig.agent.stop().await.unwrap();
+}
+
+// ---- runtime switch (`set_speaker_gate`) ------------------------------------------------------
+
+fn enable() -> SpeakerGateUpdate {
+    SpeakerGateUpdate {
+        enabled: Some(true),
+        ..Default::default()
+    }
+}
+
+fn disable() -> SpeakerGateUpdate {
+    SpeakerGateUpdate {
+        enabled: Some(false),
+        ..Default::default()
+    }
+}
+
+/// `modelPath` set, `enabled: false`: the gate is built inactive.
+fn disabled_with_model_cfg() -> SpeakerGateConfig {
+    SpeakerGateConfig {
+        enabled: false,
+        ..gate_cfg(SpeakerMismatchAction::Flag)
+    }
+}
+
+async fn wait_loaded(rig: &Rig) {
+    for _ in 0..300 {
+        if rig.agent.speaker_gate_loaded() {
+            return;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("speaker model not loaded");
+}
+
+/// Built disabled: finals carry no speaker fields. After an enable the next utterances are scored
+/// (enroll, then `caller`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn constructed_disabled_then_enable_scores_next_utterance() {
+    let mut rig = rig_with(agent_config(disabled_with_model_cfg())).await;
+    rig.utterance("before the switch", 20).await;
+    rig.drain();
+    assert_eq!(rig.finals().len(), 1);
+    assert!(rig.finals()[0].speaker.is_none(), "gate off: no speaker");
+    assert!(rig.finals()[0].speaker_unknown_reason.is_none());
+    assert!(!rig.agent.speaker_gate_loaded(), "no model load while disabled");
+
+    rig.agent.set_speaker_gate(enable()).unwrap();
+    wait_loaded(&rig).await;
+    rig.enroll().await;
+    let n = rig.finals().len();
+    assert_eq!(rig.finals()[1].speaker.as_deref(), Some("unknown"));
+    assert_eq!(
+        rig.finals()[1].speaker_unknown_reason.as_deref(),
+        Some("not_enrolled")
+    );
+    rig.utterance("after the switch", 15).await;
+    rig.drain();
+    assert_eq!(rig.finals().len(), n + 1);
+    assert_eq!(
+        rig.finals().last().unwrap().speaker.as_deref(),
+        Some("caller")
+    );
+    rig.agent.stop().await.unwrap();
+}
+
+/// Enabling without `modelPath` is a config error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn enable_without_model_path_is_config_error() {
+    let rig = rig_with(agent_config(SpeakerGateConfig::default())).await;
+    let err = rig.agent.set_speaker_gate(enable()).unwrap_err();
+    assert!(
+        matches!(err, node_webrtc_rust_speech::error::SpeechError::Config(ref m) if m.contains("speakerGate.modelPath not set")),
+        "{err:?}"
+    );
+    // A policy-only update without a gate is a no-op.
+    rig.agent
+        .set_speaker_gate(SpeakerGateUpdate {
+            barge_in: Some(SpeakerGateBargeIn::Anyone),
+            ..Default::default()
+        })
+        .unwrap();
+    rig.agent.stop().await.unwrap();
+}
+
+/// A barge-in held for the live utterance (its check never settles) fires once when the gate is
+/// disabled while the reply plays, before that utterance's final. The final has no verdict, so it
+/// is `unknown` / `no_check`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disable_while_held_fires_barge_once_before_the_final() {
+    let mut cfg = gate_cfg(SpeakerMismatchAction::Flag);
+    cfg.verify_timeout_ms = 5000;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    *rig.default.lock().unwrap() = Behavior::Pending;
+    rig.start_speaking_for(20).await;
+    rig.script.lock().unwrap().final_on_finalize = Some("switch it off".into());
+    rig.feed(&loud_stereo_frame(), 15).await;
+    sleep(Duration::from_millis(200)).await;
+    rig.drain();
+    assert_eq!(rig.count(SpeechEventKind::BargeIn), 0, "barge-in held");
+
+    rig.agent.set_speaker_gate(disable()).unwrap();
+    assert!(
+        rig.wait_event(SpeechEventKind::BargeIn, 2000).await,
+        "disable releases the held barge-in"
+    );
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    assert!(rig.wait_event(SpeechEventKind::UserSpeechFinal, 2000).await);
+    sleep(Duration::from_millis(100)).await;
+    rig.drain();
+    assert_eq!(rig.count(SpeechEventKind::BargeIn), 1, "fires exactly once");
+    let barge = rig
+        .log
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::BargeIn)
+        .unwrap();
+    let fin = rig
+        .log
+        .iter()
+        .rposition(|e| e.kind == SpeechEventKind::UserSpeechFinal)
+        .unwrap();
+    assert!(barge < fin, "barge-in before the final");
+    let last = rig.log[fin].clone();
+    assert_eq!(last.text.as_deref(), Some("switch it off"));
+    assert_eq!(last.speaker.as_deref(), Some("unknown"));
+    assert_eq!(last.speaker_unknown_reason.as_deref(), Some("no_check"));
+    rig.agent.stop().await.unwrap();
+}
+
+/// `bargeIn: anyone`: a bystander's barge-in is not held, and the final is still `other`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn barge_in_anyone_lets_bystander_interrupt_and_still_labels_other() {
+    let mut cfg = gate_cfg(SpeakerMismatchAction::Flag);
+    cfg.barge_in = SpeakerGateBargeIn::Anyone;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    *rig.default.lock().unwrap() = Behavior::Vector(OTHER.to_vec());
+    rig.start_speaking().await;
+    rig.script.lock().unwrap().final_on_finalize = Some("buy a car".into());
+    rig.feed(&loud_stereo_frame(), 15).await;
+    assert!(
+        rig.wait_event(SpeechEventKind::BargeIn, 2000).await,
+        "anyone: bystander barge-in is not held"
+    );
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    let last = rig.finals().last().copied().unwrap().clone();
+    assert_eq!(last.speaker.as_deref(), Some("other"));
+    rig.agent.stop().await.unwrap();
+}
+
+/// A model load that does not finish within `modelLoadTimeoutMs` leaves the gate inactive and
+/// emits `error` (`reason: speaker_model_load_failed`); a second enable retries and loads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_load_timeout_stays_inactive_and_a_second_enable_retries() {
+    let mut cfg = disabled_with_model_cfg();
+    cfg.model_load_timeout_ms = 50;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    let (hold, rx) = std::sync::mpsc::channel::<()>();
+    *rig.load_block.lock().unwrap() = Some(rx);
+    rig.agent.set_speaker_gate(enable()).unwrap();
+    assert!(rig.wait_event(SpeechEventKind::Error, 2000).await);
+    let err = rig
+        .log
+        .iter()
+        .find(|e| e.kind == SpeechEventKind::Error)
+        .unwrap()
+        .clone();
+    assert_eq!(err.reason.as_deref(), Some("speaker_model_load_failed"));
+    assert!(!rig.agent.speaker_gate_loaded());
+    rig.utterance("still off", 20).await;
+    rig.drain();
+    assert!(
+        rig.finals().last().unwrap().speaker.is_none(),
+        "failed load: gate stays inactive"
+    );
+
+    rig.agent.set_speaker_gate(enable()).unwrap();
+    wait_loaded(&rig).await;
+    drop(hold);
+    rig.agent.stop().await.unwrap();
+}
+
+/// While the model loads, finals are `unknown` / `loading` and nothing is held.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn final_while_loading_is_unknown_loading() {
+    let mut rig = rig_with(agent_config(disabled_with_model_cfg())).await;
+    let (release, rx) = std::sync::mpsc::channel::<()>();
+    *rig.load_block.lock().unwrap() = Some(rx);
+    rig.agent.set_speaker_gate(enable()).unwrap();
+    rig.utterance("while loading", 20).await;
+    rig.drain();
+    let last = rig.finals().last().copied().unwrap().clone();
+    assert_eq!(last.speaker.as_deref(), Some("unknown"));
+    assert_eq!(last.speaker_unknown_reason.as_deref(), Some("loading"));
+    release.send(()).unwrap();
+    wait_loaded(&rig).await;
+    rig.agent.stop().await.unwrap();
+}
+
+/// Enrollment survives disable and enable: the first utterance after re-enabling is `caller`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn enrollment_survives_disable_and_enable() {
+    let mut rig = rig_with(agent_config(gate_cfg(SpeakerMismatchAction::Flag))).await;
+    rig.enroll().await;
+    rig.agent.set_speaker_gate(disable()).unwrap();
+    rig.utterance("gate off", 15).await;
+    rig.drain();
+    assert!(rig.finals().last().unwrap().speaker.is_none());
+    assert!(rig.agent.speaker_gate_enrolled());
+    rig.agent.set_speaker_gate(enable()).unwrap();
+    rig.utterance("gate on again", 15).await;
+    rig.drain();
+    assert_eq!(
+        rig.finals().last().unwrap().speaker.as_deref(),
+        Some("caller")
     );
     rig.agent.stop().await.unwrap();
 }

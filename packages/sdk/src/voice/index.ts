@@ -67,6 +67,8 @@ export type {
   SpeechEventName,
   SpeechEventType,
   SendTextToTtsOptions,
+  SpeakerGateBargeIn,
+  SpeakerGateUpdate,
   BeginSttHoldOptions,
   ReleaseSttHoldOptions,
   ReplayConfig,

@@ -15,6 +15,7 @@ use tokio::sync::{broadcast, oneshot, Mutex, Notify};
 
 use crate::audio_tap::{audio_tap_dir_from_env, next_tap_agent_id, ContinuousTap, TtsOutTap};
 use crate::config::{
+    SpeakerGateUpdate,
     effective_stt_listen_hard_timeout_ms, language_id_allowlist_accepts, language_id_continuous,
     language_id_early, language_id_enabled, resolved_language_id_min_speech_ms,
     resolved_post_utterance_silence_ms, BargeInConfig, EventDeliveryMode, NoiseSuppressionProvider,
@@ -30,7 +31,9 @@ use crate::pipeline::{
     TtsAudioChunk, TtsProgressiveSink, TtsProvider,
 };
 use crate::registry::VendorRegistry;
-use crate::speaker_gate::{BargeDecision, Outcome, SpeakerGate, Verdict, UNKNOWN_SHORT};
+use crate::speaker_gate::{
+    BargeDecision, Outcome, SpeakerGate, UttGate, Verdict, UNKNOWN_LOADING, UNKNOWN_SHORT,
+};
 use crate::stt_actor::{
     default_stt_latency_sink, spawn_stt_actor, test_final_delay_ms_from_env, SttActorHandle,
     SttActorOptions, SttCommand, SttResult, STT_ACTOR_START_MS, STT_ACTOR_STOP_MS,
@@ -720,6 +723,15 @@ impl VoiceAgent {
                 Some(SpeakerGate::new(config.speaker_gate.clone())),
                 embedder,
             )
+        } else if config
+            .speaker_gate
+            .model_path
+            .as_deref()
+            .is_some_and(|p| !p.trim().is_empty())
+        {
+            // Constructed inactive: no model load, no scoring, no hold until
+            // `set_speaker_gate({ enabled: true })` loads the model off the frame path.
+            (Some(SpeakerGate::new(config.speaker_gate.clone())), None)
         } else {
             (None, None)
         };
@@ -3363,6 +3375,128 @@ impl VoiceAgent {
         );
     }
 
+    /// Change the speaker gate during a call. `enabled`, `on_mismatch` and `barge_in` apply from
+    /// the next utterance onset (the live utterance keeps its settings); enrollment is kept.
+    ///
+    /// - Enabling needs `speakerGate.modelPath`. The first enable loads the model on a blocking
+    ///   task bounded by `model_load_timeout_ms`; until it loads, finals are `unknown` /
+    ///   `loading`. A failed or timed-out load leaves the gate inactive, emits an `error` event
+    ///   (`reason: speaker_model_load_failed`), and a later enable retries.
+    /// - Disabling stops scoring at once. A barge-in held for the live utterance fires now if
+    ///   its reply is still playing (else it is dropped); that utterance's final keeps the
+    ///   verdict it has, else `unknown` / `no_check`.
+    pub fn set_speaker_gate(&self, update: SpeakerGateUpdate) -> SpeechResult<()> {
+        let Some(gate) = self.speaker_gate.as_ref() else {
+            if update.enabled == Some(true) {
+                return Err(SpeechError::Config("speakerGate.modelPath not set".into()));
+            }
+            return Ok(());
+        };
+        if update.enabled == Some(true) {
+            gate.validate_enable().map_err(SpeechError::Config)?;
+        }
+        gate.set_policy(update.on_mismatch, update.barge_in);
+        match update.enabled {
+            Some(true) => {
+                if gate.set_enabled() {
+                    self.spawn_speaker_model_load();
+                }
+            }
+            Some(false) => {
+                // Utterances that start from now are off. The live one is cut on its own task,
+                // under the step lock: a final that already started reading its verdict owns its
+                // held barge-in (it fires before that final); the others are settled here, before
+                // any later final reserves its slot.
+                gate.set_disabled();
+                let weak = self.weak_self.clone();
+                tokio::spawn(async move {
+                    if let Some(agent) = weak.upgrade() {
+                        agent.cut_speaker_gate().await;
+                    }
+                });
+            }
+            None => {}
+        }
+        Ok(())
+    }
+
+    /// After a disable: stop scoring the live utterance and settle the barge-ins held for it
+    /// (fired if the reply they interrupt still plays, else dropped).
+    async fn cut_speaker_gate(&self) {
+        let Some(gate) = self.speaker_gate.as_ref() else {
+            return;
+        };
+        let _step = self.utterance_step.lock().await;
+        for (key, epoch) in gate.cut_live() {
+            let record_id = self
+                .inner
+                .lock()
+                .await
+                .stt_record_ref(key)
+                .map(|r| r.id.clone());
+            self.settle_pending_barge(
+                key,
+                epoch,
+                true,
+                record_id,
+                "speaker gate: held barge-in released (gate disabled)".into(),
+                None,
+            )
+            .await;
+        }
+    }
+
+    /// Loads the speaker model off the frame path, bounded by `model_load_timeout_ms`, then
+    /// starts the verifier. Failure or timeout: the gate stays inactive and an `error` event
+    /// with `reason: speaker_model_load_failed` is emitted.
+    fn spawn_speaker_model_load(&self) {
+        let weak = self.weak_self.clone();
+        let registry = Arc::clone(&self.registry);
+        tokio::spawn(async move {
+            let Some(agent) = weak.upgrade() else {
+                return;
+            };
+            let cfg = agent.inner.lock().await.config.speaker_gate.clone();
+            let bound = Duration::from_millis(u64::from(cfg.model_load_timeout_ms));
+            drop(agent);
+            let started = std::time::Instant::now();
+            let load = tokio::task::spawn_blocking(move || {
+                registry.create_speaker_embedder(&cfg)
+            });
+            let result = tokio::time::timeout(bound, load).await;
+            let Some(agent) = weak.upgrade() else {
+                return;
+            };
+            let Some(gate) = agent.speaker_gate.as_ref() else {
+                return;
+            };
+            let waited_ms = started.elapsed().as_millis();
+            let failure = match result {
+                Ok(Ok(Ok(Some(embedder)))) => {
+                    *agent
+                        .speaker_embedder
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = Some(embedder);
+                    agent.start_speaker_gate();
+                    gate.finish_load(true);
+                    eprintln!("[speaker-gate] info: speaker model loaded waitedMs={waited_ms}");
+                    return;
+                }
+                Ok(Ok(Ok(None))) => "the vendor provides no speaker embedder".to_string(),
+                Ok(Ok(Err(e))) => e.to_string(),
+                Ok(Err(e)) => format!("load task failed: {e}"),
+                Err(_) => format!("timed out after {} ms", bound.as_millis()),
+            };
+            gate.finish_load(false);
+            eprintln!(
+                "[speaker-gate] warn: speaker model load failed waitedMs={waited_ms}: {failure}"
+            );
+            let mut event = SpeechEvent::error(format!("speaker_model_load_failed: {failure}"));
+            event.reason = Some("speaker_model_load_failed".into());
+            agent.emit(event);
+        });
+    }
+
     /// Forget the enrolled caller; the next utterances enroll again. No-op with the gate off.
     pub fn reset_speaker_enrollment(&self) {
         if let Some(gate) = self.speaker_gate.as_ref() {
@@ -3374,6 +3508,12 @@ impl VoiceAgent {
     #[doc(hidden)]
     pub fn speaker_gate_stale_verdicts(&self) -> u64 {
         self.speaker_gate.as_ref().map_or(0, |g| g.stale_verdicts())
+    }
+
+    /// True once the speaker model is loaded (tests and diagnostics).
+    #[doc(hidden)]
+    pub fn speaker_gate_loaded(&self) -> bool {
+        self.speaker_gate.as_ref().is_some_and(|g| g.is_loaded())
     }
 
     /// True once the caller's voice is enrolled (tests and diagnostics).
@@ -3657,6 +3797,10 @@ impl VoiceAgent {
         let Some(key) = live else {
             return false;
         };
+        // Gate off, loading or cut for this utterance, or `bargeIn: anyone`: never held.
+        if !gate.holds_barge_for(key) {
+            return false;
+        }
         let decision = match gate.barge_decision(key) {
             // A stored short verdict whose gate hold already expired cannot be rejoined: fail open.
             BargeDecision::Defer
@@ -4205,6 +4349,25 @@ impl VoiceAgent {
             self.fire_final_terminal_waiter(key).await;
             return;
         };
+        match gate.utt_settings(key).gate {
+            // Gate off for this utterance: exactly like a gate-less agent.
+            UttGate::Off => {
+                self.emit(event);
+                self.fire_final_terminal_waiter(key).await;
+                return;
+            }
+            // Enabled while the model loads: not scored.
+            UttGate::Loading => {
+                self.emit(
+                    event
+                        .with_speaker(Outcome::Unknown.as_str())
+                        .with_speaker_unknown_reason(UNKNOWN_LOADING),
+                );
+                self.fire_final_terminal_waiter(key).await;
+                return;
+            }
+            UttGate::Active => {}
+        }
         // Speaker gate: the final carries this utterance's verdict. A final that arrives before
         // its verdict waits for it (at most `verifyTimeoutMs`, then `unknown`) on its own task:
         // this runs under the step lock, which every inbound frame takes, so waiting here would
@@ -4256,8 +4419,13 @@ impl VoiceAgent {
         outcome: Outcome,
         slot: Option<u64>,
     ) {
-        let drop_mismatch = self.inner.lock().await.config.speaker_gate.on_mismatch
-            == crate::config::SpeakerMismatchAction::Drop;
+        let settings = self.speaker_gate.as_ref().map(|g| g.utt_settings(key));
+        let drop_mismatch = settings.is_some_and(|s| {
+            s.on_mismatch == crate::config::SpeakerMismatchAction::Drop
+        });
+        // Disabled while this utterance was live: a held barge-in fires (if its reply still
+        // plays), no enrollment from it.
+        let cut = settings.is_some_and(|s| s.cut);
         let barge_record_id = record_id.clone();
         let event = if outcome == Outcome::Other && drop_mismatch {
             SpeechEvent::user_speech_ignored(Some(record_id))
@@ -4288,7 +4456,8 @@ impl VoiceAgent {
         // (`short_caller_verdict_fires_after_next_utterance_started`); otherwise it is dropped.
         if let Some(gate) = self.speaker_gate.as_ref() {
             if let Some(epoch) = gate.take_pending_barge(key) {
-                let allow = gate.barge_allowed(&gate.verdict_read_by_final(key, outcome));
+                let allow =
+                    cut || gate.barge_allowed(&gate.verdict_read_by_final(key, outcome));
                 self.settle_pending_barge(
                     key,
                     epoch,
@@ -4305,7 +4474,7 @@ impl VoiceAgent {
             None => self.emit(event),
         }
         if let Some(gate) = self.speaker_gate.as_ref() {
-            if outcome != Outcome::Other {
+            if outcome != Outcome::Other && !cut {
                 gate.enroll_utterance(key);
             }
         }

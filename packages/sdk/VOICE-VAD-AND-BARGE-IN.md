@@ -354,7 +354,29 @@ How it works:
 - **`flag` or `drop`.** `onMismatch: 'flag'` (default) keeps the final and sets `speaker: 'other'` on it. `'drop'` replaces it with `user_speech_ignored` (`reason: 'speaker_mismatch'`, no text). Clips shorter than `minCheckSpeechMs` (reason `short`), and any check that fails or exceeds `verifyTimeoutMs`, are `speaker: 'unknown'` and behave as without the gate, so a stuck gate never mutes the real caller.
 - **Re-check after `other`.** When the first check says `other` and the utterance keeps going, the gate keeps checking the next `checkSpeechMs` of speech, up to `recheckMaxWindows` windows (`recheckOnOther`, default `true`). See [Re-check after other](#re-check-after-other-recheckonother).
 - **Minimum check length.** `minCheckSpeechMs` defaults to 1500 ms. Shorter utterances are not scored and stay `unknown`; see [Minimum check length](#minimum-check-length-mincheckspeechms-why-1500-ms) for the numbers and the trade-off.
+- **`bargeIn`.** `'caller_only'` (default) is the behaviour above: a bystander cannot interrupt the agent, and `unknown` verdicts fail open. `'anyone'` never holds a barge-in for the verdict, so anyone can interrupt; scoring, the `speaker` label and `onMismatch: 'drop'` still apply.
 - **`resetSpeakerEnrollment()`** forgets the voice, for example when another person takes over the line. The next utterances enroll again.
+
+### Changing the gate during a call
+
+`setSpeakerGate({ enabled?, onMismatch?, bargeIn? })` changes the gate while the agent runs. Omitted fields keep their value.
+
+```ts
+const agent = new VoiceAgent({
+  // modelPath set, gate off: no model load and no speaker fields until enabled.
+  speakerGate: { enabled: false, modelPath: '/models/speaker/nemo_en_titanet_small.onnx' },
+})
+// later, e.g. when a second person joins the room:
+agent.setSpeakerGate({ enabled: true, onMismatch: 'drop' })
+// let anyone interrupt again, keep the labels:
+agent.setSpeakerGate({ bargeIn: 'anyone' })
+```
+
+- **From the next utterance.** A change applies from the next utterance onset. The utterance in progress keeps the settings it started with.
+- **Enrollment is kept.** Turning the gate off and on again does not forget the caller. Use `resetSpeakerEnrollment()` for that.
+- **First enable loads the model.** With `modelPath` set and `enabled: false`, the gate is built inactive and the model is not loaded: finals carry no speaker fields, exactly as without the gate. The first `enabled: true` loads the model off the audio path, bounded by `modelLoadTimeoutMs` (default 10000). Until it is loaded, finals are `speaker: 'unknown'` with `speakerUnknownReason: 'loading'` and nothing is held. If the load fails or times out, the gate stays off and the agent emits an `error` event with `reason: 'speaker_model_load_failed'`; the next `enabled: true` tries again.
+- **Turning it off mid-utterance.** A barge-in held for the live utterance fires right away if the reply it interrupts is still playing, otherwise it is dropped. That utterance's final keeps the verdict it already has, or `speaker: 'unknown'` with `speakerUnknownReason: 'no_check'`.
+- **Errors.** `setSpeakerGate({ enabled: true })` throws when the agent config has no `speakerGate.modelPath`.
 
 Recommended with `vad.provider: 'adaptive'`. With the energy VAD, turns in background noise split into short pieces, which are more often `unknown`.
 
@@ -444,7 +466,7 @@ At 1.25 s, FRR per bystander level, test (tune): -6 dB 9.4 % (21.9 %), -10 dB 3.
 | 1250               | 3 % rejected (9 % next to a loud bystander)                                         | phrases of 1.25 s or more are checked                           |
 | 1500 (default)     | under 1 % rejected; phrases under 1.5 s are unchecked and barge in at their end     | phrases under 1.5 s are unchecked and can barge in at their end |
 
-**`speakerUnknownReason`.** `user_speech_final` carries it whenever the gate is on and `speaker` is `'unknown'`, in the same event. It tells an app "too short to check" apart from a failed check: `short` (less speech than `minCheckSpeechMs`), `timeout` (the check or the wait for it exceeded `verifyTimeoutMs`), `error` (the embedding call failed), `no_embedding` (no embedding or no score), `not_enrolled` (no reference voice yet), `no_check` (enrolled, but no check was sent). It is absent for `caller` and `other`. Only `short` is affected by the option below; every other unknown still lets the barge-in through, so a stuck gate never mutes the caller.
+**`speakerUnknownReason`.** `user_speech_final` carries it whenever the gate is on and `speaker` is `'unknown'`, in the same event. It tells an app "too short to check" apart from a failed check: `short` (less speech than `minCheckSpeechMs`), `timeout` (the check or the wait for it exceeded `verifyTimeoutMs`), `error` (the embedding call failed), `no_embedding` (no embedding or no score), `not_enrolled` (no reference voice yet), `no_check` (enrolled, but no check was sent, or the gate was turned off before a verdict existed), `loading` (the gate was enabled at runtime and the model is still loading). It is absent for `caller` and `other`. Only `short` is affected by the option below; every other unknown still lets the barge-in through, so a stuck gate never mutes the caller.
 
 **`suppressShortBargeIn` (opt-in, default `false`).** When `true`, an utterance whose verdict is `unknown` with reason `short` suppresses its barge-in like `other` does, including the deferred one released at its end. Use it where background voices are loud and you would rather ignore a short phrase than let a bystander interrupt, for example an open-plan office. The cost: short caller phrases such as "stop" no longer interrupt the agent. They are still transcribed, and their final still arrives with `speaker: 'unknown'`.
 

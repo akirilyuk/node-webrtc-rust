@@ -28,7 +28,7 @@ use bytes::Bytes;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::Notify;
 
-use crate::config::SpeakerGateConfig;
+use crate::config::{SpeakerGateBargeIn, SpeakerGateConfig, SpeakerMismatchAction};
 use crate::pipeline::SpeakerEmbedder;
 
 /// Mono s16le at 16 kHz.
@@ -102,8 +102,46 @@ pub const UNKNOWN_TIMEOUT: &str = "timeout";
 pub const UNKNOWN_ERROR: &str = "error";
 /// The embedder returned no embedding, or the score could not be computed.
 pub const UNKNOWN_NO_EMBEDDING: &str = "no_embedding";
-/// Gate enrolled, but no check was sent for the utterance and no verdict exists.
+/// Gate enrolled, but no check was sent for the utterance and no verdict exists. Also the reason
+/// for an utterance whose gate was disabled mid-way before a verdict existed.
 pub const UNKNOWN_NO_CHECK: &str = "no_check";
+/// The gate was enabled at runtime and its speaker model is still loading.
+pub const UNKNOWN_LOADING: &str = "loading";
+
+/// Gate state an utterance started with (`set_speaker_gate` applies from the next onset).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UttGate {
+    /// Gate off: no scoring, no hold, finals carry no speaker fields.
+    Off,
+    /// Enabled while the model loads: not scored, never holds, `unknown` / `loading`.
+    Loading,
+    /// Scored as usual.
+    Active,
+}
+
+/// Gate settings an utterance started with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UttSettings {
+    pub gate: UttGate,
+    pub on_mismatch: SpeakerMismatchAction,
+    pub barge_in: SpeakerGateBargeIn,
+    /// The gate was disabled while this (active) utterance was live: no further scoring or hold;
+    /// its final keeps the verdict it has, else `unknown` / `no_check`.
+    pub cut: bool,
+}
+
+/// Runtime switch state (see [`SpeakerGate::set_enabled`]).
+struct Runtime {
+    enabled: bool,
+    /// Model loaded and the verifier can run.
+    loaded: bool,
+    /// A model load is in flight.
+    loading: bool,
+    on_mismatch: SpeakerMismatchAction,
+    barge_in: SpeakerGateBargeIn,
+    /// Settings per utterance key, taken at its first onset.
+    utts: VecDeque<(u64, UttSettings)>,
+}
 
 /// What a barge-in attempt for utterance `key` should do right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,6 +263,7 @@ pub struct SpeakerGate {
     rx: Mutex<Option<UnboundedReceiver<Msg>>>,
     shared: Arc<Shared>,
     feed: Mutex<Feed>,
+    runtime: Mutex<Runtime>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -255,9 +294,20 @@ fn cosine(a: &[f32], b: &[f32]) -> Option<f32> {
 }
 
 impl SpeakerGate {
+    /// A gate built from `cfg`: active when `cfg.enabled` (the caller loaded the model), else
+    /// inactive until [`Self::set_enabled`] and a model load ([`Self::finish_load`]).
     pub fn new(cfg: SpeakerGateConfig) -> Arc<Self> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let runtime = Runtime {
+            enabled: cfg.enabled,
+            loaded: cfg.enabled,
+            loading: false,
+            on_mismatch: cfg.on_mismatch,
+            barge_in: cfg.barge_in,
+            utts: VecDeque::new(),
+        };
         Arc::new(Self {
+            runtime: Mutex::new(runtime),
             cfg,
             tx,
             rx: Mutex::new(Some(rx)),
@@ -321,6 +371,148 @@ impl SpeakerGate {
             feed.shorts.clear();
         }
         self.send(Msg::Reset);
+    }
+
+    fn current_settings(rt: &Runtime) -> UttSettings {
+        let gate = if !rt.enabled {
+            UttGate::Off
+        } else if rt.loaded {
+            UttGate::Active
+        } else {
+            UttGate::Loading
+        };
+        UttSettings {
+            gate,
+            on_mismatch: rt.on_mismatch,
+            barge_in: rt.barge_in,
+            cut: false,
+        }
+    }
+
+    /// Settings of utterance `key`: taken at its first onset and kept for the whole utterance.
+    fn snapshot_utt(&self, key: u64) -> UttSettings {
+        let mut rt = lock(&self.runtime);
+        if let Some((_, s)) = rt.utts.iter().find(|(k, _)| *k == key) {
+            return *s;
+        }
+        let s = Self::current_settings(&rt);
+        push_capped(&mut rt.utts, (key, s));
+        s
+    }
+
+    /// Settings of utterance `key` (the current settings when it never had an onset).
+    pub fn utt_settings(&self, key: u64) -> UttSettings {
+        let rt = lock(&self.runtime);
+        rt.utts
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map_or_else(|| Self::current_settings(&rt), |(_, s)| *s)
+    }
+
+    /// True when the verdict of `key` may hold or suppress its barge-in.
+    pub fn holds_barge_for(&self, key: u64) -> bool {
+        let s = self.utt_settings(key);
+        s.gate == UttGate::Active && !s.cut && s.barge_in == SpeakerGateBargeIn::CallerOnly
+    }
+
+    /// True once the gate was disabled while `key` was a live active utterance.
+    pub fn is_cut(&self, key: u64) -> bool {
+        lock(&self.runtime)
+            .utts
+            .iter()
+            .any(|(k, s)| *k == key && s.cut)
+    }
+
+    /// True when the speaker model is loaded (the verifier can run).
+    pub fn is_loaded(&self) -> bool {
+        lock(&self.runtime).loaded
+    }
+
+    /// `onMismatch` / `bargeIn` for utterances that start from now on.
+    pub fn set_policy(
+        &self,
+        on_mismatch: Option<SpeakerMismatchAction>,
+        barge_in: Option<SpeakerGateBargeIn>,
+    ) {
+        let mut rt = lock(&self.runtime);
+        if let Some(m) = on_mismatch {
+            rt.on_mismatch = m;
+        }
+        if let Some(b) = barge_in {
+            rt.barge_in = b;
+        }
+    }
+
+    /// Enable from the next utterance onset. Returns true when the caller must start a model
+    /// load (not loaded and no load in flight).
+    pub fn set_enabled(&self) -> bool {
+        let mut rt = lock(&self.runtime);
+        rt.enabled = true;
+        if rt.loaded || rt.loading {
+            return false;
+        }
+        rt.loading = true;
+        true
+    }
+
+    /// The model load finished. `ok == false` (failure or timeout): the gate stays inactive and a
+    /// later enable retries.
+    pub fn finish_load(&self, ok: bool) {
+        let mut rt = lock(&self.runtime);
+        rt.loading = false;
+        if ok {
+            rt.loaded = true;
+        } else {
+            rt.enabled = false;
+        }
+    }
+
+    /// Config errors for enabling this gate (`modelPath`, threshold, windows).
+    pub fn validate_enable(&self) -> Result<(), String> {
+        let mut cfg = self.cfg.clone();
+        cfg.enabled = true;
+        cfg.validate()
+    }
+
+    /// Utterances that start from now are off (see [`Self::cut_live`] for the live one).
+    pub fn set_disabled(&self) {
+        lock(&self.runtime).enabled = false;
+    }
+
+    /// After [`Self::set_disabled`]: no new scoring or hold. Every utterance that started active is marked
+    /// cut (its final keeps the verdict it has, else `unknown` / `no_check`), the live utterance
+    /// stops collecting PCM (no further check), and finals waiting for a verdict are woken.
+    /// Returns the held barge-ins (key, playback epoch) that no reading final owns; the caller
+    /// settles them. Enrollment is kept.
+    pub fn cut_live(&self) -> Vec<(u64, u64)> {
+        {
+            let mut rt = lock(&self.runtime);
+            if rt.enabled {
+                // Re-enabled before the cut ran: nothing to cut.
+                return Vec::new();
+            }
+            for (_, s) in rt.utts.iter_mut() {
+                if s.gate == UttGate::Active {
+                    s.cut = true;
+                }
+            }
+        }
+        let taken = {
+            let mut feed = lock(&self.feed);
+            feed.cur = None;
+            feed.shorts.clear();
+            let keys: Vec<u64> = feed
+                .pending_barge
+                .keys()
+                .copied()
+                .filter(|k| !self.recheck_closed(*k))
+                .collect();
+            keys.into_iter()
+                .filter_map(|k| feed.pending_barge.remove(&k).map(|e| (k, e)))
+                .collect()
+        };
+        self.shared.notify.notify_waiters();
+        taken
     }
 
     fn send(&self, msg: Msg) {
@@ -393,7 +585,15 @@ impl SpeakerGate {
     /// utterance during the gate hold cannot relabel a `caller` or `unknown` verdict; only an
     /// `other` verdict can be re-checked.
     pub fn begin(&self, key: u64, frame: &[u8]) {
+        let settings = self.snapshot_utt(key);
         let mut feed = lock(&self.feed);
+        if settings.gate != UttGate::Active || settings.cut {
+            // Not scored: no check, no enrollment PCM. Frames feed the pre-roll ring.
+            if feed.cur.as_ref().is_some_and(|c| c.key != key) {
+                self.end_locked(&mut feed);
+            }
+            return;
+        }
         if feed.cur.as_ref().is_some_and(|c| c.key == key) {
             drop(feed);
             self.push_frame(frame);
@@ -851,6 +1051,13 @@ impl SpeakerGate {
         if let Some(r) = self.stored_unknown_reason(key) {
             return r;
         }
+        let s = self.utt_settings(key);
+        if s.gate == UttGate::Loading {
+            return UNKNOWN_LOADING;
+        }
+        if s.cut {
+            return UNKNOWN_NO_CHECK;
+        }
         if !self.is_enrolled() {
             UNKNOWN_NOT_ENROLLED
         } else if self.check_sent(key) {
@@ -884,6 +1091,9 @@ impl SpeakerGate {
     /// check was sent. `None` while a sent check or re-check has not settled (use
     /// [`Self::await_outcome`] off the frame path).
     pub fn settled_outcome(&self, key: u64) -> Option<Outcome> {
+        if self.is_cut(key) {
+            return Some(self.outcome_for(key).unwrap_or(Outcome::Unknown));
+        }
         if !self.check_sent(key) {
             return Some(self.outcome_for(key).unwrap_or(Outcome::Unknown));
         }
@@ -909,6 +1119,9 @@ impl SpeakerGate {
                 if !self.recheck_in_flight(key) {
                     return o;
                 }
+            }
+            if self.is_cut(key) {
+                return self.outcome_for(key).unwrap_or(Outcome::Unknown);
             }
             let left = deadline.saturating_sub(started.elapsed());
             if left.is_zero() || tokio::time::timeout(left, notified).await.is_err() {

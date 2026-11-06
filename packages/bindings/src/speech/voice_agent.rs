@@ -20,7 +20,7 @@ use crate::mixer::JsMixGraph;
 use crate::speech::events::{speech_event_to_js, wire_speech_callback};
 use crate::speech::registry::default_vendor_registry;
 use crate::speech::types::{
-    speech_err, JsBeginSttHoldOptions, JsReleaseSttHoldOptions, JsSpeechEvent, JsSttConfig,
+    speech_err, JsBeginSttHoldOptions, JsSpeakerGateUpdate, JsReleaseSttHoldOptions, JsSpeechEvent, JsSttConfig,
     JsSttHoldMode, JsTtsConfig, JsUpdateTtsOptions, JsVoiceAgentConfig, JsVoiceSessionContext,
 };
 
@@ -322,6 +322,17 @@ impl JsVoiceAgent {
             hook
         });
         self.inner.set_tts_pre_enqueue_hook(hook);
+    }
+
+    /// Change the speaker gate during a call (applies from the next utterance; enrollment is
+    /// kept). Throws when enabling without `speakerGate.modelPath`, or on an invalid value.
+    #[napi]
+    pub fn set_speaker_gate(&self, update: JsSpeakerGateUpdate) -> Result<()> {
+        let update: node_webrtc_rust_speech::config::SpeakerGateUpdate = update.try_into()?;
+        // The model load and the disable cut run on tokio tasks: enter napi's runtime.
+        let inner = Arc::clone(&self.inner);
+        napi::bindgen_prelude::within_runtime_if_available(move || inner.set_speaker_gate(update))
+            .map_err(speech_err)
     }
 
     /// Forget the enrolled caller voice (speaker gate); the next utterances enroll again.

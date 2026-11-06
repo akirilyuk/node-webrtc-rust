@@ -1,9 +1,5 @@
 {
-  "keys": [
-    "noiseMarginDb",
-    "stuckActiveMs",
-    "useSpeechLevel"
-  ],
+  "keys": ["noiseMarginDb", "stuckActiveMs", "useSpeechLevel"],
   "limits": {
     "noiseMarginDb": {
       "min": 0,

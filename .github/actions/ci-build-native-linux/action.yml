@@ -102,6 +102,9 @@ runs:
       if: steps.resolve.outputs.build_required == 'true'
       id: target-restore
       uses: actions/cache/restore@v4
+      env:
+        # Set by ram-target-dir when target/ is a symlink to a RAM disk; empty elsewhere.
+        TAR_OPTIONS: ${{ env.RAM_TARGET_TAR_OPTIONS }}
       with:
         path: target
         key: cargo-tgt-v1-${{ inputs.profile }}-${{ inputs.target }}-${{ inputs.cache_prefix }}-${{ hashFiles('Cargo.lock', 'docker/ci/Dockerfile', 'docker/ci/Dockerfile.alpine', 'scripts/ci/install-alpine-native-toolchain.sh', 'scripts/ci/build-sherpa-onnx-musl-libs.sh') }}
@@ -210,6 +213,9 @@ runs:
     - name: Save Cargo target/ (exact key; miss only)
       if: steps.resolve.outputs.build_required == 'true' && steps.target-restore.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
+      env:
+        # Set by ram-target-dir when target/ is a symlink to a RAM disk; empty elsewhere.
+        TAR_OPTIONS: ${{ env.RAM_TARGET_TAR_OPTIONS }}
       with:
         path: target
         key: cargo-tgt-v1-${{ inputs.profile }}-${{ inputs.target }}-${{ inputs.cache_prefix }}-${{ hashFiles('Cargo.lock', 'docker/ci/Dockerfile', 'docker/ci/Dockerfile.alpine', 'scripts/ci/install-alpine-native-toolchain.sh', 'scripts/ci/build-sherpa-onnx-musl-libs.sh') }}

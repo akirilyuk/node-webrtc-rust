@@ -426,4 +426,71 @@ if grep -En '[A-Za-z0-9_-]+\.test\.sh' "$runner" | grep -Ev '^[0-9]+:[[:space:]]
   exit 1
 fi
 
+# RAM target dir: on nwr-large the job pod mounts a RAM disk at /__w/_cargo-target, and
+# ./.github/actions/ram-target-dir links target/ to it. It must be the step right after
+# actions/checkout, before any step restores or writes target/ (cache restore, Sherpa musl libs).
+ram_target_after_checkout() {
+  awk '
+    /^      - / {
+      if (want_next) { ok = ($0 ~ /^      - uses: \.\/\.github\/actions\/ram-target-dir[[:space:]]*$/); want_next = 0; seen = 1; exit }
+      if ($0 ~ /^      - uses: actions\/checkout@/) want_next = 1
+    }
+    END { exit (seen && ok) ? 0 : 1 }
+  ' <<<"$1"
+}
+tmp_ram="$(mktemp)"
+cat >"$tmp_ram" <<'YAML'
+jobs:
+  bad:
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore target
+        run: true
+
+      - uses: ./.github/actions/ram-target-dir
+YAML
+if ram_target_after_checkout "$(job_block "$tmp_ram" bad)"; then
+  echo "pr-workflow-gates.test.sh: ram-target-dir check accepted a step between checkout and ram-target-dir" >&2
+  rm -f "$tmp_ram"; exit 1
+fi
+rm -f "$tmp_ram"
+for spec in \
+  .github/workflows/reusable-build-linux.yml:build-linux-x64 \
+  .github/workflows/reusable-build-linux.yml:build-linux-x64-musl \
+  .github/workflows/reusable-build-linux.yml:build-linux-arm64 \
+  .github/workflows/reusable-test.yml:node-sherpa; do
+  wf="${spec%%:*}"; job="${spec##*:}"
+  if ! ram_target_after_checkout "$(job_block "$wf" "$job")"; then
+    echo "$wf: job $job must run ./.github/actions/ram-target-dir directly after actions/checkout" >&2
+    exit 1
+  fi
+done
+
+# TAR_OPTIONS for the symlinked target/: only the two `path: target` cache steps in
+# ci-build-native-linux take it (from RAM_TARGET_TAR_OPTIONS). Job-wide, --dereference would make
+# other caches store copies of node_modules/.bin links.
+native_action=".github/actions/ci-build-native-linux/action.yml"
+for step in 'Restore Cargo target/ (exact key)' 'Save Cargo target/ (exact key; miss only)'; do
+  if ! awk -v want="    - name: $step" '
+    $0 == want { inside = 1; next }
+    inside && /^    - / { exit }
+    inside && /^        TAR_OPTIONS: \$\{\{ env\.RAM_TARGET_TAR_OPTIONS \}\}[[:space:]]*$/ { found = 1 }
+    END { exit found ? 0 : 1 }
+  ' "$native_action"; then
+    echo "$native_action: step '$step' must set env TAR_OPTIONS: \${{ env.RAM_TARGET_TAR_OPTIONS }}" >&2
+    exit 1
+  fi
+done
+tar_opts_lines="$(grep -rnE '^[[:space:]]*TAR_OPTIONS:|(^|[^A-Za-z0-9_])TAR_OPTIONS=' .github --include='*.yml' --include='*.yaml' | grep -Ev '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
+if [ "$(grep -c . <<<"$tar_opts_lines")" != "2" ] || grep -v "^$native_action:" <<<"$tar_opts_lines" | grep -q .; then
+  echo "TAR_OPTIONS may only be set on the two target/ cache steps in $native_action; found:" >&2
+  echo "$tar_opts_lines" >&2
+  exit 1
+fi
+if ! grep -q 'RAM_TARGET_TAR_OPTIONS=--keep-directory-symlink --dereference' .github/actions/ram-target-dir/action.yml; then
+  echo ".github/actions/ram-target-dir/action.yml: must export RAM_TARGET_TAR_OPTIONS=--keep-directory-symlink --dereference" >&2
+  exit 1
+fi
+
 echo "pr-workflow-gates.test.sh: OK"

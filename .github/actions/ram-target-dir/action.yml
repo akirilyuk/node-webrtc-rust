@@ -1,0 +1,25 @@
+name: RAM target dir
+description: >-
+  When the runner mounts a RAM disk at /__w/_cargo-target (self-hosted large runners), point
+  $GITHUB_WORKSPACE/target at it so Cargo writes stay off the node disk. No-op everywhere else.
+  Run directly after actions/checkout, before any step that restores or writes target/.
+
+runs:
+  using: composite
+  steps:
+    - name: Link target/ to RAM disk when present
+      shell: sh
+      run: |
+        set -eu
+        cd "$GITHUB_WORKSPACE"
+        if [ -d /__w/_cargo-target ]; then
+          ln -sfn /__w/_cargo-target target
+          # GNU tar (actions/cache) would otherwise replace the symlink with a real directory on
+          # restore, and save only the symlink itself instead of the tree behind it. Only the
+          # target/ cache steps in ci-build-native-linux pass this on as TAR_OPTIONS; other caches
+          # (node_modules/.bin links) must keep their symlinks.
+          echo "RAM_TARGET_TAR_OPTIONS=--keep-directory-symlink --dereference" >> "$GITHUB_ENV"
+          echo "ram-target-dir: linked target -> /__w/_cargo-target ($(df -h /__w/_cargo-target | tail -1))"
+        else
+          echo "ram-target-dir: /__w/_cargo-target not present, target/ stays on disk"
+        fi

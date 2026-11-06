@@ -8,6 +8,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-11-06
+
+### Added
+
+- **voice-catalog:** `ADAPTIVE_VAD_LIMITS` (`noiseMarginDb` 0..30, `stuckActiveMs` 1000..4294967295, integer flag) and `ADAPTIVE_VAD_KEYS`, read from the new `catalog/adaptive-vad-limits.json`. Consumers import the accepted ranges of the numeric `vad.adaptive.*` keys instead of copying them. A speech crate test ties the file to `AdaptiveVadConfig::validate()`, so a change on either side fails it. A second test asserts every listed key is a serialized `AdaptiveVadConfig` field, so a Rust rename fails it.
+
 ## [0.17.0] - 2026-11-06
 
 ### Added

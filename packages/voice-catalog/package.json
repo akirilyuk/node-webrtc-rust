@@ -1,6 +1,6 @@
 {
   "name": "@node-webrtc-rust/voice-catalog",
-  "version": "0.17.0",
+  "version": "0.17.1",
   "description": "Published STT/TTS vendor allowlists and documentation links for VoiceAgent providers",
   "keywords": [
     "webrtc",
@@ -30,6 +30,7 @@
       "require": "./dist/cjs/src/index.js"
     },
     "./catalog/vendors.json": "./catalog/vendors.json",
+    "./catalog/adaptive-vad-limits.json": "./catalog/adaptive-vad-limits.json",
     "./catalog/azure-tts-voices.json": "./catalog/azure-tts-voices.json",
     "./catalog/google-tts-voices.json": "./catalog/google-tts-voices.json"
   },

@@ -19,6 +19,14 @@ const replacements = [
   ["from '../catalog/vendors.json';", "from '../catalog/vendors.json' with { type: 'json' };"],
   ['from "../catalog/vendors.json";', 'from "../catalog/vendors.json" with { type: "json" };'],
   [
+    "from '../catalog/adaptive-vad-limits.json';",
+    "from '../catalog/adaptive-vad-limits.json' with { type: 'json' };",
+  ],
+  [
+    'from "../catalog/adaptive-vad-limits.json";',
+    'from "../catalog/adaptive-vad-limits.json" with { type: "json" };',
+  ],
+  [
     "from '../catalog/azure-tts-voices.json';",
     "from '../catalog/azure-tts-voices.json' with { type: 'json' };",
   ],
@@ -44,9 +52,9 @@ for (const [from, to] of replacements) {
   }
 }
 
-if (changed < 3) {
+if (changed < 4) {
   throw new Error(
-    `patch-esm-json-imports: expected vendors + azure + google json imports in ${esmIndex}`,
+    `patch-esm-json-imports: expected vendors + adaptive limits + azure + google json imports in ${esmIndex}`,
   )
 }
 

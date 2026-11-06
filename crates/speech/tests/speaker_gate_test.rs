@@ -97,6 +97,10 @@ struct Script {
     final_on_finalize: Option<String>,
     /// Handed out once by the next `poll_transcript` as a partial.
     partial_next: Option<String>,
+    /// Number of `finalize_utterance` calls so far. A test that changes `final_on_finalize`
+    /// for the next utterance waits on this first: the fake reads the text when the agent
+    /// finalizes, which can be after the earlier utterance's last frame was fed.
+    finalize_calls: usize,
 }
 
 struct ScriptedStt {
@@ -125,7 +129,12 @@ impl SttProvider for ScriptedStt {
         Ok(self.queue.pop_front())
     }
     async fn finalize_utterance(&mut self) -> SpeechResult<()> {
-        if let Some(text) = self.script.lock().unwrap().final_on_finalize.clone() {
+        let text = {
+            let mut script = self.script.lock().unwrap();
+            script.finalize_calls += 1;
+            script.final_on_finalize.clone()
+        };
+        if let Some(text) = text {
             self.queue.push_back(SttTranscript::Final(text));
         }
         Ok(())
@@ -3003,6 +3012,7 @@ async fn short_verdict_delivered_after_rejoin_is_ignored() {
         vec![Behavior::WaitFor(Arc::clone(&release_a), REF.to_vec())],
     );
     // A: checked, its embed blocks the verifier.
+    let finalized = rig.script.lock().unwrap().finalize_calls;
     rig.script.lock().unwrap().final_on_finalize = Some("alpha".into());
     rig.feed(&loud_stereo_frame(), 15).await;
     rig.feed(&silent_stereo_frame(), 30).await;
@@ -3014,6 +3024,8 @@ async fn short_verdict_delivered_after_rejoin_is_ignored() {
         );
         tokio::task::yield_now().await;
     }
+    // A's finalize has read its text before the script changes for B + rejoin.
+    wait_finalize_calls(&rig, finalized + 1).await;
     let base = rig.log.len();
     let applied = rig.agent.speaker_gate_verdicts_applied();
     // B: short segment; its check waits behind A's.
@@ -3113,6 +3125,19 @@ async fn short_before_enrollment_then_rejoin_caller_barges_once() {
 }
 
 /// Waits (3 s bound, polling with yield) until the fake embedder's queue holds `left` behaviours.
+/// Waits until the fake STT has finalized `calls` utterances in total, so the next
+/// `final_on_finalize` change cannot reach an earlier utterance's final.
+async fn wait_finalize_calls(rig: &Rig, calls: usize) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while rig.script.lock().unwrap().finalize_calls < calls {
+        assert!(
+            Instant::now() < deadline,
+            "fake STT never reached {calls} finalize calls"
+        );
+        sleep(Duration::from_millis(5)).await;
+    }
+}
+
 async fn wait_queue_len(rig: &Rig, left: usize) {
     let deadline = Instant::now() + Duration::from_secs(3);
     while rig.queue.lock().unwrap().len() > left {
@@ -3146,10 +3171,13 @@ async fn short_short_then_rejoin_late_short_verdicts_are_ignored() {
         vec![Behavior::WaitFor(Arc::clone(&release_a), REF.to_vec())],
     );
     // Earlier utterance: checked, its embed blocks the verifier.
+    let finalized = rig.script.lock().unwrap().finalize_calls;
     rig.script.lock().unwrap().final_on_finalize = Some("alpha".into());
     rig.feed(&loud_stereo_frame(), 25).await;
     rig.feed(&silent_stereo_frame(), 30).await;
     wait_queue_len(&rig, 0).await;
+    // alpha's finalize has read its text before the script changes for A + B + C.
+    wait_finalize_calls(&rig, finalized + 1).await;
     let base = rig.log.len();
     let applied = rig.agent.speaker_gate_verdicts_applied();
     let superseded = rig.agent.speaker_gate_superseded_verdicts();

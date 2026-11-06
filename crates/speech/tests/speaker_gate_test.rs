@@ -4084,6 +4084,51 @@ async fn other_verdict_right_after_disable_still_fires_barge_once_before_the_fin
     rig.agent.stop().await.unwrap();
 }
 
+/// The first check says `other` while the reply plays, so the barge-in is held for a re-check;
+/// the re-check stays in flight when the final arrives and owns the held barge-in. A disable
+/// then wakes the final, which reads the stored `other`: only the cut fires the held barge-in,
+/// exactly once, before the final (`other`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disable_while_final_waits_on_recheck_fires_held_barge_once() {
+    let mut cfg = gate_cfg(SpeakerMismatchAction::Flag);
+    cfg.verify_timeout_ms = 5000;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    queue_checks(
+        &rig,
+        vec![Behavior::Vector(OTHER.to_vec()), Behavior::Pending],
+    );
+    rig.start_speaking_for(400).await;
+    let base = rig.log.len();
+    rig.script.lock().unwrap().final_on_finalize = Some("recheck then off".into());
+    feed_speech_with_partial(&mut rig, base, 15, "partial").await;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !rig.queue.lock().unwrap().is_empty() {
+        assert!(Instant::now() < deadline, "re-check never sent");
+        rig.feed(&loud_stereo_frame(), 1).await;
+    }
+    rig.drain();
+    assert!(barges_since(&rig, base).is_empty(), "barge-in held");
+
+    rig.feed(&silent_stereo_frame(), 30).await;
+    // Pump STT results while the final waits on the re-check (C2 closes the turn while the
+    // reply still plays).
+    let agent = Arc::clone(&rig.agent);
+    let idle = tokio::spawn(async move { agent.wait_stt_idle(Duration::from_secs(10)).await });
+    wait_finals_pending(&rig, 1).await;
+    rig.drain();
+    assert!(barges_since(&rig, base).is_empty(), "barge-in still held");
+
+    rig.agent.set_speaker_gate(disable()).unwrap();
+    assert!(idle.await.unwrap());
+    wait_kind_since(&mut rig, base, SpeechEventKind::UserSpeechFinal).await;
+    wait_finals_pending(&rig, 0).await;
+    rig.drain();
+    let fin = assert_one_barge_before_final(&rig, base, "recheck then off");
+    assert_eq!(fin.speaker.as_deref(), Some("other"));
+    rig.agent.stop().await.unwrap();
+}
+
 /// While the model loads, finals are `unknown` / `loading` and nothing is held.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn final_while_loading_is_unknown_loading() {

@@ -4514,9 +4514,10 @@ impl VoiceAgent {
         if let Some(gate) = self.speaker_gate.as_ref() {
             if let Some(epoch) = gate.take_pending_barge(key) {
                 // Re-read after taking it: a disable that returned before this point cut it.
-                // Defensive: in the tested sequences a cut final reads `unknown` (barge allowed)
-                // or the disable path took the barge-in first; this keeps a cut `other` from
-                // dropping it.
+                // A cut final whose first check said `other` with a re-check still in flight
+                // reads `other` (the final owns the held barge-in, so `cut_live` skipped it); the
+                // cut still fires its held barge-in
+                // (`disable_while_final_waits_on_recheck_fires_held_barge_once`).
                 let cut = cut || gate.is_cut(key);
                 let allow = cut || gate.barge_allowed(&gate.verdict_read_by_final(key, outcome));
                 self.settle_pending_barge(

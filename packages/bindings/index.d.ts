@@ -397,6 +397,18 @@ export interface JsSpeakerGateConfig {
   /** `flag` (default) | `drop`. */
   onMismatch?: string
   verifyTimeoutMs?: number
+  /** `caller_only` (default) | `anyone`: whether the verdict can hold a barge-in. */
+  bargeIn?: string
+  /** Bound (ms) on loading the model when the gate is first enabled at runtime (default 10000). */
+  modelLoadTimeoutMs?: number
+}
+/** Runtime speaker gate change (`VoiceAgent.setSpeakerGate`); omitted fields keep their value. */
+export interface JsSpeakerGateUpdate {
+  enabled?: boolean
+  /** `flag` | `drop`. */
+  onMismatch?: string
+  /** `caller_only` | `anyone`. */
+  bargeIn?: string
 }
 export interface JsVoiceSessionContext {
   sessionId?: string
@@ -797,6 +809,11 @@ export declare class JsVoiceAgent {
    * agent) by `delays_ms[n]` ms before it reaches the queue. `null` clears it.
    */
   __testSetTtsPreEnqueueDelays(delaysMs?: Array<number> | undefined | null): void
+  /**
+   * Change the speaker gate during a call (applies from the next utterance; enrollment is
+   * kept). Throws when enabling without `speakerGate.modelPath`, or on an invalid value.
+   */
+  setSpeakerGate(update: JsSpeakerGateUpdate): void
   /** Forget the enrolled caller voice (speaker gate); the next utterances enroll again. */
   resetSpeakerEnrollment(): void
   /**

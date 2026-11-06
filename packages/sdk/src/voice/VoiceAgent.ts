@@ -41,6 +41,7 @@ import type {
   VoiceAttachOptions,
   VoiceSessionContext,
   SendTextToTtsOptions,
+  SpeakerGateUpdate,
 } from './types'
 
 const MODULE = 'voice::VoiceAgent'
@@ -282,6 +283,8 @@ function toJsConfig(config?: VoiceAgentConfig): JsVoiceAgentConfig | undefined {
           recheckMaxWindows: config.speakerGate.recheckMaxWindows,
           onMismatch: config.speakerGate.onMismatch,
           verifyTimeoutMs: config.speakerGate.verifyTimeoutMs,
+          bargeIn: config.speakerGate.bargeIn,
+          modelLoadTimeoutMs: config.speakerGate.modelLoadTimeoutMs,
         }
       : undefined,
     noiseSuppression: config.noiseSuppression
@@ -507,6 +510,28 @@ export class VoiceAgent {
       options?.interruptible ?? undefined,
       options?.replyId ?? undefined,
     )
+  }
+
+  /**
+   * Changes the speaker gate during a call: on/off, `onMismatch` and `bargeIn`. Omitted fields
+   * keep their value. The change applies from the next utterance; the live utterance keeps its
+   * settings, and enrollment is kept.
+   *
+   * Turning the gate off releases a barge-in held for the live utterance (it fires if the reply
+   * is still playing); that utterance's final keeps the verdict it has, else
+   * `speakerUnknownReason: 'no_check'`. The first enable loads `speakerGate.modelPath` off the
+   * audio path (bounded by `modelLoadTimeoutMs`); until then finals say `'loading'`, and a failed
+   * load emits an `error` event with `reason: 'speaker_model_load_failed'`.
+   *
+   * @throws when enabling without `speakerGate.modelPath`, or on an invalid value.
+   */
+  setSpeakerGate(update: SpeakerGateUpdate): void {
+    debugFn(MODULE, 'setSpeakerGate')
+    this.native.setSpeakerGate({
+      enabled: update.enabled,
+      onMismatch: update.onMismatch,
+      bargeIn: update.bargeIn,
+    })
   }
 
   /**

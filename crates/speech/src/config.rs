@@ -210,6 +210,28 @@ pub enum SpeakerMismatchAction {
     Drop,
 }
 
+/// Whether the speaker verdict can hold a barge-in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeakerGateBargeIn {
+    /// A bystander (`other`) cannot interrupt the agent; a barge-in waits for the verdict as
+    /// before. `unknown` verdicts fail open.
+    #[default]
+    CallerOnly,
+    /// Barge-in ignores the verdict: it is never held or suppressed. Scoring, labels and
+    /// `on_mismatch: drop` still apply.
+    Anyone,
+}
+
+/// Runtime change of the speaker gate (`VoiceAgent::set_speaker_gate`). `None` keeps the current
+/// value. A change applies from the next utterance onset; enrollment is kept.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SpeakerGateUpdate {
+    pub enabled: Option<bool>,
+    pub on_mismatch: Option<SpeakerMismatchAction>,
+    pub barge_in: Option<SpeakerGateBargeIn>,
+}
+
 /// Opt-in caller verification. The caller's voice is learned from their first utterances and every
 /// later utterance is checked against it. Embeddings live in process memory only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -266,6 +288,11 @@ pub struct SpeakerGateConfig {
     pub on_mismatch: SpeakerMismatchAction,
     /// Bound (ms) on one embedding call and on a final waiting for its verdict.
     pub verify_timeout_ms: u32,
+    /// Whether the verdict can hold a barge-in. Default `caller_only`.
+    pub barge_in: SpeakerGateBargeIn,
+    /// Bound (ms) on loading the speaker model when the gate is first enabled at runtime
+    /// (`set_speaker_gate`); the load runs off the frame path. Default 10000.
+    pub model_load_timeout_ms: u32,
 }
 
 impl Default for SpeakerGateConfig {
@@ -282,6 +309,8 @@ impl Default for SpeakerGateConfig {
             recheck_max_windows: crate::speaker_gate::DEFAULT_RECHECK_MAX_WINDOWS,
             on_mismatch: SpeakerMismatchAction::Flag,
             verify_timeout_ms: 500,
+            barge_in: SpeakerGateBargeIn::CallerOnly,
+            model_load_timeout_ms: 10_000,
         }
     }
 }

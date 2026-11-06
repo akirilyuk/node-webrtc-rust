@@ -341,7 +341,36 @@ export interface VoiceAgentConfig {
     onMismatch?: 'flag' | 'drop'
     /** Bound (ms) on one check and on a final waiting for its verdict. Default 500. */
     verifyTimeoutMs?: number
+    /**
+     * Whether the verdict can hold a barge-in. `'caller_only'` (default): a bystander (`other`)
+     * cannot interrupt the agent, `unknown` verdicts fail open. `'anyone'`: barge-in ignores the
+     * verdict; scoring, labels and `onMismatch: 'drop'` still apply.
+     */
+    bargeIn?: SpeakerGateBargeIn
+    /**
+     * Bound (ms) on loading the speaker model when the gate is first enabled at runtime with
+     * {@link VoiceAgent.setSpeakerGate}. The load runs off the audio path. Default 10000.
+     */
+    modelLoadTimeoutMs?: number
   }
+}
+
+/** `speakerGate.bargeIn`: whether the speaker verdict can hold a barge-in. */
+export type SpeakerGateBargeIn = 'caller_only' | 'anyone'
+
+/**
+ * Runtime speaker gate change ({@link VoiceAgent.setSpeakerGate}). Omitted fields keep their
+ * value. The change applies from the next utterance; enrollment is kept.
+ */
+export interface SpeakerGateUpdate {
+  /**
+   * Turn the gate on or off. Turning it on needs `speakerGate.modelPath` in the agent config;
+   * the first enable loads the model (finals say `speakerUnknownReason: 'loading'` until it is
+   * loaded). Turning it off releases a barge-in held for the live utterance.
+   */
+  enabled?: boolean
+  onMismatch?: 'flag' | 'drop'
+  bargeIn?: SpeakerGateBargeIn
 }
 
 /**
@@ -569,6 +598,7 @@ export interface SpeechEvent {
     | 'not_enrolled'
     | 'no_embedding'
     | 'no_check'
+    | 'loading'
   /**
    * `user_speech_final` with `speakerGate` on: `true` when the first check said `other` and a
    * re-check (`recheckOnOther`) was scored before the final; `speaker` is then `caller` if the

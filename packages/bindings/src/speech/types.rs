@@ -5,9 +5,9 @@ use napi_derive::napi;
 use node_webrtc_rust_speech::config::AdaptiveVadConfig;
 use node_webrtc_rust_speech::{
     BargeInConfig, EventDeliveryMode, EventsConfig, NoiseSuppressionConfig,
-    NoiseSuppressionProvider, SentenceCase, SpeakerGateConfig, SpeakerMismatchAction,
-    SpeechTransport, SttConfig, SttVendor, TtsConfig, TtsVendor, VadConfig, VadSampleRate,
-    VoiceAgentConfig, VoiceSessionContext,
+    NoiseSuppressionProvider, SentenceCase, SpeakerGateBargeIn, SpeakerGateConfig,
+    SpeakerGateUpdate, SpeakerMismatchAction, SpeechTransport, SttConfig, SttVendor, TtsConfig,
+    TtsVendor, VadConfig, VadSampleRate, VoiceAgentConfig, VoiceSessionContext,
 };
 
 #[napi(string_enum)]
@@ -460,6 +460,57 @@ pub struct JsSpeakerGateConfig {
     /// `flag` (default) | `drop`.
     pub on_mismatch: Option<String>,
     pub verify_timeout_ms: Option<u32>,
+    /// `caller_only` (default) | `anyone`: whether the verdict can hold a barge-in.
+    pub barge_in: Option<String>,
+    /// Bound (ms) on loading the model when the gate is first enabled at runtime (default 10000).
+    pub model_load_timeout_ms: Option<u32>,
+}
+
+fn parse_on_mismatch(v: Option<&str>) -> Result<Option<SpeakerMismatchAction>> {
+    match v {
+        None => Ok(None),
+        Some("flag") => Ok(Some(SpeakerMismatchAction::Flag)),
+        Some("drop") => Ok(Some(SpeakerMismatchAction::Drop)),
+        Some(other) => Err(Error::new(
+            Status::InvalidArg,
+            format!("speakerGate.onMismatch must be 'flag' or 'drop', got {other:?}"),
+        )),
+    }
+}
+
+fn parse_barge_in(v: Option<&str>) -> Result<Option<SpeakerGateBargeIn>> {
+    match v {
+        None => Ok(None),
+        Some("caller_only") => Ok(Some(SpeakerGateBargeIn::CallerOnly)),
+        Some("anyone") => Ok(Some(SpeakerGateBargeIn::Anyone)),
+        Some(other) => Err(Error::new(
+            Status::InvalidArg,
+            format!("speakerGate.bargeIn must be 'caller_only' or 'anyone', got {other:?}"),
+        )),
+    }
+}
+
+/// Runtime speaker gate change (`VoiceAgent.setSpeakerGate`); omitted fields keep their value.
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct JsSpeakerGateUpdate {
+    pub enabled: Option<bool>,
+    /// `flag` | `drop`.
+    pub on_mismatch: Option<String>,
+    /// `caller_only` | `anyone`.
+    pub barge_in: Option<String>,
+}
+
+impl TryFrom<JsSpeakerGateUpdate> for SpeakerGateUpdate {
+    type Error = Error;
+
+    fn try_from(value: JsSpeakerGateUpdate) -> Result<Self> {
+        Ok(Self {
+            enabled: value.enabled,
+            on_mismatch: parse_on_mismatch(value.on_mismatch.as_deref())?,
+            barge_in: parse_barge_in(value.barge_in.as_deref())?,
+        })
+    }
 }
 
 impl TryFrom<JsSpeakerGateConfig> for SpeakerGateConfig {
@@ -467,16 +518,8 @@ impl TryFrom<JsSpeakerGateConfig> for SpeakerGateConfig {
 
     fn try_from(value: JsSpeakerGateConfig) -> Result<Self> {
         let d = SpeakerGateConfig::default();
-        let on_mismatch = match value.on_mismatch.as_deref() {
-            None | Some("flag") => SpeakerMismatchAction::Flag,
-            Some("drop") => SpeakerMismatchAction::Drop,
-            Some(other) => {
-                return Err(Error::new(
-                    Status::InvalidArg,
-                    format!("speakerGate.onMismatch must be 'flag' or 'drop', got {other:?}"),
-                ))
-            }
-        };
+        let on_mismatch = parse_on_mismatch(value.on_mismatch.as_deref())?.unwrap_or(d.on_mismatch);
+        let barge_in = parse_barge_in(value.barge_in.as_deref())?.unwrap_or(d.barge_in);
         Ok(Self {
             enabled: value.enabled.unwrap_or(d.enabled),
             model_path: value.model_path,
@@ -491,7 +534,54 @@ impl TryFrom<JsSpeakerGateConfig> for SpeakerGateConfig {
             recheck_max_windows: value.recheck_max_windows.unwrap_or(d.recheck_max_windows),
             on_mismatch,
             verify_timeout_ms: value.verify_timeout_ms.unwrap_or(d.verify_timeout_ms),
+            barge_in,
+            model_load_timeout_ms: value
+                .model_load_timeout_ms
+                .unwrap_or(d.model_load_timeout_ms),
         })
+    }
+}
+
+#[cfg(test)]
+mod speaker_gate_update_from_tests {
+    use super::*;
+
+    #[test]
+    fn update_maps_fields_and_rejects_unknown_values() {
+        let u: SpeakerGateUpdate = JsSpeakerGateUpdate {
+            enabled: Some(true),
+            on_mismatch: Some("drop".into()),
+            barge_in: Some("anyone".into()),
+        }
+        .try_into()
+        .unwrap();
+        assert_eq!(u.enabled, Some(true));
+        assert_eq!(u.on_mismatch, Some(SpeakerMismatchAction::Drop));
+        assert_eq!(u.barge_in, Some(SpeakerGateBargeIn::Anyone));
+        let empty: SpeakerGateUpdate = JsSpeakerGateUpdate::default().try_into().unwrap();
+        assert_eq!(empty, SpeakerGateUpdate::default());
+        let bad: Result<SpeakerGateUpdate> = JsSpeakerGateUpdate {
+            barge_in: Some("everyone".into()),
+            ..Default::default()
+        }
+        .try_into();
+        assert!(bad.is_err());
+    }
+
+    #[test]
+    fn config_barge_in_and_load_timeout() {
+        let d: SpeakerGateConfig = JsSpeakerGateConfig::default().try_into().unwrap();
+        assert_eq!(d.barge_in, SpeakerGateBargeIn::CallerOnly);
+        assert_eq!(d.model_load_timeout_ms, 10_000);
+        let c: SpeakerGateConfig = JsSpeakerGateConfig {
+            barge_in: Some("anyone".into()),
+            model_load_timeout_ms: Some(2500),
+            ..Default::default()
+        }
+        .try_into()
+        .unwrap();
+        assert_eq!(c.barge_in, SpeakerGateBargeIn::Anyone);
+        assert_eq!(c.model_load_timeout_ms, 2500);
     }
 }
 

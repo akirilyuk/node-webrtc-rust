@@ -10,8 +10,8 @@ use std::time::Instant;
 use async_trait::async_trait;
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::{
-    SpeakerGateConfig, SpeakerMismatchAction, SttVendor, TtsConfig, TtsVendor, VadConfig,
-    VoiceAgentConfig,
+    SpeakerGateBargeIn, SpeakerGateConfig, SpeakerGateUpdate, SpeakerMismatchAction, SttVendor,
+    TtsConfig, TtsVendor, VadConfig, VoiceAgentConfig,
 };
 use node_webrtc_rust_speech::events::{SpeechEvent, SpeechEventKind};
 use node_webrtc_rust_speech::pipeline::{
@@ -97,6 +97,13 @@ struct Script {
     final_on_finalize: Option<String>,
     /// Handed out once by the next `poll_transcript` as a partial.
     partial_next: Option<String>,
+    /// With `partial_next`: hand it out only after audio was pushed since it was scripted, so it
+    /// belongs to the stream that receives the current speech (not a closing earlier one).
+    partial_after_audio: bool,
+    /// Number of `finalize_utterance` calls so far. A test that changes `final_on_finalize`
+    /// for the next utterance waits on this first: the fake reads the text when the agent
+    /// finalizes, which can be after the earlier utterance's last frame was fed.
+    finalize_calls: usize,
 }
 
 struct ScriptedStt {
@@ -116,23 +123,40 @@ impl SttProvider for ScriptedStt {
         Ok(())
     }
     async fn push_audio(&mut self, _pcm: Bytes) -> SpeechResult<()> {
+        self.script.lock().unwrap().partial_after_audio = false;
         Ok(())
     }
     async fn poll_transcript(&mut self) -> SpeechResult<Option<SttTranscript>> {
-        if let Some(text) = self.script.lock().unwrap().partial_next.take() {
-            return Ok(Some(SttTranscript::Partial(text)));
+        {
+            let mut script = self.script.lock().unwrap();
+            if !script.partial_after_audio {
+                if let Some(text) = script.partial_next.take() {
+                    return Ok(Some(SttTranscript::Partial(text)));
+                }
+            }
         }
         Ok(self.queue.pop_front())
     }
     async fn finalize_utterance(&mut self) -> SpeechResult<()> {
-        if let Some(text) = self.script.lock().unwrap().final_on_finalize.clone() {
+        let text = {
+            let mut script = self.script.lock().unwrap();
+            script.finalize_calls += 1;
+            script.final_on_finalize.clone()
+        };
+        if let Some(text) = text {
             self.queue.push_back(SttTranscript::Final(text));
         }
         Ok(())
     }
 }
 
+/// Test hook for the runtime model load: while a receiver is set, the next
+/// `create_speaker_embedder` takes it and blocks until a message arrives or the sender drops.
+type LoadBlock = Arc<Mutex<Option<std::sync::mpsc::Receiver<()>>>>;
+
 struct GateFactory {
+    load_block: LoadBlock,
+    load_calls: Arc<Mutex<usize>>,
     script: Arc<Mutex<Script>>,
     default: Arc<Mutex<Behavior>>,
     queue: Arc<Mutex<VecDeque<Behavior>>>,
@@ -159,6 +183,11 @@ impl VendorFactory for GateFactory {
         &self,
         _config: &SpeakerGateConfig,
     ) -> SpeechResult<Option<Box<dyn SpeakerEmbedder>>> {
+        *self.load_calls.lock().unwrap() += 1;
+        let block = self.load_block.lock().unwrap().take();
+        if let Some(rx) = block {
+            let _ = rx.recv();
+        }
         Ok(Some(Box::new(FakeEmbedder {
             default: Arc::clone(&self.default),
             queue: Arc::clone(&self.queue),
@@ -169,6 +198,9 @@ impl VendorFactory for GateFactory {
 
 struct Rig {
     agent: Arc<VoiceAgent>,
+    load_block: LoadBlock,
+    /// `create_speaker_embedder` calls (model load threads started).
+    load_calls: Arc<Mutex<usize>>,
     script: Arc<Mutex<Script>>,
     default: Arc<Mutex<Behavior>>,
     queue: Arc<Mutex<VecDeque<Behavior>>>,
@@ -190,6 +222,7 @@ fn gate_cfg(on_mismatch: SpeakerMismatchAction) -> SpeakerGateConfig {
         recheck_max_windows: 2,
         on_mismatch,
         verify_timeout_ms: 300,
+        ..SpeakerGateConfig::default()
     }
 }
 
@@ -239,10 +272,14 @@ async fn rig_with(config: VoiceAgentConfig) -> Rig {
     let default = Arc::new(Mutex::new(Behavior::Vector(REF.to_vec())));
     let queue = Arc::new(Mutex::new(VecDeque::new()));
     let lens = Arc::new(Mutex::new(Vec::new()));
+    let load_block: LoadBlock = Arc::new(Mutex::new(None));
+    let load_calls = Arc::new(Mutex::new(0_usize));
     let mut registry = VendorRegistry::new();
     registry.register_stt(
         SttVendor::LocalSherpa,
         Arc::new(GateFactory {
+            load_block: Arc::clone(&load_block),
+            load_calls: Arc::clone(&load_calls),
             script: Arc::clone(&script),
             default: Arc::clone(&default),
             queue: Arc::clone(&queue),
@@ -260,6 +297,8 @@ async fn rig_with(config: VoiceAgentConfig) -> Rig {
     agent.start(None).await.unwrap();
     Rig {
         agent,
+        load_block,
+        load_calls,
         script,
         default,
         queue,
@@ -3003,6 +3042,7 @@ async fn short_verdict_delivered_after_rejoin_is_ignored() {
         vec![Behavior::WaitFor(Arc::clone(&release_a), REF.to_vec())],
     );
     // A: checked, its embed blocks the verifier.
+    let finalized = rig.script.lock().unwrap().finalize_calls;
     rig.script.lock().unwrap().final_on_finalize = Some("alpha".into());
     rig.feed(&loud_stereo_frame(), 15).await;
     rig.feed(&silent_stereo_frame(), 30).await;
@@ -3014,6 +3054,8 @@ async fn short_verdict_delivered_after_rejoin_is_ignored() {
         );
         tokio::task::yield_now().await;
     }
+    // A's finalize has read its text before the script changes for B + rejoin.
+    wait_finalize_calls(&rig, finalized + 1).await;
     let base = rig.log.len();
     let applied = rig.agent.speaker_gate_verdicts_applied();
     // B: short segment; its check waits behind A's.
@@ -3113,6 +3155,19 @@ async fn short_before_enrollment_then_rejoin_caller_barges_once() {
 }
 
 /// Waits (3 s bound, polling with yield) until the fake embedder's queue holds `left` behaviours.
+/// Waits until the fake STT has finalized `calls` utterances in total, so the next
+/// `final_on_finalize` change cannot reach an earlier utterance's final.
+async fn wait_finalize_calls(rig: &Rig, calls: usize) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while rig.script.lock().unwrap().finalize_calls < calls {
+        assert!(
+            Instant::now() < deadline,
+            "fake STT never reached {calls} finalize calls"
+        );
+        sleep(Duration::from_millis(5)).await;
+    }
+}
+
 async fn wait_queue_len(rig: &Rig, left: usize) {
     let deadline = Instant::now() + Duration::from_secs(3);
     while rig.queue.lock().unwrap().len() > left {
@@ -3146,10 +3201,13 @@ async fn short_short_then_rejoin_late_short_verdicts_are_ignored() {
         vec![Behavior::WaitFor(Arc::clone(&release_a), REF.to_vec())],
     );
     // Earlier utterance: checked, its embed blocks the verifier.
+    let finalized = rig.script.lock().unwrap().finalize_calls;
     rig.script.lock().unwrap().final_on_finalize = Some("alpha".into());
     rig.feed(&loud_stereo_frame(), 25).await;
     rig.feed(&silent_stereo_frame(), 30).await;
     wait_queue_len(&rig, 0).await;
+    // alpha's finalize has read its text before the script changes for A + B + C.
+    wait_finalize_calls(&rig, finalized + 1).await;
     let base = rig.log.len();
     let applied = rig.agent.speaker_gate_verdicts_applied();
     let superseded = rig.agent.speaker_gate_superseded_verdicts();
@@ -3547,6 +3605,563 @@ async fn short_unknown_stt_partial_during_hold_waits_for_hold_expiry() {
         pos(&|e| e.kind == SpeechEventKind::BargeIn)
             < pos(&|e| e.kind == SpeechEventKind::UserSpeechFinal),
         "barge_in precedes the final"
+    );
+    rig.agent.stop().await.unwrap();
+}
+
+// ---- runtime switch (`set_speaker_gate`) ------------------------------------------------------
+
+fn enable() -> SpeakerGateUpdate {
+    SpeakerGateUpdate {
+        enabled: Some(true),
+        ..Default::default()
+    }
+}
+
+fn disable() -> SpeakerGateUpdate {
+    SpeakerGateUpdate {
+        enabled: Some(false),
+        ..Default::default()
+    }
+}
+
+/// `modelPath` set, `enabled: false`: the gate is built inactive.
+fn disabled_with_model_cfg() -> SpeakerGateConfig {
+    SpeakerGateConfig {
+        enabled: false,
+        ..gate_cfg(SpeakerMismatchAction::Flag)
+    }
+}
+
+async fn wait_loaded(rig: &Rig) {
+    for _ in 0..300 {
+        if rig.agent.speaker_gate_loaded() {
+            return;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("speaker model not loaded");
+}
+
+/// Built disabled: finals carry no speaker fields. After an enable the next utterances are scored
+/// (enroll, then `caller`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn constructed_disabled_then_enable_scores_next_utterance() {
+    let mut rig = rig_with(agent_config(disabled_with_model_cfg())).await;
+    rig.utterance("before the switch", 20).await;
+    rig.drain();
+    assert_eq!(rig.finals().len(), 1);
+    assert!(rig.finals()[0].speaker.is_none(), "gate off: no speaker");
+    assert!(rig.finals()[0].speaker_unknown_reason.is_none());
+    assert!(
+        !rig.agent.speaker_gate_loaded(),
+        "no model load while disabled"
+    );
+
+    rig.agent.set_speaker_gate(enable()).unwrap();
+    wait_loaded(&rig).await;
+    rig.enroll().await;
+    let n = rig.finals().len();
+    assert_eq!(rig.finals()[1].speaker.as_deref(), Some("unknown"));
+    assert_eq!(
+        rig.finals()[1].speaker_unknown_reason.as_deref(),
+        Some("not_enrolled")
+    );
+    rig.utterance("after the switch", 15).await;
+    rig.drain();
+    assert_eq!(rig.finals().len(), n + 1);
+    assert_eq!(
+        rig.finals().last().unwrap().speaker.as_deref(),
+        Some("caller")
+    );
+    rig.agent.stop().await.unwrap();
+}
+
+/// Enabling without `modelPath` is a config error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn enable_without_model_path_is_config_error() {
+    let rig = rig_with(agent_config(SpeakerGateConfig::default())).await;
+    let err = rig.agent.set_speaker_gate(enable()).unwrap_err();
+    assert!(
+        matches!(err, node_webrtc_rust_speech::error::SpeechError::Config(ref m) if m.contains("speakerGate.modelPath not set")),
+        "{err:?}"
+    );
+    // A policy-only update without a gate is a no-op.
+    rig.agent
+        .set_speaker_gate(SpeakerGateUpdate {
+            barge_in: Some(SpeakerGateBargeIn::Anyone),
+            ..Default::default()
+        })
+        .unwrap();
+    rig.agent.stop().await.unwrap();
+}
+
+/// A barge-in held for the live utterance (its check never settles) fires once when the gate is
+/// disabled while the reply plays, before that utterance's final. The final has no verdict, so it
+/// is `unknown` / `no_check`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disable_while_held_fires_barge_once_before_the_final() {
+    let mut cfg = gate_cfg(SpeakerMismatchAction::Flag);
+    cfg.verify_timeout_ms = 5000;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    *rig.default.lock().unwrap() = Behavior::Pending;
+    rig.start_speaking_for(20).await;
+    rig.script.lock().unwrap().final_on_finalize = Some("switch it off".into());
+    rig.feed(&loud_stereo_frame(), 15).await;
+    sleep(Duration::from_millis(200)).await;
+    rig.drain();
+    assert_eq!(rig.count(SpeechEventKind::BargeIn), 0, "barge-in held");
+
+    rig.agent.set_speaker_gate(disable()).unwrap();
+    assert!(
+        rig.wait_event(SpeechEventKind::BargeIn, 2000).await,
+        "disable releases the held barge-in"
+    );
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    assert!(rig.wait_event(SpeechEventKind::UserSpeechFinal, 2000).await);
+    sleep(Duration::from_millis(100)).await;
+    rig.drain();
+    assert_eq!(rig.count(SpeechEventKind::BargeIn), 1, "fires exactly once");
+    let barge = rig
+        .log
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::BargeIn)
+        .unwrap();
+    let fin = rig
+        .log
+        .iter()
+        .rposition(|e| e.kind == SpeechEventKind::UserSpeechFinal)
+        .unwrap();
+    assert!(barge < fin, "barge-in before the final");
+    let last = rig.log[fin].clone();
+    assert_eq!(last.text.as_deref(), Some("switch it off"));
+    assert_eq!(last.speaker.as_deref(), Some("unknown"));
+    assert_eq!(last.speaker_unknown_reason.as_deref(), Some("no_check"));
+    rig.agent.stop().await.unwrap();
+}
+
+/// `bargeIn: anyone`: a bystander's barge-in is not held, and the final is still `other`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn barge_in_anyone_lets_bystander_interrupt_and_still_labels_other() {
+    let mut cfg = gate_cfg(SpeakerMismatchAction::Flag);
+    cfg.barge_in = SpeakerGateBargeIn::Anyone;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    *rig.default.lock().unwrap() = Behavior::Vector(OTHER.to_vec());
+    rig.start_speaking().await;
+    rig.script.lock().unwrap().final_on_finalize = Some("buy a car".into());
+    rig.feed(&loud_stereo_frame(), 15).await;
+    assert!(
+        rig.wait_event(SpeechEventKind::BargeIn, 2000).await,
+        "anyone: bystander barge-in is not held"
+    );
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    rig.drain();
+    let last = rig.finals().last().copied().unwrap().clone();
+    assert_eq!(last.speaker.as_deref(), Some("other"));
+    rig.agent.stop().await.unwrap();
+}
+
+/// A model load that does not finish within `modelLoadTimeoutMs` leaves the gate inactive and
+/// emits `error` (`reason: speaker_model_load_failed`). Its thread keeps running: an enable while
+/// it runs reuses it (no second load thread, finals stay `unknown` / `loading`) and applies its
+/// result once it returns.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_load_timeout_stays_inactive_and_an_enable_reuses_the_running_load() {
+    let mut cfg = disabled_with_model_cfg();
+    cfg.model_load_timeout_ms = 50;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    let (release, rx) = std::sync::mpsc::channel::<()>();
+    *rig.load_block.lock().unwrap() = Some(rx);
+    rig.agent.set_speaker_gate(enable()).unwrap();
+    assert!(rig.wait_event(SpeechEventKind::Error, 2000).await);
+    let err = rig
+        .log
+        .iter()
+        .find(|e| e.kind == SpeechEventKind::Error)
+        .unwrap()
+        .clone();
+    assert_eq!(err.reason.as_deref(), Some("speaker_model_load_failed"));
+    assert!(!rig.agent.speaker_gate_loaded());
+    rig.utterance("still off", 20).await;
+    rig.drain();
+    assert!(
+        rig.finals().last().unwrap().speaker.is_none(),
+        "failed load: gate stays inactive"
+    );
+    assert!(rig.agent.speaker_gate_load_in_flight(), "thread still runs");
+
+    // Enable while the timed-out thread still runs: no second load; the gate waits for it.
+    rig.agent.set_speaker_gate(enable()).unwrap();
+    rig.utterance("waits for the running load", 20).await;
+    rig.drain();
+    let last = rig.finals().last().copied().unwrap().clone();
+    assert_eq!(last.speaker_unknown_reason.as_deref(), Some("loading"));
+    assert_eq!(
+        *rig.load_calls.lock().unwrap(),
+        1,
+        "the running load is reused"
+    );
+
+    release.send(()).unwrap();
+    wait_loaded(&rig).await;
+    assert_eq!(*rig.load_calls.lock().unwrap(), 1, "its result is applied");
+    rig.agent.stop().await.unwrap();
+}
+
+/// A timed-out load whose thread returns with no enable pending is dropped; the next enable
+/// starts a fresh load.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn timed_out_load_returning_without_enable_is_dropped_and_next_enable_loads_fresh() {
+    let mut cfg = disabled_with_model_cfg();
+    cfg.model_load_timeout_ms = 50;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    let (release, rx) = std::sync::mpsc::channel::<()>();
+    *rig.load_block.lock().unwrap() = Some(rx);
+    rig.agent.set_speaker_gate(enable()).unwrap();
+    assert!(rig.wait_event(SpeechEventKind::Error, 2000).await);
+    release.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while rig.agent.speaker_gate_load_in_flight() {
+        assert!(
+            Instant::now() < deadline,
+            "timed-out load thread never returned"
+        );
+        sleep(Duration::from_millis(5)).await;
+    }
+    assert!(!rig.agent.speaker_gate_loaded(), "late result dropped");
+    rig.agent.set_speaker_gate(enable()).unwrap();
+    wait_loaded(&rig).await;
+    assert_eq!(*rig.load_calls.lock().unwrap(), 2, "a fresh load");
+    rig.agent.stop().await.unwrap();
+}
+
+/// `onMismatch` / `bargeIn` changed while an utterance is live apply from the next onset: the
+/// live utterance keeps Flag + callerOnly (final `other`, its barge-in dropped); the next
+/// bystander utterance is dropped (`user_speech_ignored`) and barges in at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn policy_change_mid_utterance_applies_from_next_onset() {
+    let mut rig = rig_with(agent_config(gate_cfg(SpeakerMismatchAction::Flag))).await;
+    rig.enroll().await;
+    *rig.default.lock().unwrap() = Behavior::Vector(OTHER.to_vec());
+    rig.start_speaking_for(20).await;
+    let base = rig.log.len();
+    rig.script.lock().unwrap().final_on_finalize = Some("first bystander".into());
+    feed_speech_with_partial(&mut rig, base, 15, "first").await;
+    rig.agent
+        .set_speaker_gate(SpeakerGateUpdate {
+            on_mismatch: Some(SpeakerMismatchAction::Drop),
+            barge_in: Some(SpeakerGateBargeIn::Anyone),
+            ..Default::default()
+        })
+        .unwrap();
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    wait_kind_since(&mut rig, base, SpeechEventKind::UserSpeechFinal).await;
+    let first = rig.log[base..]
+        .iter()
+        .find(|e| e.kind == SpeechEventKind::UserSpeechFinal)
+        .cloned()
+        .unwrap();
+    assert_eq!(first.text.as_deref(), Some("first bystander"));
+    assert_eq!(first.speaker.as_deref(), Some("other"));
+    assert!(
+        barges_since(&rig, base).is_empty(),
+        "live utterance keeps callerOnly"
+    );
+    assert_eq!(
+        rig.log[base..]
+            .iter()
+            .filter(|e| e.kind == SpeechEventKind::UserSpeechIgnored)
+            .count(),
+        0
+    );
+
+    let second = rig.log.len();
+    rig.script.lock().unwrap().final_on_finalize = Some("second bystander".into());
+    feed_speech_with_partial(&mut rig, second, 15, "second").await;
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    wait_kind_since(&mut rig, second, SpeechEventKind::UserSpeechIgnored).await;
+    assert_eq!(
+        rig.log[second..]
+            .iter()
+            .filter(|e| e.kind == SpeechEventKind::UserSpeechIgnored)
+            .count(),
+        1,
+        "next utterance: onMismatch drop"
+    );
+    assert_eq!(finals_with(&rig, second, "second bystander"), 0);
+    assert_eq!(
+        barges_since(&rig, second).len(),
+        1,
+        "next utterance: bargeIn anyone"
+    );
+    rig.agent.stop().await.unwrap();
+}
+
+/// Speech that a real vendor transcribes: feeds `loud` frames one at a time and, once this
+/// utterance's STT stream is open (`stt_stream_start` logged after `base`), scripts one partial
+/// for it, then waits until the fake handed it out (no sleeps).
+async fn feed_speech_with_partial(rig: &mut Rig, base: usize, loud: usize, partial: &str) {
+    let mut scripted = false;
+    for _ in 0..loud {
+        rig.feed(&loud_stereo_frame(), 1).await;
+        rig.drain();
+        if !scripted
+            && rig.log[base..]
+                .iter()
+                .any(|e| e.kind == SpeechEventKind::SttStreamStart)
+        {
+            let mut script = rig.script.lock().unwrap();
+            script.partial_next = Some(partial.into());
+            script.partial_after_audio = true;
+            scripted = true;
+        }
+    }
+    assert!(scripted, "stt stream never opened");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while rig.script.lock().unwrap().partial_next.is_some() {
+        assert!(Instant::now() < deadline, "partial never polled");
+        rig.feed(&silent_stereo_frame(), 1).await;
+    }
+}
+
+/// Waits for an event of `kind` logged at or after `base`.
+async fn wait_kind_since(rig: &mut Rig, base: usize, kind: SpeechEventKind) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        rig.drain();
+        if rig.log[base..].iter().any(|e| e.kind == kind) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no {kind:?} since {base}: {:?}",
+            rig.log[base..]
+                .iter()
+                .map(|e| (e.kind, e.text.clone(), e.speaker.clone()))
+                .collect::<Vec<_>>()
+        );
+        sleep(Duration::from_millis(5)).await;
+    }
+}
+
+async fn wait_finals_pending(rig: &Rig, n: u64) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while rig.agent.speaker_gate_finals_pending() != n {
+        assert!(
+            Instant::now() < deadline,
+            "finals pending never reached {n}"
+        );
+        sleep(Duration::from_millis(5)).await;
+    }
+}
+
+fn assert_one_barge_before_final(rig: &Rig, base: usize, text: &str) -> SpeechEvent {
+    assert_eq!(barges_since(rig, base).len(), 1, "fires exactly once");
+    let barge = rig.log[base..]
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::BargeIn)
+        .unwrap();
+    let fin = rig.log[base..]
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::UserSpeechFinal && e.text.as_deref() == Some(text))
+        .expect("the final");
+    assert!(barge < fin, "barge-in before the final");
+    rig.log[base + fin].clone()
+}
+
+/// Disabled while a barge-in is held during playback, before the turn ends: exactly one barge-in
+/// at disable time; it stops playback, the utterance then finalizes, and its final comes after
+/// the barge-in (`unknown` / `no_check`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disable_while_held_during_playback_fires_barge_then_the_final() {
+    let mut cfg = gate_cfg(SpeakerMismatchAction::Flag);
+    cfg.verify_timeout_ms = 5000;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    *rig.default.lock().unwrap() = Behavior::Pending;
+    rig.start_speaking_for(20).await;
+    let base = rig.log.len();
+    let checks = rig.lens.lock().unwrap().len();
+    rig.script.lock().unwrap().final_on_finalize = Some("held then off".into());
+    feed_speech_with_partial(&mut rig, base, 15, "held").await;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while rig.lens.lock().unwrap().len() == checks {
+        assert!(
+            Instant::now() < deadline,
+            "check never reached the embedder"
+        );
+        rig.feed(&loud_stereo_frame(), 1).await;
+    }
+    rig.drain();
+    assert!(barges_since(&rig, base).is_empty(), "barge-in held");
+
+    rig.agent.set_speaker_gate(disable()).unwrap();
+    wait_kind_since(&mut rig, base, SpeechEventKind::BargeIn).await;
+    rig.feed(&silent_stereo_frame(), 30).await;
+    assert!(rig.agent.wait_stt_idle(Duration::from_secs(10)).await);
+    wait_kind_since(&mut rig, base, SpeechEventKind::UserSpeechFinal).await;
+    rig.drain();
+    let fin = assert_one_barge_before_final(&rig, base, "held then off");
+    assert_eq!(fin.speaker.as_deref(), Some("unknown"));
+    assert_eq!(fin.speaker_unknown_reason.as_deref(), Some("no_check"));
+    rig.agent.stop().await.unwrap();
+}
+
+/// The final already waits for its verdict while the reply plays (a vendor partial, then C2
+/// closes the turn during playback) when the gate is disabled: once `set_speaker_gate` returns,
+/// the held barge-in fires exactly once, before that final (`unknown` / `no_check`). The final
+/// owns the held barge-in, so this exercises its `cut` branch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disable_while_final_waits_fires_barge_once_before_the_final() {
+    let mut cfg = gate_cfg(SpeakerMismatchAction::Flag);
+    cfg.verify_timeout_ms = 5000;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    *rig.default.lock().unwrap() = Behavior::Pending;
+    rig.start_speaking_for(20).await;
+    let base = rig.log.len();
+    rig.script.lock().unwrap().final_on_finalize = Some("final waits".into());
+    feed_speech_with_partial(&mut rig, base, 15, "partial").await;
+    rig.feed(&silent_stereo_frame(), 30).await;
+    // Pump STT results while the final waits for its verdict (C2 closes the turn while the
+    // reply still plays).
+    let agent = Arc::clone(&rig.agent);
+    let idle = tokio::spawn(async move { agent.wait_stt_idle(Duration::from_secs(10)).await });
+    wait_finals_pending(&rig, 1).await;
+    rig.drain();
+    assert!(barges_since(&rig, base).is_empty(), "barge-in held");
+
+    rig.agent.set_speaker_gate(disable()).unwrap();
+    assert!(idle.await.unwrap());
+    wait_kind_since(&mut rig, base, SpeechEventKind::UserSpeechFinal).await;
+    wait_finals_pending(&rig, 0).await;
+    rig.drain();
+    let fin = assert_one_barge_before_final(&rig, base, "final waits");
+    assert_eq!(fin.speaker.as_deref(), Some("unknown"));
+    assert_eq!(fin.speaker_unknown_reason.as_deref(), Some("no_check"));
+    rig.agent.stop().await.unwrap();
+}
+
+/// The waiting final's verdict (`other`) arrives right after the disable returned: the utterance
+/// is already cut, so its held barge-in still fires exactly once, before the final.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn other_verdict_right_after_disable_still_fires_barge_once_before_the_final() {
+    let mut cfg = gate_cfg(SpeakerMismatchAction::Flag);
+    cfg.verify_timeout_ms = 5000;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    let release = Arc::new(Notify::new());
+    queue_checks(
+        &rig,
+        vec![Behavior::WaitFor(Arc::clone(&release), OTHER.to_vec())],
+    );
+    rig.start_speaking_for(20).await;
+    let base = rig.log.len();
+    rig.script.lock().unwrap().final_on_finalize = Some("other after disable".into());
+    feed_speech_with_partial(&mut rig, base, 15, "partial").await;
+    rig.feed(&silent_stereo_frame(), 30).await;
+    // Pump STT results while the final waits for its verdict (C2 closes the turn while the
+    // reply still plays).
+    let agent = Arc::clone(&rig.agent);
+    let idle = tokio::spawn(async move { agent.wait_stt_idle(Duration::from_secs(10)).await });
+    wait_finals_pending(&rig, 1).await;
+    rig.drain();
+    assert!(barges_since(&rig, base).is_empty(), "barge-in held");
+
+    rig.agent.set_speaker_gate(disable()).unwrap();
+    release.notify_one();
+    assert!(idle.await.unwrap());
+    wait_kind_since(&mut rig, base, SpeechEventKind::UserSpeechFinal).await;
+    wait_finals_pending(&rig, 0).await;
+    rig.drain();
+    assert_one_barge_before_final(&rig, base, "other after disable");
+    rig.agent.stop().await.unwrap();
+}
+
+/// The first check says `other` while the reply plays, so the barge-in is held for a re-check;
+/// the re-check stays in flight when the final arrives and owns the held barge-in. A disable
+/// then wakes the final, which reads the stored `other`: only the cut fires the held barge-in,
+/// exactly once, before the final (`other`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disable_while_final_waits_on_recheck_fires_held_barge_once() {
+    let mut cfg = gate_cfg(SpeakerMismatchAction::Flag);
+    cfg.verify_timeout_ms = 5000;
+    let mut rig = rig_with(agent_config(cfg)).await;
+    rig.enroll().await;
+    queue_checks(
+        &rig,
+        vec![Behavior::Vector(OTHER.to_vec()), Behavior::Pending],
+    );
+    rig.start_speaking_for(400).await;
+    let base = rig.log.len();
+    rig.script.lock().unwrap().final_on_finalize = Some("recheck then off".into());
+    feed_speech_with_partial(&mut rig, base, 15, "partial").await;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !rig.queue.lock().unwrap().is_empty() {
+        assert!(Instant::now() < deadline, "re-check never sent");
+        rig.feed(&loud_stereo_frame(), 1).await;
+    }
+    rig.drain();
+    assert!(barges_since(&rig, base).is_empty(), "barge-in held");
+
+    rig.feed(&silent_stereo_frame(), 30).await;
+    // Pump STT results while the final waits on the re-check (C2 closes the turn while the
+    // reply still plays).
+    let agent = Arc::clone(&rig.agent);
+    let idle = tokio::spawn(async move { agent.wait_stt_idle(Duration::from_secs(10)).await });
+    wait_finals_pending(&rig, 1).await;
+    rig.drain();
+    assert!(barges_since(&rig, base).is_empty(), "barge-in still held");
+
+    rig.agent.set_speaker_gate(disable()).unwrap();
+    assert!(idle.await.unwrap());
+    wait_kind_since(&mut rig, base, SpeechEventKind::UserSpeechFinal).await;
+    wait_finals_pending(&rig, 0).await;
+    rig.drain();
+    let fin = assert_one_barge_before_final(&rig, base, "recheck then off");
+    assert_eq!(fin.speaker.as_deref(), Some("other"));
+    rig.agent.stop().await.unwrap();
+}
+
+/// While the model loads, finals are `unknown` / `loading` and nothing is held.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn final_while_loading_is_unknown_loading() {
+    let mut rig = rig_with(agent_config(disabled_with_model_cfg())).await;
+    let (release, rx) = std::sync::mpsc::channel::<()>();
+    *rig.load_block.lock().unwrap() = Some(rx);
+    rig.agent.set_speaker_gate(enable()).unwrap();
+    rig.utterance("while loading", 20).await;
+    rig.drain();
+    let last = rig.finals().last().copied().unwrap().clone();
+    assert_eq!(last.speaker.as_deref(), Some("unknown"));
+    assert_eq!(last.speaker_unknown_reason.as_deref(), Some("loading"));
+    release.send(()).unwrap();
+    wait_loaded(&rig).await;
+    rig.agent.stop().await.unwrap();
+}
+
+/// Enrollment survives disable and enable: the first utterance after re-enabling is `caller`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn enrollment_survives_disable_and_enable() {
+    let mut rig = rig_with(agent_config(gate_cfg(SpeakerMismatchAction::Flag))).await;
+    rig.enroll().await;
+    rig.agent.set_speaker_gate(disable()).unwrap();
+    rig.utterance("gate off", 15).await;
+    rig.drain();
+    assert!(rig.finals().last().unwrap().speaker.is_none());
+    assert!(rig.agent.speaker_gate_enrolled());
+    rig.agent.set_speaker_gate(enable()).unwrap();
+    rig.utterance("gate on again", 15).await;
+    rig.drain();
+    assert_eq!(
+        rig.finals().last().unwrap().speaker.as_deref(),
+        Some("caller")
     );
     rig.agent.stop().await.unwrap();
 }

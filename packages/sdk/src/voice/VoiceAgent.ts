@@ -250,7 +250,8 @@ function toJsSessionContext(ctx?: VoiceSessionContext): JsVoiceSessionContext | 
   }
 }
 
-function toJsConfig(config?: VoiceAgentConfig): JsVoiceAgentConfig | undefined {
+/** Exported for tests of the config mapping. */
+export function toJsConfig(config?: VoiceAgentConfig): JsVoiceAgentConfig | undefined {
   if (!config) return undefined
   const postUtteranceSilenceMs = config.postUtteranceSilenceMs ?? config.tts?.postUtteranceSilenceMs
   return {
@@ -281,6 +282,7 @@ function toJsConfig(config?: VoiceAgentConfig): JsVoiceAgentConfig | undefined {
           suppressShortBargeIn: config.speakerGate.suppressShortBargeIn,
           recheckOnOther: config.speakerGate.recheckOnOther,
           recheckMaxWindows: config.speakerGate.recheckMaxWindows,
+          splitOnSpeakerChange: config.speakerGate.splitOnSpeakerChange,
           onMismatch: config.speakerGate.onMismatch,
           verifyTimeoutMs: config.speakerGate.verifyTimeoutMs,
           bargeIn: config.speakerGate.bargeIn,
@@ -366,6 +368,11 @@ export function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
       (event.speakerUnknownReason as SpeechEvent['speakerUnknownReason']) ?? undefined,
     speakerRechecked: event.speakerRechecked ?? undefined,
     speakerCheckWindows: event.speakerCheckWindows ?? undefined,
+    fromUtteranceId: event.fromUtteranceId ?? undefined,
+    toUtteranceId: event.toUtteranceId ?? undefined,
+    splitAtMs: event.splitAtMs ?? undefined,
+    from: (event.from as SpeechEvent['from']) ?? undefined,
+    to: (event.to as SpeechEvent['to']) ?? undefined,
   }
 }
 
@@ -419,6 +426,8 @@ function jsEventTypeToString(eventType: JsSpeechEventType): SpeechEventType {
       return 'agent_reply_start'
     case JsSpeechEventType.AgentReplyEnd:
       return 'agent_reply_end'
+    case JsSpeechEventType.UserUtteranceSplit:
+      return 'user_utterance_split'
     case JsSpeechEventType.UserSpeechIgnored:
       return 'user_speech_ignored'
     default:

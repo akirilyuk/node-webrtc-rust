@@ -66,13 +66,24 @@ export interface Seen {
    * `speakerCheckWindows`). A re-checked final must carry it; the oracle never defaults it.
    */
   speakerCheckWindows?: number
+  /** `user_utterance_split`: the utterance that was cut (it ends with reason `speaker_split`). */
+  fromUtteranceId?: string
+  /** `user_utterance_split`: the utterance opened at the split point. */
+  toUtteranceId?: string
+  /** `user_utterance_split`: split offset into the cut utterance's audio. */
+  splitAtMs?: number
 }
 
-/** Plan of the temporary absorb rule ({@link pairTurnUtterances}). */
-export const ABSORB_PLAN =
-  'development/node-webrtc-rust/plans/2026-10-31-speaker-gate-continuous-recheck.md'
-/** The run fails when more than this share of caller turns is absorbed into an earlier utterance. */
-export const MAX_ABSORBED_SHARE = 0.25
+/**
+ * A `caller` final counts as merged ({@link mergedCallerFinals}) when, past the caller phrase, it
+ * holds at least this many distinct words of the bystander sentence that follows the caller turn
+ * in the manifest (or every such word when that sentence has fewer).
+ */
+export const MERGED_FINAL_MIN_BYSTANDER_WORDS = 3
+/** Shortest word that ties a final to a bystander sentence (drops "the", "and", "a"). */
+export const MERGED_FINAL_MIN_WORD_LENGTH = 4
+/** A final holds the caller phrase when its best caller-length window scores at least this. */
+export const MERGED_FINAL_MIN_CALLER_SIMILARITY = 0.5
 
 /**
  * Token count as the product counts it (`stt_partial_token_count` in crates/speech config.rs):
@@ -133,17 +144,6 @@ function verdictAfterMs(start: Seen, seen: Seen[]): number | undefined {
       e.speakerRechecked === true,
   )?.speakerCheckWindows
   return windows == null ? undefined : speakerRecheckBargeEarliestMs(CHECK_SPEECH_MS, windows)
-}
-
-/** True when the agent was speaking at `atMs`: its last speaking event up to then is a start. */
-function agentSpeakingAt(atMs: number, seen: Seen[]): boolean {
-  let speaking = false
-  for (const e of seen) {
-    if (e.atMs > atMs) break
-    if (e.type === SPEECH_EVENT_TYPE.agentSpeakingStart) speaking = true
-    else if (e.type === SPEECH_EVENT_TYPE.agentSpeakingEnd) speaking = false
-  }
-  return speaking
 }
 
 /** First `user_speech_partial` on the start's `utteranceId` with enough tokens for a barge-in. */
@@ -239,12 +239,6 @@ export function utteranceEndMs(utteranceId: string, seen: Seen[]): number | unde
  *   its `caller` verdict is a bystander false upgrade, not the caller's turn. A final
  *   without `speakerCheckWindows` is never paired (and {@link evaluateTurns} fails it).
  *
- * TEMPORARY (step B: split on speaker change), plan {@link ABSORB_PLAN} step 5: a final with
- * verdict `caller` whose product span (`user_speaking_start` to `user_speaking_end` of its
- * `utteranceId`, else the final) strictly covers a caller turn's scene start that no utterance
- * claimed absorbs that turn (`absorbed`, turn index to the covering start). There is no VAD pause
- * in the babble and no re-check after a first `caller` verdict. An `other` final never absorbs.
- *
  * The bystander turn then has no utterance; the caller turn index goes into `merged`. Anything
  * else keeps its slot pairing, so a re-checked `caller` that never reaches a caller turn still
  * fails as a bystander barge-in.
@@ -252,7 +246,7 @@ export function utteranceEndMs(utteranceId: string, seen: Seen[]): number | unde
 export function pairTurnUtterances(
   turns: Turn[],
   seen: Seen[],
-): { starts: (Seen | undefined)[]; merged: Set<number>; absorbed: Map<number, Seen> } {
+): { starts: (Seen | undefined)[]; merged: Set<number> } {
   const allStarts = seen.filter(
     (e) => e.type === SPEECH_EVENT_TYPE.userSpeakingStart && e.utteranceId != null,
   )
@@ -290,23 +284,7 @@ export function pairTurnUtterances(
     starts[i] = undefined
     merged.add(j)
   })
-  // TEMPORARY (step B: split on speaker change) - see ABSORB_PLAN, step 5.
-  // The cap applies per pass (stricter than per run).
-  const absorbed = new Map<number, Seen>()
-  turns.forEach((turn, j) => {
-    if (turn.role !== 'main' || starts[j] != null) return
-    const cover = allStarts.find((s) => {
-      if (s.atMs >= turn.startMs) return false
-      const final = seen.find(
-        (e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal && e.utteranceId === s.utteranceId,
-      )
-      if (final?.speaker !== 'caller') return false
-      const endMs = utteranceEndMs(s.utteranceId!, seen)
-      return endMs != null && endMs > turn.startMs
-    })
-    if (cover != null) absorbed.set(j, cover)
-  })
-  return { starts, merged, absorbed }
+  return { starts, merged }
 }
 
 /**
@@ -357,9 +335,94 @@ export function lastSpeakingEndMs(utteranceId: string, seen: Seen[]): number | u
   return ends.length > 0 ? ends[ends.length - 1]!.atMs : undefined
 }
 
+function longWords(text: string): string[] {
+  return normalizeForCompare(text)
+    .split(' ')
+    .filter((w) => w.length >= MERGED_FINAL_MIN_WORD_LENGTH)
+}
+
+/** A `caller` final that runs past a caller phrase into the bystander sentence after it. */
+export interface MergedCallerFinal {
+  utteranceId: string
+  turnIndex: number
+  callerText: string
+  text: string
+  /** Bystander words found in the final, outside the caller phrase. */
+  words: string[]
+}
+
+/**
+ * Finals labelled `caller` that hold a caller turn's phrase (best caller-length window at least
+ * {@link MERGED_FINAL_MIN_CALLER_SIMILARITY}) and, outside that phrase's words, at least
+ * {@link MERGED_FINAL_MIN_BYSTANDER_WORDS} distinct words of the bystander sentence that follows
+ * the caller turn in the manifest. That is one STT decode spanning a speaker change ("nine" +
+ * "Two hikers" -> "ninekers followed the rocky trail..."). With `splitOnSpeakerChange` every
+ * count is a failure. Each final counts once. Finals labelled `other` or `unknown` never count.
+ * Deterministic: text only, no timing.
+ */
+export function mergedCallerFinals(turns: Turn[], seen: Seen[]): MergedCallerFinal[] {
+  const out: MergedCallerFinal[] = []
+  const finals = seen.filter(
+    (e) =>
+      e.type === SPEECH_EVENT_TYPE.userSpeechFinal &&
+      e.speaker === 'caller' &&
+      e.utteranceId != null,
+  )
+  for (const final of finals) {
+    const text = final.text ?? ''
+    const finalWords = new Set(longWords(text))
+    for (let i = 0; i + 1 < turns.length; i += 1) {
+      const turn = turns[i]!
+      const next = turns[i + 1]!
+      if (turn.role !== 'main' || next.role !== 'bystander') continue
+      if (callerWindowSimilarity(turn.text, text) < MERGED_FINAL_MIN_CALLER_SIMILARITY) continue
+      const callerWords = new Set(longWords(turn.text))
+      const bystanderWords = new Set(longWords(next.text).filter((w) => !callerWords.has(w)))
+      if (bystanderWords.size === 0) continue
+      const words = [...bystanderWords].filter((w) => finalWords.has(w))
+      if (words.length >= Math.min(MERGED_FINAL_MIN_BYSTANDER_WORDS, bystanderWords.size)) {
+        out.push({
+          utteranceId: final.utteranceId!,
+          turnIndex: i,
+          callerText: turn.text,
+          text,
+          words,
+        })
+        break
+      }
+    }
+  }
+  return out
+}
+
+/** Number of {@link mergedCallerFinals}. */
+export function countMergedCallerFinals(turns: Turn[], seen: Seen[]): number {
+  return mergedCallerFinals(turns, seen).length
+}
+
+/**
+ * A passing caller turn at or below this similarity is a near miss: it passed the
+ * {@link DEFAULT_BARGE_PHRASE_MIN_SIMILARITY} bar with at most one word to spare. Reporting only.
+ */
+export const NEAR_MISS_SIMILARITY = 0.8
+
+/** Near misses (passing similarity <= {@link NEAR_MISS_SIMILARITY}) and the minimum similarity of one pass. */
+export function similaritySummary(sims: number[]): {
+  nearMissCount: number
+  minSimilarity: number | undefined
+} {
+  const eps = 1e-9
+  const nearMissCount = sims.filter(
+    (s) => s >= DEFAULT_BARGE_PHRASE_MIN_SIMILARITY - eps && s <= NEAR_MISS_SIMILARITY + eps,
+  ).length
+  const minSimilarity = sims.length > 0 ? Math.min(...sims) : undefined
+  return { nearMissCount, minSimilarity }
+}
+
 /** Pure evaluation of one pass; exported for the evaluator unit test. */
 export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): string[] {
   const failures: string[] = []
+  const sims: number[] = []
   const finals = new Map<string, Seen>()
   for (const e of seen) {
     if (e.type === SPEECH_EVENT_TYPE.userSpeechFinal && e.utteranceId != null) {
@@ -389,8 +452,7 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
       )
     }
   }
-  const { starts, merged, absorbed } = pairTurnUtterances(turns, seen)
-  let absorbedCount = 0
+  const { starts, merged } = pairTurnUtterances(turns, seen)
   let bystandersHeard = 0
   turns.forEach((turn, i) => {
     const tag = `${label} turn ${i} (${turn.role} ${turn.kind} "${turn.text.slice(0, 30)}")`
@@ -419,37 +481,10 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
       return
     }
     if (start == null || id == null) {
-      // TEMPORARY (step B: split on speaker change) - see ABSORB_PLAN, step 5.
-      const cover = absorbed.get(i)
-      const coverId = cover?.utteranceId
-      const coverFinal = coverId != null ? finals.get(coverId) : undefined
-      if (cover == null || coverId == null || coverFinal == null) {
-        failures.push(`${tag}: caller speech start not detected`)
-        return
-      }
-      absorbedCount += 1
-      console.log(
-        `${tag}: absorbed into utterance ${coverId} (started ${cover.atMs} ms, final caller covers the scene start ${turn.startMs} ms)`,
-      )
-      if (
-        agentSpeakingAt(turn.startMs, seen) &&
-        !bargesOf(coverId).some((b) => b.atMs >= turn.startMs)
-      ) {
-        failures.push(
-          `${tag}: absorbed into ${coverId}, agent was speaking at the scene start ${turn.startMs} ms, no barge_in after it`,
-        )
-      }
-      if (turn.kind === 'qualified') {
-        const sim = callerWindowSimilarity(turn.text, coverFinal.text ?? '')
-        console.log(
-          `${tag}: recognized "${coverFinal.text ?? ''}" similarity ${sim.toFixed(2)} (absorbed, best caller-length window)`,
-        )
-        if (sim < DEFAULT_BARGE_PHRASE_MIN_SIMILARITY) {
-          failures.push(
-            `${tag}: absorbed into ${coverId}, recognized "${coverFinal.text ?? ''}" similarity ${sim.toFixed(2)}`,
-          )
-        }
-      }
+      // A caller turn needs a caller-labelled final of its own. Speech inside an earlier
+      // utterance no longer counts: the agent splits that utterance at the speaker change
+      // (`speakerGate.splitOnSpeakerChange`).
+      failures.push(`${tag}: caller speech start not detected`)
       return
     }
     const isMerged = merged.has(i)
@@ -544,6 +579,7 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
       const sim = isMerged
         ? callerWindowSimilarity(turn.text, final.text ?? '')
         : wordSimilarity(turn.text, final.text ?? '')
+      sims.push(sim)
       console.log(
         `${tag}: recognized "${final.text ?? ''}" similarity ${sim.toFixed(2)}${isMerged ? ' (best caller-length window)' : ''}`,
       )
@@ -552,16 +588,20 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
       }
     }
   })
-  const callerTurns = turns.filter((t) => t.role === 'main').length
-  if (absorbedCount > 0) {
+  const splits = seen.filter((e) => e.type === SPEECH_EVENT_TYPE.userUtteranceSplit)
+  for (const e of splits) {
     console.log(
-      `${label}: caller turns absorbed into an earlier utterance: ${absorbedCount}/${callerTurns}`,
+      `${label}: user_utterance_split ${String(e.fromUtteranceId)} -> ${String(e.toUtteranceId)} at ${String(e.splitAtMs)} ms`,
     )
   }
-  // TEMPORARY (step B: split on speaker change) - see ABSORB_PLAN, step 5.
-  if (callerTurns > 0 && absorbedCount / callerTurns > MAX_ABSORBED_SHARE) {
+  const mergedFinals = mergedCallerFinals(turns, seen)
+  const { nearMissCount, minSimilarity } = similaritySummary(sims)
+  console.log(
+    `${label}: user_utterance_split events: ${splits.length}; merged caller finals: ${mergedFinals.length}; near misses (similarity <= ${NEAR_MISS_SIMILARITY.toFixed(2)}): ${nearMissCount}; min similarity: ${minSimilarity == null ? 'n/a' : minSimilarity.toFixed(2)}`,
+  )
+  for (const m of mergedFinals) {
     failures.push(
-      `${label}: ${absorbedCount} of ${callerTurns} caller turns absorbed into an earlier utterance, more than ${MAX_ABSORBED_SHARE * 100} %`,
+      `${label}: merged caller final ${m.utteranceId} (turn ${m.turnIndex} "${m.callerText}" runs into the next bystander: ${m.words.join(' ')}): "${m.text}"`,
     )
   }
   console.log(`${label}: bystander finals tagged other: ${bystandersHeard}`)

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest'
 
 import { JsSpeechEventType } from '@node-webrtc-rust/bindings'
 
-import { fromJsSpeechEvent } from '../src/voice/VoiceAgent'
+import { fromJsSpeechEvent, toJsConfig } from '../src/voice/VoiceAgent'
 import {
   SPEAKER_GATE_RECHECK_MAX_WINDOWS,
   SPEAKER_GATE_RECHECK_WINDOWS,
@@ -96,5 +96,42 @@ describe('speaker gate speech events', () => {
       text: 'hi',
     })
     expect(plain.speakerCheckWindows).toBeUndefined()
+  })
+})
+
+describe('splitOnSpeakerChange', () => {
+  test('is passed to the native config when set', () => {
+    const js = toJsConfig({ speakerGate: { enabled: true, splitOnSpeakerChange: true } })
+    expect(js?.speakerGate?.splitOnSpeakerChange).toBe(true)
+  })
+
+  test('is omitted when not set', () => {
+    const js = toJsConfig({ speakerGate: { enabled: true } })
+    expect(js?.speakerGate?.splitOnSpeakerChange).toBeUndefined()
+  })
+
+  test('user_utterance_split carries both ids, the split point and the labels, no text', () => {
+    const ev = fromJsSpeechEvent({
+      eventType: JsSpeechEventType.UserUtteranceSplit,
+      fromUtteranceId: 'u1',
+      toUtteranceId: 'u2',
+      splitAtMs: 1240,
+      from: 'caller',
+      to: 'other',
+    })
+    expect(ev.type).toBe('user_utterance_split')
+    expect(ev.fromUtteranceId).toBe('u1')
+    expect(ev.utteranceId).toBeUndefined()
+    expect(ev.toUtteranceId).toBe('u2')
+    expect(ev.splitAtMs).toBe(1240)
+    expect(ev.from).toBe('caller')
+    expect(ev.to).toBe('other')
+    expect(ev.text).toBeUndefined()
+  })
+
+  test('split fields are absent on other events', () => {
+    const ev = fromJsSpeechEvent({ eventType: JsSpeechEventType.UserSpeechFinal, text: 'hi' })
+    expect(ev.toUtteranceId).toBeUndefined()
+    expect(ev.splitAtMs).toBeUndefined()
   })
 })

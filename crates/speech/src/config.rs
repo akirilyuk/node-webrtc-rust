@@ -285,6 +285,15 @@ pub struct SpeakerGateConfig {
     /// final; `1` is rejected (use `recheck_on_other: false`). Default 12 (18 s of speech with the
     /// default 1.5 s check).
     pub recheck_max_windows: u32,
+    /// Opt-in, default false (byte-identical to earlier releases when off). While an utterance is
+    /// live the gate keeps scoring `check_speech_ms` windows (up to `recheck_max_windows`) and
+    /// reports a speaker change after `speaker_gate::SPEAKER_CHANGE_CONFIRM_WINDOWS` consecutive
+    /// `other` windows of a `caller`-labelled utterance, with a split point in utterance media time
+    /// (`speaker_gate::SpeakerChange`, `from` always `Caller`). The caller stays caller: `other`
+    /// followed by `caller` never splits; the first `caller` re-check upgrades the verdict as with
+    /// the flag off. A split re-decodes the first part on one extra STT stream, which is why this
+    /// defaults off.
+    pub split_on_speaker_change: bool,
     pub on_mismatch: SpeakerMismatchAction,
     /// Bound (ms) on one embedding call and on a final waiting for its verdict.
     pub verify_timeout_ms: u32,
@@ -307,6 +316,7 @@ impl Default for SpeakerGateConfig {
             suppress_short_barge_in: false,
             recheck_on_other: true,
             recheck_max_windows: crate::speaker_gate::DEFAULT_RECHECK_MAX_WINDOWS,
+            split_on_speaker_change: false,
             on_mismatch: SpeakerMismatchAction::Flag,
             verify_timeout_ms: 500,
             barge_in: SpeakerGateBargeIn::CallerOnly,
@@ -345,6 +355,13 @@ impl SpeakerGateConfig {
             return Err(
                 "speakerGate.recheckMaxWindows must be 0 (no cap) or at least 2; use \
                  speakerGate.recheckOnOther: false for one check"
+                    .into(),
+            );
+        }
+        if self.split_on_speaker_change && self.recheck_max_windows == 1 {
+            return Err(
+                "speakerGate.recheckMaxWindows must be 0 (no cap) or at least 2 when \
+                 speakerGate.splitOnSpeakerChange is on: one window cannot show a change"
                     .into(),
             );
         }

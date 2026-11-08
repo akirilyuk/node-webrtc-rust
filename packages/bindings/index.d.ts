@@ -394,6 +394,12 @@ export interface JsSpeakerGateConfig {
    * rejected by the gate.
    */
   recheckMaxWindows?: number
+  /**
+   * Split an utterance when the voice changes from the caller to another voice (default false).
+   * Another voice followed by the caller upgrades the utterance to the caller instead. Costs one
+   * extra STT stream per split.
+   */
+  splitOnSpeakerChange?: boolean
   /** `flag` (default) | `drop`. */
   onMismatch?: string
   verifyTimeoutMs?: number
@@ -449,6 +455,7 @@ export const enum JsSpeechEventType {
   UserSpeechPartial = 'user_speech_partial',
   UserSpeechIgnored = 'user_speech_ignored',
   UserSpeechFinal = 'user_speech_final',
+  UserUtteranceSplit = 'user_utterance_split',
   UserLanguage = 'user_language',
   LanguageIdSkipped = 'language_id_skipped',
   AgentSpeakingStart = 'agent_speaking_start',
@@ -519,6 +526,16 @@ export interface JsSpeechEvent {
   speakerRechecked?: boolean
   /** `user_speech_final` with the speaker gate on: check windows scored for the utterance. */
   speakerCheckWindows?: number
+  /** `user_utterance_split`: id of the utterance that ends at the split. */
+  fromUtteranceId?: string
+  /** `user_utterance_split`: id of the utterance that starts at the split. */
+  toUtteranceId?: string
+  /** `user_utterance_split`: ms into the audio of the split utterance where the speaker changed. */
+  splitAtMs?: number
+  /** `user_utterance_split`: label before the split (`caller` | `other`). */
+  from?: string
+  /** `user_utterance_split`: label after the split (`caller` | `other`). */
+  to?: string
 }
 export const enum JsSttHoldMode {
   BufferReplay = 'buffer_replay',

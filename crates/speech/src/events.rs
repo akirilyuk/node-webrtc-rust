@@ -11,6 +11,7 @@
 //! | `UserSpeakingEnd` | With `gate_stt` + STT: paired with final; else after hold or VAD end |
 //! | `UserSpeechPartial` | STT streaming |
 //! | `UserSpeechFinal` | STT `finalize_utterance` — primary turn boundary for LLM |
+//! | `UserUtteranceSplit` | Speaker gate (`split_on_speaker_change`) split an utterance at a confirmed speaker change; after the new utterance's `user_speaking_start` |
 //! | `UserLanguage` | Offline spoken-language ID on buffered user PCM |
 //! | `LanguageIdSkipped` | Utterance closed (or LID deferred for TTS) without an identify running; no `user_language` will follow unless a deferred identify later runs |
 //! | `AgentSpeakingStart` | First TTS PCM frame queued to outbound; carries `first_chunk_ms` / `first_audio_ms` when timed, and `sentence_case_adjusted` for Sherpa TTS |
@@ -61,6 +62,9 @@ pub enum SpeechEventKind {
     UserSpeechFinal,
     /// A final dropped by the speaker gate (`reason: "speaker_mismatch"`). No transcript text.
     UserSpeechIgnored,
+    /// The speaker gate split one utterance at a confirmed speaker change (`from_utterance_id`,
+    /// `to_utterance_id`, `split_at_ms`, `split_from`, `split_to`). No text.
+    UserUtteranceSplit,
     UserLanguage,
     /// No language decision for this utterance (`reason`, `speech_ms`). No transcript text.
     LanguageIdSkipped,
@@ -163,6 +167,16 @@ pub struct SpeechEvent {
     /// `user_speech_final` with the speaker gate on: windows the speaker gate scored before this
     /// final (1 = first check only). Absent without the gate or when no window settled.
     pub speaker_check_windows: Option<u32>,
+    /// `user_utterance_split`: id of the utterance that ends at the split.
+    pub from_utterance_id: Option<String>,
+    /// `user_utterance_split`: id of the utterance that starts at the split.
+    pub to_utterance_id: Option<String>,
+    /// `user_utterance_split`: ms into the split utterance's audio where the speaker changed.
+    pub split_at_ms: Option<u32>,
+    /// `user_utterance_split`: speaker label before the split (`caller` | `other`).
+    pub split_from: Option<String>,
+    /// `user_utterance_split`: speaker label after the split (`caller` | `other`).
+    pub split_to: Option<String>,
 }
 
 impl SpeechEvent {
@@ -200,6 +214,11 @@ impl SpeechEvent {
             speaker_unknown_reason: None,
             speaker_rechecked: None,
             speaker_check_windows: None,
+            from_utterance_id: None,
+            to_utterance_id: None,
+            split_at_ms: None,
+            split_from: None,
+            split_to: None,
         }
     }
 
@@ -270,6 +289,23 @@ impl SpeechEvent {
         ev.hold_outcome = Some(outcome.to_string());
         ev.buffered_ms = Some(buffered_ms);
         ev.dropped_ms = Some(dropped_ms);
+        ev
+    }
+
+    /// The speaker gate split utterance `from_id` at `split_at_ms`; `to_id` is the new utterance.
+    pub fn user_utterance_split(
+        from_id: impl Into<String>,
+        to_id: impl Into<String>,
+        split_at_ms: u32,
+        from: &str,
+        to: &str,
+    ) -> Self {
+        let mut ev = Self::base(SpeechEventKind::UserUtteranceSplit);
+        ev.from_utterance_id = Some(from_id.into());
+        ev.to_utterance_id = Some(to_id.into());
+        ev.split_at_ms = Some(split_at_ms);
+        ev.split_from = Some(from.to_string());
+        ev.split_to = Some(to.to_string());
         ev
     }
 

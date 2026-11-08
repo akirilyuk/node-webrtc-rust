@@ -31,7 +31,8 @@ use crate::pipeline::{
 };
 use crate::registry::VendorRegistry;
 use crate::speaker_gate::{
-    BargeDecision, Outcome, SpeakerGate, UttGate, Verdict, UNKNOWN_LOADING, UNKNOWN_SHORT,
+    BargeDecision, Outcome, SpeakerChange, SpeakerGate, UttGate, Verdict, UNKNOWN_LOADING,
+    UNKNOWN_SHORT,
 };
 use crate::stt_actor::{
     default_stt_latency_sink, spawn_stt_actor, test_final_delay_ms_from_env, SttActorHandle,
@@ -47,7 +48,9 @@ use crate::tts_cache::{normalize_phrase_text, wrap_tts_for_agent};
 use crate::tts_send_order::{TtsFlushCut, TtsSendOrder, TtsSendTicket};
 use crate::tts_text::prepare_engine_text;
 use crate::turn_latency::TurnLatencyTracker;
-use crate::utterance_replay::{UtteranceReplayBuffer, UtteranceReplaySnapshot};
+use crate::utterance_replay::{
+    UtteranceReplayBuffer, UtteranceReplaySnapshot, BYTES_PER_MS_16K_MONO,
+};
 use crate::vad::{VadEngine, VadTransition};
 use node_webrtc_rust_denoise::Stereo48kRnnoise;
 
@@ -71,6 +74,15 @@ struct ReplayFinalContext {
     /// lost replay cannot mislabel a much later user utterance.
     set_at: tokio::time::Instant,
 }
+
+/// `error` event `reason` (and message prefix) when a speaker-split re-decode times out.
+pub const SPEAKER_SPLIT_REDECODE_TIMEOUT: &str = "speaker_split_redecode_timeout";
+
+/// Gate media frame length (ms) a `split_at_ms` is aligned to.
+const SPLIT_FRAME_MS: usize = 20;
+/// Frame offsets kept per utterance: one per frame of the replay ring's capacity.
+const SPEECH_REPLAY_MAX_FRAMES: usize =
+    crate::utterance_replay::SPEECH_REPLAY_MAX_MS as usize / SPLIT_FRAME_MS + 1;
 
 /// Maximum age of a pending [`ReplayFinalContext`] when the next final is emitted.
 const REPLAY_CONTEXT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(15);
@@ -158,7 +170,9 @@ fn playback_failure_message(error: &SpeechError) -> String {
 }
 
 /// Synthetic silence fed to STT before finalize — aligned with Sherpa roundtrip harness.
-fn stt_endpoint_tail_ms(vad: &VadConfig) -> u32 {
+/// A speaker-split re-decode ends U1's stream with the same tail.
+#[doc(hidden)]
+pub fn stt_endpoint_tail_ms(vad: &VadConfig) -> u32 {
     vad.min_silence_duration_ms.clamp(400, 600)
 }
 
@@ -229,6 +243,10 @@ enum UttKind {
     /// Audio fed again after an STT swap (`replay_last_utterance`, `release_stt_hold`). It only
     /// ever produces a replay final (`replaces`: the utterance it stands in for).
     Replay { replaces: Option<String> },
+    /// The live STT stream of an utterance split at a speaker change
+    /// (`speakerGate.splitOnSpeakerChange`). Its text mixes both speakers: every result and its
+    /// close are dropped, and the utterance is re-decoded from its own PCM.
+    SplitDiscard,
 }
 
 /// Where a record is in its life.
@@ -285,6 +303,9 @@ struct SttUtterance {
     replay_ctx: Option<ReplayFinalContext>,
     /// Fired with `true` when a final was emitted, `false` when the record ended without one.
     terminal_waiter: Option<oneshot::Sender<bool>>,
+    /// Set when the utterance was split at a speaker change: when its re-decode was queued. Its
+    /// final carries `reason: "speaker_split"`.
+    split_started_at: Option<Instant>,
     lid: UttLid,
 }
 
@@ -308,6 +329,7 @@ impl SttUtterance {
             close_reason: "end_of_utterance",
             replay_ctx: None,
             terminal_waiter: None,
+            split_started_at: None,
             lid: UttLid::default(),
         }
     }
@@ -409,6 +431,12 @@ struct AgentInner {
     stt_hold: Option<SttHold>,
     /// The replay ring was started at the SpeechStart pre-roll flush (keeps the onset audio).
     replay_begun_at_pre_roll: bool,
+    /// Utterance key whose speaker-gate onset the replay ring is aligned to, and the ring length
+    /// at the start of every inbound frame the gate counted since that onset (gap frames
+    /// included). Maps a gate `split_at_ms` onto the ring, also when the ring got held or
+    /// pre-roll audio the gate's media clock does not count. Only with `splitOnSpeakerChange`.
+    replay_onset_key: Option<u64>,
+    replay_frame_offsets: Vec<usize>,
     /// The user utterance currently being assembled (STT/turn and LID state). `None` until the
     /// first utterance and after its record moved to `closing`.
     live: Option<SttUtterance>,
@@ -603,6 +631,17 @@ pub struct VoiceAgent {
     speaker_finals_release: Notify,
     /// Test hook: verdicts the handler has finished applying.
     speaker_verdicts_applied: AtomicU64,
+    /// Speaker splits applied / skipped (replay ring overflowed, STT unavailable, ...) / stale
+    /// (the utterance was no longer live) / results of discarded split streams dropped /
+    /// re-decodes that timed out.
+    speaker_splits: AtomicU64,
+    /// `speakerGate.splitOnSpeakerChange` (fixed for the agent's life).
+    split_on_speaker_change: bool,
+    speaker_split_skipped: AtomicU64,
+    speaker_split_overflow: AtomicU64,
+    speaker_split_stale: AtomicU64,
+    speaker_split_discarded_results: AtomicU64,
+    speaker_split_redecode_timeouts: AtomicU64,
     tts: Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
     /// Whether `tts` holds a provider. Written while holding the `tts` lock at every writer of
     /// `tts` (constructor, `apply_pending_tts_config_if_any`), read by sends without that lock:
@@ -711,6 +750,8 @@ impl VoiceAgent {
             .speaker_gate
             .validate()
             .map_err(SpeechError::Config)?;
+        let split_on_speaker_change =
+            config.speaker_gate.enabled && config.speaker_gate.split_on_speaker_change;
         let (speaker_gate, speaker_embedder) = if config.speaker_gate.enabled {
             let embedder = registry.create_speaker_embedder(&config.speaker_gate)?;
             if embedder.is_none() {
@@ -799,6 +840,8 @@ impl VoiceAgent {
                 last_replay_snapshot: None,
                 stt_hold: None,
                 replay_begun_at_pre_roll: false,
+                replay_onset_key: None,
+                replay_frame_offsets: Vec::new(),
                 live: None,
                 next_utterance_key: 1,
                 closing: VecDeque::new(),
@@ -823,6 +866,13 @@ impl VoiceAgent {
             speaker_finals_parked: std::sync::atomic::AtomicBool::new(false),
             speaker_finals_release: Notify::new(),
             speaker_verdicts_applied: AtomicU64::new(0),
+            speaker_splits: AtomicU64::new(0),
+            split_on_speaker_change,
+            speaker_split_skipped: AtomicU64::new(0),
+            speaker_split_overflow: AtomicU64::new(0),
+            speaker_split_stale: AtomicU64::new(0),
+            speaker_split_discarded_results: AtomicU64::new(0),
+            speaker_split_redecode_timeouts: AtomicU64::new(0),
             tts_configured: AtomicBool::new(tts.is_some()),
             tts: Arc::new(Mutex::new(tts)),
             tts_drain_wake: Arc::new(Notify::new()),
@@ -3613,12 +3663,292 @@ impl VoiceAgent {
         self.speaker_verdicts_applied.load(Ordering::SeqCst)
     }
 
+    /// Test hook: caps the utterance replay ring at `ms` (default `SPEECH_REPLAY_MAX_MS`) so a
+    /// test reaches the overflow path without a long turn. Not exposed to the bindings.
+    #[doc(hidden)]
+    pub async fn set_utterance_replay_max_ms_for_test(&self, ms: u32) {
+        let mut inner = self.inner.lock().await;
+        inner.utterance_replay_buffer = UtteranceReplayBuffer::with_max_bytes(
+            ms as usize * crate::utterance_replay::BYTES_PER_MS_16K_MONO,
+        );
+    }
+
+    /// Test hook: `(applied, skipped, overflow_skipped, stale, discarded_results,
+    /// redecode_timeouts)` speaker-split counters.
+    #[doc(hidden)]
+    pub fn speaker_split_counts(&self) -> (u64, u64, u64, u64, u64, u64) {
+        (
+            self.speaker_splits.load(Ordering::SeqCst),
+            self.speaker_split_skipped.load(Ordering::SeqCst),
+            self.speaker_split_overflow.load(Ordering::SeqCst),
+            self.speaker_split_stale.load(Ordering::SeqCst),
+            self.speaker_split_discarded_results.load(Ordering::SeqCst),
+            self.speaker_split_redecode_timeouts.load(Ordering::SeqCst),
+        )
+    }
+
+    /// Applies the confirmed speaker changes the gate stored. Returns the keys that were split.
+    /// Runs under the step lock: no inbound frame is processed in between.
+    async fn apply_speaker_changes(&self, gate: &SpeakerGate) -> Vec<u64> {
+        let mut split = Vec::new();
+        for change in gate.take_speaker_changes() {
+            // The gate reports only caller -> other (the caller stays caller). Anything else is
+            // a bug upstream: counted, logged, never applied.
+            if change.from != Outcome::Caller {
+                self.skip_speaker_split(&change, "unexpected_direction");
+                continue;
+            }
+            if self.split_live_utterance(gate, change).await {
+                split.push(change.key);
+            }
+        }
+        split
+    }
+
+    /// Records where the current inbound frame starts in the replay ring (bounded by the ring).
+    fn note_replay_frame_offset(inner: &mut AgentInner) {
+        if inner.replay_frame_offsets.len() <= SPEECH_REPLAY_MAX_FRAMES {
+            let len = inner.utterance_replay_buffer.len_bytes();
+            inner.replay_frame_offsets.push(len);
+        }
+    }
+
+    fn skip_speaker_split(&self, change: &SpeakerChange, reason: &str) -> bool {
+        self.speaker_split_skipped.fetch_add(1, Ordering::SeqCst);
+        eprintln!(
+            "[speech] speaker split skipped key={} reason={reason} split_at_ms={}",
+            change.key, change.split_at_ms
+        );
+        false
+    }
+
+    /// Splits the live utterance U1 at a confirmed speaker change (`splitOnSpeakerChange`).
+    ///
+    /// Nothing here awaits the vendor: the commands go to the STT actor, in order.
+    /// 1. U1's live stream (both speakers) is ended into a `SplitDiscard` record: its text and
+    ///    close are dropped.
+    /// 2. `pcm[..split]` from the replay ring (plus the endpoint tail) is decoded on a fresh
+    ///    stream ended with U1's key, so U1's final comes from its own audio only, keeps U1's id
+    ///    and verdict, and carries `reason: "speaker_split"`. The actor answers in order, so U1's
+    ///    final comes before any result of U2.
+    /// 3. U2 (new id, new gate key) is seeded with `pcm[split..]` (STT, replay ring and gate) and
+    ///    then continues live. It starts like a fresh VAD SpeechStart (same events and barge-in
+    ///    rules), and the gate judges it as a new utterance.
+    ///
+    /// Event order: U2's lifecycle events (`user_speaking_start`, `user_stt_start`,
+    /// `vad_triggered`) are emitted at the split, so they may come before U1's final. Each one
+    /// that carries an id carries U2's (`vad_triggered` carries no utterance id on any path).
+    /// U2's `user_speaking_start` comes before any U2 barge-in, and U1's final comes before every
+    /// U2 partial and final.
+    ///
+    /// No split (logged and counted) when the ring overflowed or does not cover the utterance.
+    async fn split_live_utterance(&self, gate: &SpeakerGate, change: SpeakerChange) -> bool {
+        let Some(actor) = self.actor() else {
+            return self.skip_speaker_split(&change, "stt_unavailable");
+        };
+        let split = {
+            let mut inner = self.inner.lock().await;
+            let live = inner.live.as_ref().is_some_and(|r| {
+                r.key == change.key
+                    && !r.terminal
+                    && r.kind == UttKind::Live
+                    && r.phase == UttPhase::Open
+            });
+            if !live {
+                self.speaker_split_stale.fetch_add(1, Ordering::SeqCst);
+                eprintln!(
+                    "[speech] speaker split for an utterance that is no longer live dropped key={}",
+                    change.key
+                );
+                return false;
+            }
+            if !inner.stt_enabled || inner.config.stt.is_none() || inner.stt_hold.is_some() {
+                drop(inner);
+                return self.skip_speaker_split(&change, "stt_unavailable");
+            }
+            if !Self::vad_is_speaking(&inner) || inner.stt_finalize_pending {
+                drop(inner);
+                return self.skip_speaker_split(&change, "not_speaking");
+            }
+            if inner.utterance_replay_buffer.overflowed() {
+                drop(inner);
+                self.speaker_split_overflow.fetch_add(1, Ordering::SeqCst);
+                return self.skip_speaker_split(&change, "replay_overflow");
+            }
+            if inner.replay_onset_key != Some(change.key) {
+                drop(inner);
+                return self.skip_speaker_split(&change, "replay_not_aligned");
+            }
+            let Some(pcm) = inner.utterance_replay_buffer.snapshot_pcm() else {
+                drop(inner);
+                return self.skip_speaker_split(&change, "no_replay_pcm");
+            };
+            let frame = change.split_at_ms as usize / SPLIT_FRAME_MS;
+            let split_byte = inner.replay_frame_offsets.get(frame).copied().unwrap_or(0) & !1;
+            if split_byte == 0 || split_byte >= pcm.len() {
+                drop(inner);
+                return self.skip_speaker_split(&change, "split_out_of_range");
+            }
+            let mut u1 = inner.live.take().expect("live record checked");
+            // 1. The live stream mixes both speakers: end it and drop what it produces.
+            let mut discard = inner.new_record();
+            discard.kind = UttKind::SplitDiscard;
+            discard.phase = UttPhase::Closing;
+            discard.close_reason = "speaker_split_discard";
+            let discard_key = discard.key;
+            inner.closing.push_back(discard);
+            actor.send(SttCommand::EndUtterance { key: discard_key });
+            // 2. Re-decode U1 from its own PCM on a fresh stream.
+            for chunk in pcm[..split_byte].chunks(640) {
+                actor.send_audio(Bytes::copy_from_slice(chunk));
+            }
+            let tail = crate::pcm::silence_mono_s16le_bytes(100);
+            for _ in 0..stt_endpoint_tail_ms(&inner.config.vad).div_ceil(100) {
+                actor.send_audio(tail.clone());
+            }
+            u1.phase = UttPhase::Closing;
+            u1.close_reason = "speaker_split";
+            u1.split_started_at = Some(Instant::now());
+            // Live partials mixed both speakers; a fallback final may only use re-decode text.
+            u1.last_partial_text = None;
+            let speaking_end_needed = !u1.speaking_end_emitted;
+            u1.speaking_end_emitted = true;
+            let (tx, rx) = oneshot::channel();
+            u1.terminal_waiter = Some(tx);
+            let u1_key = u1.key;
+            let u1_id = u1.id.clone();
+            inner.closing.push_back(u1);
+            actor.send(SttCommand::EndUtterance { key: u1_key });
+            inner.last_replay_snapshot = Some(UtteranceReplaySnapshot {
+                pcm: pcm.slice(..split_byte),
+                utterance_id: u1_id.clone(),
+                finalized_at: Instant::now(),
+                overflow: false,
+            });
+            // 3. U2 starts on the post-split audio and continues live.
+            Self::clear_stt_listen_timer(&mut inner);
+            Self::clear_utterance_finalize_timer(&mut inner);
+            let u2 = inner.new_record();
+            let u2_key = u2.key;
+            let u2_id = u2.id.clone();
+            inner.live = Some(u2);
+            let seed = pcm.slice(split_byte..);
+            for chunk in seed.chunks(640) {
+                actor.send_audio(Bytes::copy_from_slice(chunk));
+            }
+            inner.utterance_replay_buffer.begin_utterance();
+            inner.utterance_replay_buffer.push(&seed);
+            inner.replay_begun_at_pre_roll = true;
+            inner.replay_onset_key = Some(u2_key);
+            inner.replay_frame_offsets = (0..seed.len().div_ceil(640)).map(|i| i * 640).collect();
+            (u1_key, u1_id, u2_key, u2_id, seed, speaking_end_needed, rx)
+        };
+        let (u1_key, u1_id, u2_key, u2_id, seed, speaking_end_needed, rx) = split;
+        // The gate judges U2 as a new utterance from its first post-split frame.
+        let mut frames = seed.chunks(640);
+        if let Some(first) = frames.next() {
+            gate.begin(u2_key, first);
+            for frame in frames {
+                gate.push_frame(frame);
+            }
+        }
+        self.speaker_splits.fetch_add(1, Ordering::SeqCst);
+        eprintln!(
+            "[speech] speaker split {u1_id} -> {u2_id} from={} to={} split_at_ms={} seed_ms={}",
+            change.from.as_str(),
+            change.to.as_str(),
+            change.split_at_ms,
+            seed.len() / BYTES_PER_MS_16K_MONO
+        );
+        if speaking_end_needed {
+            self.emit_user_speaking_end_for(u1_key).await;
+        }
+        // The other speaker never barges in: a barge-in held for U1 is dropped.
+        if change.from == Outcome::Other {
+            if let Some(epoch) = gate.take_pending_barge(u1_key) {
+                self.settle_pending_barge(
+                    u1_key,
+                    epoch,
+                    false,
+                    Some(u1_id.clone()),
+                    "speaker gate: barge-in of the other speaker dropped at the speaker split"
+                        .into(),
+                    None,
+                )
+                .await;
+            }
+        }
+        // U2's speaking_start goes out before its SpeechStart handling: the seed already holds a
+        // full check window, so U2's verdict (and an immediate barge-in) can be ready at once.
+        self.emit_user_speaking_start_if_needed(u2_key).await;
+        self.emit(SpeechEvent::user_utterance_split(
+            u1_id.clone(),
+            u2_id.clone(),
+            change.split_at_ms,
+            change.from.as_str(),
+            change.to.as_str(),
+        ));
+        if let Err(error) = self.on_vad_speech_start().await {
+            eprintln!("[speech] speaker split: start of {u2_id} failed: {error}");
+        }
+        self.spawn_split_redecode_watch(u1_id, rx);
+        true
+    }
+
+    /// Bounds the wait for U1's re-decode outcome off the step lock and logs `waitedMs`.
+    fn spawn_split_redecode_watch(&self, utterance_id: String, rx: oneshot::Receiver<bool>) {
+        let bound = self.replay_final_wait();
+        let started = Instant::now();
+        tokio::spawn(async move {
+            let outcome = tokio::time::timeout(bound, rx).await;
+            let waited_ms = started.elapsed().as_millis() as u64;
+            // The STT actor bounds the re-decode's finalize and is the one emitter of the named
+            // timeout error (apply_finalize_done); this watch only logs.
+            match outcome {
+                Ok(Ok(final_emitted)) => eprintln!(
+                    "[speech] speaker split re-decode done utterance={utterance_id} final={final_emitted} waitedMs={waited_ms}"
+                ),
+                Ok(Err(_)) => eprintln!(
+                    "[speech] speaker split re-decode ended without an outcome utterance={utterance_id} waitedMs={waited_ms}"
+                ),
+                Err(_) => eprintln!(
+                    "[speech] speaker split re-decode watch expired utterance={utterance_id} waitedMs={waited_ms}"
+                ),
+            }
+        });
+    }
+
+    /// Named error for a re-decode that did not finish in its bound (logged, counted, emitted).
+    fn note_split_redecode_timeout(&self, utterance_id: &str, waited_ms: u64) {
+        self.speaker_split_redecode_timeouts
+            .fetch_add(1, Ordering::SeqCst);
+        eprintln!(
+            "[speech] speaker split re-decode timed out utterance={utterance_id} waitedMs={waited_ms}"
+        );
+        let mut event = SpeechEvent::error(format!(
+            "{SPEAKER_SPLIT_REDECODE_TIMEOUT}: utterance {utterance_id} after {waited_ms} ms"
+        ))
+        .with_utterance_id(Some(utterance_id.to_string()));
+        event.reason = Some(SPEAKER_SPLIT_REDECODE_TIMEOUT.into());
+        self.emit(event);
+    }
+
     /// Applies one verdict to its own utterance only (`rt.stale-event-by-key`).
     async fn apply_speaker_verdict(&self, verdict: Verdict) {
         let Some(gate) = self.speaker_gate.as_ref() else {
             return;
         };
         let _step = self.utterance_step.lock().await;
+        // Speaker changes are stored before the verdict that confirmed them, so they are applied
+        // first. The verdict of a split utterance is not applied to it: its label stays as it was,
+        // and the new speaker's barge-in comes from the new utterance.
+        if self
+            .apply_speaker_changes(gate)
+            .await
+            .contains(&verdict.key)
+        {
+            return;
+        }
         // One route per state for a held barge-in (`contract.event-order`,
         // `one-send-path-per-unit`): once this key's final has started reading its verdict
         // (`close_recheck`, which runs under this same step lock), the final owns the held
@@ -4397,7 +4727,12 @@ impl VoiceAgent {
                     )
                 }
                 (UttKind::Live, None) => SpeechEvent::user_speech_final(text, Some(rec.id.clone())),
+                (UttKind::SplitDiscard, _) => return,
             };
+            let mut event = event;
+            if rec.split_started_at.is_some() {
+                event.reason = Some("speaker_split".into());
+            }
             rec.final_emitted = true;
             rec.mark_terminal();
             (event, rec.id.clone())
@@ -5275,6 +5610,11 @@ impl VoiceAgent {
                     inner.replay_begun_at_pre_roll = false;
                 } else {
                     inner.utterance_replay_buffer.begin_utterance();
+                    if !inner.replay_frame_offsets.is_empty() {
+                        // Restarted at this onset frame: it starts the ring.
+                        inner.replay_frame_offsets.clear();
+                        inner.replay_frame_offsets.push(0);
+                    }
                 }
             }
             id
@@ -5751,6 +6091,14 @@ impl VoiceAgent {
 
         if !speech_start {
             if let Some(gate) = self.speaker_gate.as_ref() {
+                if self.split_on_speaker_change {
+                    let mut inner = self.inner.lock().await;
+                    if inner.replay_onset_key.is_some()
+                        && inner.replay_onset_key == inner.live_key()
+                    {
+                        Self::note_replay_frame_offset(&mut inner);
+                    }
+                }
                 gate.push_frame(&mono_bytes);
             }
         }
@@ -5770,7 +6118,20 @@ impl VoiceAgent {
                         }
                     }
                     if let Some(gate) = self.speaker_gate.as_ref() {
-                        let key = self.inner.lock().await.ensure_live().key;
+                        let key = {
+                            let mut inner = self.inner.lock().await;
+                            let key = inner.ensure_live().key;
+                            // The ring holds the pre-roll, not yet this onset frame: a split maps
+                            // the gate's media ms onto the ring from here.
+                            if self.split_on_speaker_change {
+                                if inner.replay_onset_key != Some(key) {
+                                    inner.replay_onset_key = Some(key);
+                                    inner.replay_frame_offsets.clear();
+                                }
+                                Self::note_replay_frame_offset(&mut inner);
+                            }
+                            key
+                        };
                         gate.begin(key, &mono_bytes);
                     }
                     self.on_vad_speech_start().await?;
@@ -6176,6 +6537,16 @@ impl VoiceAgent {
                 return;
             }
             match Self::resolve_transcript_target(&mut inner, key) {
+                Ok(target)
+                    if inner
+                        .record_ref(target)
+                        .is_some_and(|r| r.kind == UttKind::SplitDiscard) =>
+                {
+                    voice_debug(format!("speaker split: discarded-stream {kind} dropped"));
+                    self.speaker_split_discarded_results
+                        .fetch_add(1, Ordering::SeqCst);
+                    return;
+                }
                 Ok(target) => target,
                 Err((utterance, closed_by)) => {
                     eprintln!(
@@ -6297,6 +6668,19 @@ impl VoiceAgent {
 
     /// The vendor answered the `EndUtterance` of `key` (or its wait timed out): apply the close.
     async fn apply_finalize_done(&self, key: u64, timed_out: bool) {
+        {
+            let mut inner = self.inner.lock().await;
+            if let Some(pos) = inner
+                .closing
+                .iter()
+                .position(|r| r.key == key && r.kind == UttKind::SplitDiscard)
+            {
+                // The discarded stream of a split utterance: nothing is emitted for it.
+                inner.closing.remove(pos);
+                return;
+            }
+        }
+        let mut split_timeout = None;
         let outcome = {
             let inner = self.inner.lock().await;
             // The live record (C1 with VAD still speaking) is closed later by the gate.
@@ -6307,6 +6691,11 @@ impl VoiceAgent {
                 .last_partial_text
                 .as_deref()
                 .is_some_and(|t| !t.trim().is_empty());
+            if timed_out {
+                split_timeout = rec
+                    .split_started_at
+                    .map(|t| (rec.id.clone(), t.elapsed().as_millis() as u64));
+            }
             if rec.final_emitted || rec.terminal || matches!(rec.kind, UttKind::Replay { .. }) {
                 None
             } else if has_text {
@@ -6319,6 +6708,9 @@ impl VoiceAgent {
             if let Some((what, id)) = &outcome {
                 eprintln!("[voice] STT final timed out for {id}; closed with {what}");
             }
+        }
+        if let Some((id, waited_ms)) = split_timeout {
+            self.note_split_redecode_timeout(&id, waited_ms);
         }
         self.finish_record_close(key, false, false).await;
         let mut inner = self.inner.lock().await;

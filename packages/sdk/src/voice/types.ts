@@ -337,6 +337,16 @@ export interface VoiceAgentConfig {
      * Ignored when `recheckOnOther` is `false`.
      */
     recheckMaxWindows?: number
+    /**
+     * Opt-in, default `false`. Keeps scoring windows after the first verdict and, when the voice
+     * changes from the caller to someone else for 2 consecutive windows, splits the utterance there
+     * (another voice followed by the caller upgrades the utterance to the caller, as before):
+     * the first part is re-decoded on its own and final-ed with `reason: 'speaker_split'`, the
+     * rest becomes a new utterance. A `user_utterance_split` event marks the split. Each split
+     * opens one extra STT stream. Needs `recheckMaxWindows` other than `1`. See "Split on speaker
+     * change" in VOICE-VAD-AND-BARGE-IN.md.
+     */
+    splitOnSpeakerChange?: boolean
     /** `'flag'` (default) keeps the final with `speaker: 'other'`; `'drop'` emits `user_speech_ignored`. */
     onMismatch?: 'flag' | 'drop'
     /** Bound (ms) on one check and on a final waiting for its verdict. Default 500. */
@@ -455,6 +465,14 @@ export type SpeechEventType =
    * was dropped (`utteranceId`, `reason: 'speaker_mismatch'`). No text.
    */
   | 'user_speech_ignored'
+  /**
+   * `speakerGate.splitOnSpeakerChange`: an utterance was split at a confirmed speaker change.
+   * `fromUtteranceId` is the utterance that ends, `toUtteranceId` the one that starts,
+   * `splitAtMs` where the voice changed, `from` / `to` the labels (`from` is always `caller` and
+   * `to` always `other`: only a change from the caller to another voice splits). It has no `utteranceId`. Emitted after the new
+   * utterance's `user_speaking_start`. No text.
+   */
+  | 'user_utterance_split'
   /** Host coordinator: switch started (not emitted by native VoiceAgent alone). */
   | 'voice_language_switching'
   /** Host coordinator: switch succeeded. */
@@ -493,6 +511,7 @@ export const SPEECH_EVENT_TYPE = {
   agentReplyStart: 'agent_reply_start',
   agentReplyEnd: 'agent_reply_end',
   userSpeechIgnored: 'user_speech_ignored',
+  userUtteranceSplit: 'user_utterance_split',
   voiceLanguageSwitching: 'voice_language_switching',
   voiceLanguageChanged: 'voice_language_changed',
   voiceLanguageSwitchFailed: 'voice_language_switch_failed',
@@ -542,7 +561,12 @@ export interface SpeechEvent {
    * `pcm_stall` | `end_of_utterance` | `vendor_final`.
    * `user_stt_not_found`: why the utterance ended with no transcript ({@link SttNotFoundReason}).
    */
-  reason?: LanguageIdSkipReason | SttNotFoundReason | (string & {})
+  reason?:
+    | LanguageIdSkipReason
+    | SttNotFoundReason
+    | 'speaker_split'
+    | 'speaker_split_redecode_timeout'
+    | (string & {})
   /** `language_id_skipped`: buffered user speech (ms) at the decision point. */
   speechMs?: number
   /**
@@ -611,6 +635,16 @@ export interface SpeechEvent {
    * n × `checkSpeechMs` of speech (`speakerRecheckBargeEarliestMs`).
    */
   speakerCheckWindows?: number
+  /** `user_utterance_split`: id of the utterance that ends at the split. */
+  fromUtteranceId?: string
+  /** `user_utterance_split`: id of the utterance that starts at the split. */
+  toUtteranceId?: string
+  /** `user_utterance_split`: ms into the audio of the split utterance (`fromUtteranceId`) where the speaker changed. */
+  splitAtMs?: number
+  /** `user_utterance_split`: speaker label before the split (always `caller`). */
+  from?: 'caller' | 'other'
+  /** `user_utterance_split`: speaker label after the split (always `other`). */
+  to?: 'caller' | 'other'
 }
 
 /** `languageId.timing` values. */

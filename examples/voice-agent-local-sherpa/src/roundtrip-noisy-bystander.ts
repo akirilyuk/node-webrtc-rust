@@ -31,9 +31,12 @@
  *   - the barge-in comes at most 300 ms after the later of the verdict (speech start + checkSpeechMs,
  *     or + `speakerCheckWindows` x checkSpeechMs for a re-checked final) and the first partial with
  *     >= minSttPartialTokens tokens on that utterance; at most 3 s after start when not re-checked.
- *   - TEMPORARY (step B: split on speaker change; plan
- *     development/node-webrtc-rust/plans/2026-10-31-speaker-gate-continuous-recheck.md step 5): a
- *     caller turn covered by an earlier `caller` utterance is absorbed into it, at most 25 % of them.
+ *   - every caller turn has a `caller` final of its own: the agent runs with
+ *     `speakerGate.splitOnSpeakerChange: true`, so an utterance that runs from a caller into the
+ *     next bystander (babble keeps the VAD open across the turn gap) is split at the speaker change
+ *     (`user_utterance_split`) instead of being decoded as one merged final;
+ *   - no `caller` final runs past its caller phrase into the next bystander's sentence
+ *     (`mergedCallerFinals`, count 0). The run logs every `user_utterance_split` and the counts.
  *
  * Needs the speaker assets (`npm run download-speaker`) and the scenes:
  *   cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
@@ -185,7 +188,7 @@ function listenerConfig(base: VoiceAgentConfig, modelPath: string): VoiceAgentCo
         agentPlaybackGuardMs: 0,
       },
     },
-    speakerGate: { enabled: true, modelPath },
+    speakerGate: { enabled: true, modelPath, splitOnSpeakerChange: true },
   }
 }
 
@@ -247,6 +250,9 @@ async function runPass(params: {
           speakerUnknownReason: event.speakerUnknownReason,
           speakerRechecked: event.speakerRechecked,
           speakerCheckWindows: event.speakerCheckWindows,
+          fromUtteranceId: event.fromUtteranceId,
+          toUtteranceId: event.toUtteranceId,
+          splitAtMs: event.splitAtMs,
         })
       }
     } catch (error) {
@@ -296,7 +302,7 @@ async function main(): Promise<void> {
     script: 'roundtrip-noisy-bystander',
     pipeline: label,
     extra: [
-      `vad=adaptive speakerGate=on model=${modelPath}`,
+      `vad=adaptive speakerGate=on splitOnSpeakerChange=on model=${modelPath}`,
       `bystander ${BYSTANDER_RELATIVE_DB} dB re caller; quiet pass ${QUIET_CALLER_DBFS} dBFS`,
     ],
   })

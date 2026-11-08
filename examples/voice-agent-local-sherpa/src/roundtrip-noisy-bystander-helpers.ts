@@ -400,9 +400,29 @@ export function countMergedCallerFinals(turns: Turn[], seen: Seen[]): number {
   return mergedCallerFinals(turns, seen).length
 }
 
+/**
+ * A passing caller turn at or below this similarity is a near miss: it passed the
+ * {@link DEFAULT_BARGE_PHRASE_MIN_SIMILARITY} bar with at most one word to spare. Reporting only.
+ */
+export const NEAR_MISS_SIMILARITY = 0.8
+
+/** Near misses (passing similarity <= {@link NEAR_MISS_SIMILARITY}) and the minimum similarity of one pass. */
+export function similaritySummary(sims: number[]): {
+  nearMissCount: number
+  minSimilarity: number | undefined
+} {
+  const eps = 1e-9
+  const nearMissCount = sims.filter(
+    (s) => s >= DEFAULT_BARGE_PHRASE_MIN_SIMILARITY - eps && s <= NEAR_MISS_SIMILARITY + eps,
+  ).length
+  const minSimilarity = sims.length > 0 ? Math.min(...sims) : undefined
+  return { nearMissCount, minSimilarity }
+}
+
 /** Pure evaluation of one pass; exported for the evaluator unit test. */
 export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): string[] {
   const failures: string[] = []
+  const sims: number[] = []
   const finals = new Map<string, Seen>()
   for (const e of seen) {
     if (e.type === SPEECH_EVENT_TYPE.userSpeechFinal && e.utteranceId != null) {
@@ -559,6 +579,7 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
       const sim = isMerged
         ? callerWindowSimilarity(turn.text, final.text ?? '')
         : wordSimilarity(turn.text, final.text ?? '')
+      sims.push(sim)
       console.log(
         `${tag}: recognized "${final.text ?? ''}" similarity ${sim.toFixed(2)}${isMerged ? ' (best caller-length window)' : ''}`,
       )
@@ -574,8 +595,9 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
     )
   }
   const mergedFinals = mergedCallerFinals(turns, seen)
+  const { nearMissCount, minSimilarity } = similaritySummary(sims)
   console.log(
-    `${label}: user_utterance_split events: ${splits.length}; merged caller finals: ${mergedFinals.length}`,
+    `${label}: user_utterance_split events: ${splits.length}; merged caller finals: ${mergedFinals.length}; near misses (similarity <= ${NEAR_MISS_SIMILARITY.toFixed(2)}): ${nearMissCount}; min similarity: ${minSimilarity == null ? 'n/a' : minSimilarity.toFixed(2)}`,
   )
   for (const m of mergedFinals) {
     failures.push(

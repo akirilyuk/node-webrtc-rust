@@ -9,6 +9,7 @@ import {
   maxBystanderLeadMs,
   mergedCallerFinals,
   pairTurnUtterances,
+  similaritySummary,
   sttPartialTokenCount,
   voicedMsBetween,
   type Seen,
@@ -1039,5 +1040,29 @@ describe('countMergedCallerFinals', () => {
     expect(countMergedCallerFinals([c, b], final('Victor seven eight nine, followed rocky.'))).toBe(
       0,
     )
+  })
+})
+
+describe('similaritySummary (near misses)', () => {
+  it('counts a passing 0.75 as a near miss', () => {
+    expect(similaritySummary([0.75]).nearMissCount).toBe(1)
+  })
+  it('counts 0.80 as a near miss', () => {
+    expect(similaritySummary([0.8]).nearMissCount).toBe(1)
+  })
+  it('does not count 0.81 as a near miss', () => {
+    expect(similaritySummary([0.81]).nearMissCount).toBe(0)
+  })
+  it('does not count a failing similarity below 0.75 as a near miss', () => {
+    expect(similaritySummary([0.5]).nearMissCount).toBe(0)
+  })
+  it('takes the minimum similarity across turns', () => {
+    expect(similaritySummary([1, 0.81, 0.75, 0.9])).toEqual({
+      nearMissCount: 1,
+      minSimilarity: 0.75,
+    })
+  })
+  it('has no minimum for a pass with no qualified turns', () => {
+    expect(similaritySummary([])).toEqual({ nearMissCount: 0, minSimilarity: undefined })
   })
 })

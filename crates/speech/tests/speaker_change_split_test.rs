@@ -436,11 +436,10 @@ async fn caller_then_other_splits_and_redecodes_each_side() {
         .position(|e| e.utterance_id.as_deref() == Some(u2.as_str()))
         .expect("U2 events");
     for e in &rig.log[u2_first..i1] {
+        // `vad_triggered` carries no utterance id on any path, so it is not checked here.
         if matches!(
             e.kind,
-            SpeechEventKind::UserSpeakingStart
-                | SpeechEventKind::UserSttStart
-                | SpeechEventKind::VadTriggered
+            SpeechEventKind::UserSpeakingStart | SpeechEventKind::UserSttStart
         ) {
             assert_eq!(
                 e.utterance_id.as_deref(),
@@ -450,6 +449,31 @@ async fn caller_then_other_splits_and_redecodes_each_side() {
             );
         }
     }
+    // After U2's speaking_start, U1's id appears only on its terminal: the stream close of its
+    // re-decode (`stt_stream_end`, `user_stt_end`, the same shape every utterance ends with)
+    // and the speaker_split final, in that order. No partial: live partials were discarded.
+    let u2_start = rig
+        .log
+        .iter()
+        .position(|e| {
+            e.kind == SpeechEventKind::UserSpeakingStart
+                && e.utterance_id.as_deref() == Some(u2.as_str())
+        })
+        .expect("U2 speaking_start");
+    let late_u1: Vec<_> = rig.log[u2_start..]
+        .iter()
+        .filter(|e| e.utterance_id.as_deref() == Some(u1.as_str()))
+        .map(|e| e.kind)
+        .collect();
+    assert_eq!(
+        late_u1,
+        vec![
+            SpeechEventKind::SttStreamEnd,
+            SpeechEventKind::UserSttEnd,
+            SpeechEventKind::UserSpeechFinal
+        ],
+        "U1 events after U2 started"
+    );
     let (splits, _, _, _, discarded, timeouts) = rig.agent.speaker_split_counts();
     assert_eq!(splits, 1);
     assert!(discarded >= 1, "the mixed live stream's final is dropped");
@@ -584,17 +608,18 @@ async fn redecode_timeout_emits_named_error_and_does_not_hang() {
     rig.idle().await;
     rig.drain();
     let (u1, u2) = split_ids(&rig);
-    let error = rig
+    // Exactly one named error for U1: the STT actor's bound is the only emitter.
+    let errors: Vec<_> = rig
         .log
         .iter()
-        .find(|e| e.kind == SpeechEventKind::Error)
-        .cloned()
-        .expect("named error");
-    assert_eq!(
-        error.reason.as_deref(),
-        Some(node_webrtc_rust_speech::agent::SPEAKER_SPLIT_REDECODE_TIMEOUT)
-    );
-    assert_eq!(error.utterance_id.as_deref(), Some(u1.as_str()));
+        .filter(|e| {
+            e.kind == SpeechEventKind::Error
+                && e.reason.as_deref()
+                    == Some(node_webrtc_rust_speech::agent::SPEAKER_SPLIT_REDECODE_TIMEOUT)
+        })
+        .collect();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].utterance_id.as_deref(), Some(u1.as_str()));
     assert!(!rig
         .log
         .iter()
@@ -784,5 +809,70 @@ async fn change_on_a_c1_terminal_record_is_dropped_as_stale() {
         .log
         .iter()
         .any(|e| e.reason.as_deref() == Some("speaker_split")));
+    rig.agent.stop().await.unwrap();
+}
+
+/// One `caller` re-check window inside an `other` utterance is not a confirmed change: no split,
+/// no barge-in, and the turn stays one `other` utterance.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn single_caller_window_in_other_utterance_never_barges() {
+    let mut rig = rig(true).await;
+    rig.enroll().await;
+    rig.start_speaking().await;
+    let window_frames = agent_config(true).speaker_gate.check_speech_ms as usize / 20;
+    rig.feed_paced(B, 20).await;
+    // 1.5 windows of caller audio: exactly one re-check window (window 4) is scored `caller`;
+    // the windows around it are mostly the other speaker's.
+    rig.feed_paced(A, window_frames + window_frames / 2).await;
+    rig.feed_paced(B, 20).await;
+    rig.agent.flush_tts().await.unwrap();
+    rig.feed(0, 30).await;
+    rig.idle().await;
+    rig.drain();
+    let barges = rig.barge_ids();
+    assert!(
+        barges.is_empty(),
+        "barge-in on one caller window: {barges:?}"
+    );
+    let ids = rig.speaking_start_ids();
+    assert_eq!(ids.len(), 3, "one utterance after enrollment: {ids:?}");
+    let (_, f) = rig.final_of(&ids[2]);
+    assert_eq!(f.speaker.as_deref(), Some("other"));
+    assert_eq!(f.reason, None);
+    assert_eq!(rig.agent.speaker_split_counts().0, 0);
+    rig.agent.stop().await.unwrap();
+}
+
+/// Fail open: a confirmed other -> caller change that cannot be split (replay ring overflowed)
+/// falls back to the re-check upgrade, so the caller still barges in on that utterance.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unsplit_other_to_caller_change_upgrades_and_barges_in() {
+    let mut rig = rig(true).await;
+    rig.enroll().await;
+    rig.agent.set_utterance_replay_max_ms_for_test(600).await;
+    rig.start_speaking().await;
+    rig.feed_paced(B, 40).await;
+    rig.feed_paced(0, 1).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while rig.agent.speaker_split_counts().2 == 0 {
+        assert!(Instant::now() < deadline, "no overflow skip counted");
+        rig.feed_paced(A, 1).await;
+    }
+    rig.feed_paced(A, 10).await;
+    rig.agent.flush_tts().await.unwrap();
+    rig.feed(0, 30).await;
+    rig.idle().await;
+    rig.drain();
+    let ids = rig.speaking_start_ids();
+    assert_eq!(ids.len(), 3, "one utterance after enrollment: {ids:?}");
+    let barges = rig.barge_ids();
+    assert!(
+        barges.contains(&Some(ids[2].clone())),
+        "caller barges in on the unsplit utterance: {barges:?}"
+    );
+    let (_, f) = rig.final_of(&ids[2]);
+    assert_eq!(f.speaker.as_deref(), Some("caller"));
+    let (splits, _, overflow, _, _, _) = rig.agent.speaker_split_counts();
+    assert_eq!((splits, overflow), (0, 1));
     rig.agent.stop().await.unwrap();
 }

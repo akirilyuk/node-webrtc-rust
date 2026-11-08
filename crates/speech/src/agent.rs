@@ -171,6 +171,7 @@ fn playback_failure_message(error: &SpeechError) -> String {
 
 /// Synthetic silence fed to STT before finalize — aligned with Sherpa roundtrip harness.
 /// A speaker-split re-decode ends U1's stream with the same tail.
+#[doc(hidden)]
 pub fn stt_endpoint_tail_ms(vad: &VadConfig) -> u32 {
     vad.min_silence_duration_ms.clamp(400, 600)
 }
@@ -3693,6 +3694,20 @@ impl VoiceAgent {
         for change in gate.take_speaker_changes() {
             if self.split_live_utterance(gate, change).await {
                 split.push(change.key);
+                continue;
+            }
+            // Fail open: an other -> caller change that was not split (overflow, ring not
+            // aligned, record terminal or no longer live) gets the old re-check upgrade, so the
+            // caller can still barge in. A key whose record is gone is only dropped.
+            if change.from == Outcome::Other && change.to == Outcome::Caller {
+                let record_known = self.inner.lock().await.stt_record_ref(change.key).is_some();
+                if record_known {
+                    gate.apply_caller_upgrade(change.key);
+                    eprintln!(
+                        "[speech] speaker split not applied; caller upgrade instead key={}",
+                        change.key
+                    );
+                }
             }
         }
         split
@@ -3729,8 +3744,10 @@ impl VoiceAgent {
     ///    rules), and the gate judges it as a new utterance.
     ///
     /// Event order: U2's lifecycle events (`user_speaking_start`, `user_stt_start`,
-    /// `vad_triggered`) are emitted at the split, so they may come before U1's final; each one
-    /// carries U2's utterance id. U1's final comes before every U2 partial and final.
+    /// `vad_triggered`) are emitted at the split, so they may come before U1's final. Each one
+    /// that carries an id carries U2's (`vad_triggered` carries no utterance id on any path).
+    /// U2's `user_speaking_start` comes before any U2 barge-in, and U1's final comes before every
+    /// U2 partial and final.
     ///
     /// No split (logged and counted) when the ring overflowed or does not cover the utterance.
     async fn split_live_utterance(&self, gate: &SpeakerGate, change: SpeakerChange) -> bool {
@@ -3869,10 +3886,12 @@ impl VoiceAgent {
                 .await;
             }
         }
+        // U2's speaking_start goes out before its SpeechStart handling: the seed already holds a
+        // full check window, so U2's verdict (and an immediate barge-in) can be ready at once.
+        self.emit_user_speaking_start_if_needed(u2_key).await;
         if let Err(error) = self.on_vad_speech_start().await {
             eprintln!("[speech] speaker split: start of {u2_id} failed: {error}");
         }
-        self.emit_user_speaking_start_if_needed(u2_key).await;
         self.spawn_split_redecode_watch(u1_id, rx);
         true
     }
@@ -3880,14 +3899,12 @@ impl VoiceAgent {
     /// Bounds the wait for U1's re-decode outcome off the step lock and logs `waitedMs`.
     fn spawn_split_redecode_watch(&self, utterance_id: String, rx: oneshot::Receiver<bool>) {
         let bound = self.replay_final_wait();
-        let weak = self.weak_self.clone();
         let started = Instant::now();
         tokio::spawn(async move {
             let outcome = tokio::time::timeout(bound, rx).await;
             let waited_ms = started.elapsed().as_millis() as u64;
-            let Some(agent) = weak.upgrade() else {
-                return;
-            };
+            // The STT actor bounds the re-decode's finalize and is the one emitter of the named
+            // timeout error (apply_finalize_done); this watch only logs.
             match outcome {
                 Ok(Ok(final_emitted)) => eprintln!(
                     "[speech] speaker split re-decode done utterance={utterance_id} final={final_emitted} waitedMs={waited_ms}"
@@ -3895,7 +3912,9 @@ impl VoiceAgent {
                 Ok(Err(_)) => eprintln!(
                     "[speech] speaker split re-decode ended without an outcome utterance={utterance_id} waitedMs={waited_ms}"
                 ),
-                Err(_) => agent.note_split_redecode_timeout(&utterance_id, waited_ms),
+                Err(_) => eprintln!(
+                    "[speech] speaker split re-decode watch expired utterance={utterance_id} waitedMs={waited_ms}"
+                ),
             }
         });
     }
@@ -3984,13 +4003,7 @@ impl VoiceAgent {
         let provisional_caller = verdict.recheck
             && verdict.outcome == Outcome::Caller
             && gate.outcome_for(verdict.key) != Some(Outcome::Caller)
-            && self
-                .inner
-                .lock()
-                .await
-                .config
-                .speaker_gate
-                .split_on_speaker_change;
+            && self.split_on_speaker_change;
         if provisional_caller || !gate.barge_allowed(&verdict) {
             // Any non-caller re-check result (other, or unknown after a timeout or failure) keeps
             // the barge-in held while further windows can still run. A first-check `unknown`

@@ -970,6 +970,15 @@ impl SpeakerGate {
         }
     }
 
+    /// Stores the `other` -> `caller` re-check upgrade for `key` (the behaviour without the
+    /// speaker-change watch). The agent applies it when a confirmed change was not split.
+    pub fn apply_caller_upgrade(&self, key: u64) {
+        push_capped(
+            &mut lock(&self.shared.book).verdicts,
+            (key, Outcome::Caller),
+        );
+    }
+
     /// The stored verdict for `key`, if the check finished.
     pub fn outcome_for(&self, key: u64) -> Option<Outcome> {
         lock(&self.shared.book)

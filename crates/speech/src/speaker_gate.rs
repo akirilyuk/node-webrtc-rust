@@ -209,8 +209,18 @@ struct Book {
     sent: VecDeque<u64>,
     /// Keys with a re-check window in flight (removed when its result settles).
     rechecks_in_flight: VecDeque<u64>,
-    /// Highest window settled per key (first check = 1).
+    /// Highest window settled per key (first check = 1). Numbers the next window; with the
+    /// speaker-change watch on it also counts watch windows (see `reported_windows`).
     windows_scored: VecDeque<(u64, u32)>,
+    /// Watch on only: highest window per key that the gate with the watch off would also have
+    /// scored (the first window, re-checks while the key is `other` and not yet upgraded). This is
+    /// what the final reports (`speakerRechecked`, `speakerCheckWindows`).
+    reported_windows: VecDeque<(u64, u32)>,
+    /// Watch on only: windows scored only because of the speaker-change watch, per key.
+    watch_windows: VecDeque<(u64, u32)>,
+    /// Watch on only: keys whose counted re-check came back `caller` (the watch-off upgrade
+    /// point); later windows of the key are watch windows.
+    watch_upgraded: VecDeque<u64>,
     /// Keys whose final read its verdict: no re-check starts after that.
     closed: VecDeque<u64>,
     /// Per re-opened key, the last check attempt sent before the re-open: the verdicts of those
@@ -1077,10 +1087,27 @@ impl SpeakerGate {
         self.windows_scored(key) >= 2
     }
 
-    /// Windows of `key` scored so far (first check = 1; 0 when none settled).
+    /// Windows of `key` scored so far (first check = 1; 0 when none settled), as the final
+    /// reports them. With the speaker-change watch on, windows scored only for the watch are not
+    /// counted: the value is what the gate with the watch off reports for the same outcomes.
     pub fn windows_scored(&self, key: u64) -> u32 {
+        let book = lock(&self.shared.book);
+        let per_key = if self.cfg.split_on_speaker_change {
+            &book.reported_windows
+        } else {
+            &book.windows_scored
+        };
+        per_key
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map_or(0, |(_, w)| *w)
+    }
+
+    /// Test hook: windows of `key` scored only because of the speaker-change watch.
+    #[doc(hidden)]
+    pub fn watch_windows_scored(&self, key: u64) -> u32 {
         lock(&self.shared.book)
-            .windows_scored
+            .watch_windows
             .iter()
             .find(|(k, _)| *k == key)
             .map_or(0, |(_, w)| *w)
@@ -1318,6 +1345,36 @@ struct Watch {
 /// ends it, and [`SPEAKER_CHANGE_CONFIRM_WINDOWS`] in a row report a change. `span` is the
 /// window's `(start_ms, end_ms)` on the utterance clock; `clip` is the PCM that was scored, ending
 /// at `end_ms`.
+/// Watch on: count `window` of `key` as a reported window when the gate with the watch off would
+/// have scored it (the first window; a re-check while the first verdict is `other` and no counted
+/// re-check came back `caller` yet), else as a watch window. With the watch on the verdict book
+/// keeps the first verdict (no upgrade), so it is the watch-off label until the upgrade point.
+fn book_reported_window(book: &mut Book, key: u64, recheck: bool, outcome: Outcome, window: u32) {
+    let counts = !recheck || {
+        let label = book
+            .verdicts
+            .iter()
+            .rev()
+            .find(|(k, _)| *k == key)
+            .map(|(_, o)| *o);
+        label == Some(Outcome::Other) && !book.watch_upgraded.contains(&key)
+    };
+    if counts {
+        if recheck && outcome == Outcome::Caller {
+            push_capped(&mut book.watch_upgraded, key);
+        }
+        if let Some(e) = book.reported_windows.iter_mut().find(|(k, _)| *k == key) {
+            e.1 = e.1.max(window);
+        } else {
+            push_capped(&mut book.reported_windows, (key, window));
+        }
+    } else if let Some(e) = book.watch_windows.iter_mut().find(|(k, _)| *k == key) {
+        e.1 += 1;
+    } else {
+        push_capped(&mut book.watch_windows, (key, 1));
+    }
+}
+
 fn watch_step(
     watches: &mut VecDeque<(u64, Watch)>,
     key: u64,
@@ -1563,6 +1620,9 @@ async fn run(
                         e.1 = e.1.max(window);
                     } else {
                         push_capped(&mut book.windows_scored, (key, window));
+                    }
+                    if cfg.split_on_speaker_change {
+                        book_reported_window(&mut book, key, recheck, outcome, window);
                     }
                 }
                 if recheck {
@@ -2276,7 +2336,17 @@ mod tests {
         script: Vec<Vec<f32>>,
         windows: usize,
     ) -> (Arc<SpeakerGate>, Vec<Verdict>) {
-        let gate = SpeakerGate::new(split_cfg(split, 12));
+        run_script_cap(split, script, windows, 12).await
+    }
+
+    /// [`run_script`] with `recheck_max_windows = cap`.
+    async fn run_script_cap(
+        split: bool,
+        script: Vec<Vec<f32>>,
+        windows: usize,
+        cap: u32,
+    ) -> (Arc<SpeakerGate>, Vec<Verdict>) {
+        let gate = SpeakerGate::new(split_cfg(split, cap));
         let verdicts: Arc<Mutex<Vec<Verdict>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&verdicts);
         let n = windows;
@@ -2395,6 +2465,63 @@ mod tests {
             (Outcome::Other, Outcome::Caller)
         );
         assert_eq!(gate.outcome_for(1), Some(Outcome::Other), "no upgrade");
+    }
+
+    /// (a) Flag on: a caller-first utterance watched for 3 more windows without a change reports
+    /// what the watch off reports (one window, not re-checked); the 3 watch windows are counted
+    /// apart.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn flag_on_caller_watch_windows_do_not_count_as_rechecks() {
+        let (gate, got) = run_script_cap(true, vec![caller_v(); 5], 4, 4).await;
+        assert_eq!(got.len(), 4, "{got:?}");
+        assert!(gate.take_speaker_changes().is_empty());
+        assert!(!gate.rechecked(1));
+        assert_eq!(gate.windows_scored(1), 1);
+        assert_eq!(gate.watch_windows_scored(1), 3);
+        let v = gate.verdict_read_by_final(1, Outcome::Caller);
+        assert_eq!((v.recheck, v.window), (false, 1));
+    }
+
+    /// (b) Flag on: an `other`-first utterance re-checked to `caller` reports the same
+    /// `rechecked` / windows as the watch off for the same script, with and without a later
+    /// watch window.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn flag_on_other_first_recheck_reports_like_flag_off() {
+        // Cap 3 ends the first script at window 3 on both sides; the second ends at the change.
+        for (script, n_off, n_on) in [
+            (vec![caller_v(), other_v(), other_v(), caller_v()], 3, 3),
+            (vec![caller_v(), other_v(), caller_v(), caller_v()], 2, 3),
+        ] {
+            let (off, got_off) = run_script_cap(false, script.clone(), n_off, 3).await;
+            let (on, got_on) = run_script_cap(true, script, n_on, 3).await;
+            assert_eq!((got_off.len(), got_on.len()), (n_off, n_on));
+            assert!(off.rechecked(1));
+            assert_eq!(
+                (on.rechecked(1), on.windows_scored(1)),
+                (off.rechecked(1), off.windows_scored(1))
+            );
+            assert_eq!(
+                on.watch_windows_scored(1) as usize,
+                n_on - off.windows_scored(1) as usize
+            );
+            assert_eq!(off.watch_windows_scored(1), 0);
+        }
+    }
+
+    /// (c) Flag on: a caller -> other split leaves U1 reporting one window, not re-checked; the
+    /// other key (U2) starts fresh.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn flag_on_caller_to_other_split_u1_reports_one_window() {
+        let (gate, got) =
+            run_script(true, vec![caller_v(), caller_v(), other_v(), other_v()], 3).await;
+        assert_eq!(got.len(), 3, "{got:?}");
+        assert_eq!(gate.take_speaker_changes().len(), 1);
+        assert!(!gate.rechecked(1));
+        assert_eq!(gate.windows_scored(1), 1);
+        assert_eq!(gate.watch_windows_scored(1), 2);
+        assert!(!gate.rechecked(2));
+        assert_eq!(gate.windows_scored(2), 0);
+        assert_eq!(gate.watch_windows_scored(2), 0);
     }
 
     /// The media clock keeps counting through a brief VAD gap (gap frames included), so the

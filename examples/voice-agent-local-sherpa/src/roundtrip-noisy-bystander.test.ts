@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest'
 
 import {
   callerWindowSimilarity,
+  countMergedCallerFinals,
   evaluateTurns,
   expectedBargeAtMs,
   matchTurnUtterances,
   maxBystanderLeadMs,
+  mergedCallerFinals,
   pairTurnUtterances,
   sttPartialTokenCount,
   voicedMsBetween,
@@ -613,8 +615,8 @@ describe('merged caller utterance (VAD opened in the bystander slot)', () => {
     expect(failures).toMatch(/turn 1 .*barge_in for the bystander utterance u7/)
     expect(failures).toMatch(/turn 1 .*final speaker caller, expected other/)
     expect([...pairTurnUtterances(SCENE, seen).merged]).toEqual([])
-    // TEMPORARY absorb rule: the caller verdict covers the caller turn, so it is absorbed.
-    expect([...pairTurnUtterances(SCENE, seen).absorbed.keys()]).toEqual([2])
+    // No absorb rule: the caller turn has no utterance of its own, so it fails.
+    expect(failures).toMatch(/turn 2 .*caller speech start not detected/)
   })
 
   it('(d3) a merged first-window utterance that barged before the caller started still fails', () => {
@@ -930,12 +932,12 @@ describe('check windows of a re-checked final (speakerCheckWindows)', () => {
 })
 
 /**
- * TEMPORARY absorb rule (step B: split on speaker change), plan step 5. Shape of nwr main
- * 0ba1e3b1 CI run 41158353807 (PR #539 run 41160449813): one utterance starts as caller, runs
- * through a bystander and on into the next caller turn; babble fills the gap, so there is no VAD
- * pause, and the first verdict is caller, so there is no re-check.
+ * Shape of nwr main 0ba1e3b1 CI run 41158353807: one utterance starts as caller, runs through a
+ * bystander and on into the next caller turn (babble fills the gap, so there is no VAD pause). The
+ * temporary absorb rule accepted that; with `splitOnSpeakerChange` the caller turn needs a
+ * caller-labelled final of its own.
  */
-describe('absorbed caller turn (temporary)', () => {
+describe('caller turn inside an earlier caller utterance', () => {
   const c12: Turn = {
     role: 'main',
     startMs: 84_163,
@@ -957,13 +959,6 @@ describe('absorbed caller turn (temporary)', () => {
     text: 'Can you tell me how long the warranty lasts',
     kind: 'qualified',
   }
-  const c15: Turn = {
-    role: 'main',
-    startMs: 110_000,
-    endMs: 112_000,
-    text: 'excuse me please',
-    kind: 'qualified',
-  }
   const b16: Turn = {
     role: 'bystander',
     startMs: 120_000,
@@ -971,160 +966,78 @@ describe('absorbed caller turn (temporary)', () => {
     text: 'bus',
     kind: 'background',
   }
-  const MERGED_TEXT =
-    'Charlie one two three we watched this and fit the temp. Can you tell me how long the warranty lasts and whether it also covers at'
-  const SCENE = [c12, b13, c14, c15, b16]
-
-  /** Frame: caller turn 15 healthy, bystander 16 other (anti-vacuous). */
-  const frame = (): Seen[] => [
-    ev('user_speaking_start', 110_100, { utteranceId: 'u15' }),
-    ev('user_speech_partial', 111_000, { utteranceId: 'u15', text: 'excuse me' }),
-    ev('barge_in', 111_650, { utteranceId: 'u15' }),
-    ev('user_speech_final', 113_000, {
-      utteranceId: 'u15',
-      text: 'excuse me please',
+  const SCENE = [c12, b13, c14, b16]
+  const seen: Seen[] = [
+    ev('user_speaking_start', 84_262, { utteranceId: 'u12' }),
+    ev('user_speech_partial', 85_500, { utteranceId: 'u12', text: 'Charlie one' }),
+    ev('barge_in', 85_800, { utteranceId: 'u12' }),
+    ev('user_speaking_end', 102_000, { utteranceId: 'u12' }),
+    ev('user_speech_final', 102_244, {
+      utteranceId: 'u12',
+      text: 'Charlie one two three a tall ladder stood. Can you tell me how long the warranty lasts',
       speaker: 'caller',
     }),
     ev('user_speaking_start', 120_100, { utteranceId: 'u16' }),
     ev('user_speech_final', 123_000, { utteranceId: 'u16', text: 'bus', speaker: 'other' }),
   ]
-  /** u12: caller start at 84 262, runs to 102 000, first verdict caller (no re-check). */
-  const u12 = (
-    o: { verdict?: string; endAt?: number; text?: string; extra?: Seen[] } = {},
-  ): Seen[] => [
-    ev('user_speaking_start', 84_262, { utteranceId: 'u12' }),
-    ev('user_speech_partial', 85_500, { utteranceId: 'u12', text: 'Charlie one' }),
-    ev('barge_in', 85_800, { utteranceId: 'u12' }),
-    ev('user_speaking_end', o.endAt ?? 102_000, { utteranceId: 'u12' }),
-    ev('user_speech_final', (o.endAt ?? 102_000) + 244, {
-      utteranceId: 'u12',
-      text: o.text ?? MERGED_TEXT,
-      speaker: o.verdict ?? 'caller',
-    }),
-    ...(o.extra ?? []),
-  ]
-  const run = (extra: Seen[], scene: Turn[] = SCENE): { failures: string; seen: Seen[] } => {
-    const seen = [...frame(), ...extra].sort((a, b) => a.atMs - b.atMs)
-    return { failures: evaluateTurns(scene, seen, 'p').join('\n'), seen }
-  }
 
-  it('absorbs caller turn 14 into the caller utterance of turn 12 (caller -> bystander -> caller)', () => {
-    const { failures, seen } = run(u12())
-    // The bystander turn 13 has no utterance of its own and turn 14 is absorbed.
-    expect(failures).not.toMatch(/turn 14/)
-    expect(failures).not.toMatch(/caller speech start not detected/)
-    const { absorbed } = pairTurnUtterances(SCENE, seen)
-    expect([...absorbed.entries()].map(([k, v]) => [k, v.utteranceId])).toEqual([[2, 'u12']])
-  })
-
-  it('fails an absorbed qualified turn whose phrase is missing from the merged final', () => {
-    const { failures } = run(
-      u12({ text: 'Charlie one two three we watched this and fit the temp' }),
-    )
-    expect(failures).toMatch(/turn 2 .*absorbed into u12, recognized .* similarity/)
-  })
-
-  it('does not absorb for an other final: the re-check rule applies', () => {
-    const { failures, seen } = run(u12({ verdict: 'other' }))
-    expect(pairTurnUtterances(SCENE, seen).absorbed.size).toBe(0)
-    expect(failures).toMatch(/turn 2 .*caller speech start not detected/)
-  })
-
-  it('needs its own barge_in only when the agent was speaking at the absorbed scene start', () => {
-    const speaking = [ev('agent_speaking_start', 92_000, {})]
-    const without = run(u12({ extra: speaking }))
-    expect(without.failures).toMatch(
-      /turn 2 .*agent was speaking at the scene start 93286 ms, no barge_in after it/,
-    )
-    const withBarge = run(
-      u12({ extra: [...speaking, ev('barge_in', 94_000, { utteranceId: 'u12' })] }),
-    )
-    expect(withBarge.failures).not.toMatch(/turn 2/)
-  })
-
-  it('fails when more than 25 % of the caller turns are absorbed', () => {
-    // Two of three caller turns absorbed: 67 %.
-    const c2: Turn = { ...c15, startMs: 100_000, endMs: 101_000, text: 'excuse me please' }
-    const scene = [c12, b13, c14, c2, b16]
-    const seen = [
-      ...u12({
-        extra: [
-          ev('user_speech_final', 102_300, {
-            utteranceId: 'u12',
-            text: MERGED_TEXT + ' excuse me please',
-            speaker: 'caller',
-          }),
-        ],
-      }),
-      ev('user_speaking_start', 120_100, { utteranceId: 'u16' }),
-      ev('user_speech_final', 123_000, { utteranceId: 'u16', text: 'bus', speaker: 'other' }),
-    ].sort((a, b) => a.atMs - b.atMs)
-    const failures = evaluateTurns(scene, seen, 'p').join('\n')
+  it('fails the caller turn: caller speech start not detected', () => {
+    const failures = evaluateTurns(SCENE, seen, 'p').join('\n')
     expect(failures).toMatch(
-      /2 of 3 caller turns absorbed into an earlier utterance, more than 25 %/,
+      /p turn 2 \(main qualified "Can you tell me how long the w"\): caller speech start not detected/,
     )
   })
 
-  it('exactly 25 % passes (1 of 4 caller turns absorbed)', () => {
-    const mains = [0, 1].map(
-      (k): Turn => ({
-        role: 'main',
-        startMs: 130_000 + k * 6_000,
-        endMs: 132_000 + k * 6_000,
-        text: 'a long caller sentence',
-        kind: 'long',
-      }),
+  it('counts the utterance as a merged caller final (it runs into the bystander sentence)', () => {
+    expect(countMergedCallerFinals(SCENE, seen)).toBe(1)
+    expect(evaluateTurns(SCENE, seen, 'p').join('\n')).toMatch(
+      /p: merged caller final u12 \(turn 0/,
     )
-    const extra = mains.flatMap((m, k): Seen[] => [
-      ev('user_speaking_start', m.startMs + 100, { utteranceId: `m${k}` }),
-      ev('user_speech_partial', m.startMs + 600, { utteranceId: `m${k}`, text: 'a long' }),
-      ev('barge_in', m.startMs + 1_650, { utteranceId: `m${k}` }),
-      ev('user_speech_final', m.startMs + 3_000, {
-        utteranceId: `m${k}`,
-        text: 'a long caller sentence',
-        speaker: 'caller',
-      }),
-    ])
-    const { failures } = run([...u12(), ...extra], [c12, b13, c14, b16, ...mains])
-    expect(failures).not.toMatch(/more than 25 %/)
   })
+})
 
-  it('stays within 25 % when one of five caller turns is absorbed', () => {
-    const mains = Array.from(
-      { length: 4 },
-      (_, k): Turn => ({
-        role: 'main',
-        startMs: 130_000 + k * 6_000,
-        endMs: 132_000 + k * 6_000,
-        text: 'a long caller sentence',
-        kind: 'long',
-      }),
+describe('countMergedCallerFinals', () => {
+  const c: Turn = {
+    role: 'main',
+    startMs: 10_000,
+    endMs: 12_000,
+    text: 'victor seven eight nine',
+    kind: 'qualified',
+  }
+  const b: Turn = {
+    role: 'bystander',
+    startMs: 14_500,
+    endMs: 20_000,
+    text: 'Two hikers followed the rocky trail beside the cliffs and stopped to watch the waves.',
+    kind: 'long',
+  }
+  const final = (text: string, speaker = 'caller'): Seen[] => [
+    ev('user_speaking_start', 10_100, { utteranceId: 'u1' }),
+    ev('user_speech_final', 21_000, { utteranceId: 'u1', text, speaker }),
+  ]
+
+  it('a caller final that runs into the next bystander sentence counts 1 (CI shape "nineers")', () => {
+    const seen = final(
+      'Victor seven eight nineers followed the rocky trail beside the cliffs and stopped to watch the waves crash far below.',
     )
-    const extra = mains.flatMap((m, k): Seen[] => [
-      ev('user_speaking_start', m.startMs + 100, { utteranceId: `m${k}` }),
-      ev('user_speech_partial', m.startMs + 600, { utteranceId: `m${k}`, text: 'a long' }),
-      ev('barge_in', m.startMs + 1_650, { utteranceId: `m${k}` }),
-      ev('user_speech_final', m.startMs + 3_000, {
-        utteranceId: `m${k}`,
-        text: 'a long caller sentence',
-        speaker: 'caller',
-      }),
-    ])
-    const scene = [c12, b13, c14, b16, ...mains]
-    const { failures } = run([...u12(), ...extra], scene)
-    expect(failures).not.toMatch(/absorbed into an earlier utterance, more than/)
-    expect(failures).not.toMatch(/turn 2/)
+    expect(countMergedCallerFinals([c, b], seen)).toBe(1)
+    expect(mergedCallerFinals([c, b], seen)[0]!.words).toEqual(
+      expect.arrayContaining(['followed', 'rocky', 'trail', 'beside', 'cliffs']),
+    )
   })
 
-  it('zero gap: speech ending exactly at the next caller start does not absorb it; 1 ms later does', () => {
-    const exact = run(u12({ endAt: 93_286 }))
-    expect(exact.failures).toMatch(/turn 2 .*caller speech start not detected/)
-    const after = run(u12({ endAt: 93_287 }))
-    expect(after.failures).not.toMatch(/turn 2/)
+  it('a clean caller final counts 0', () => {
+    expect(countMergedCallerFinals([c, b], final('Victor seven eight nine.'))).toBe(0)
   })
 
-  it('missing optional metadata: an absorbing utterance without user_speaking_end uses its final', () => {
-    const seen = run(u12().filter((e) => e.type !== 'user_speaking_end'))
-    expect(seen.failures).not.toMatch(/turn 2/)
+  it('a bystander-only final counts 0 (labelled other, or caller without the caller phrase)', () => {
+    expect(countMergedCallerFinals([c, b], final(b.text, 'other'))).toBe(0)
+    expect(countMergedCallerFinals([c, b], final(b.text, 'caller'))).toBe(0)
+  })
+
+  it('two bystander words past the caller phrase are not enough (needs 3)', () => {
+    expect(countMergedCallerFinals([c, b], final('Victor seven eight nine, followed rocky.'))).toBe(
+      0,
+    )
   })
 })

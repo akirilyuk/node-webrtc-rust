@@ -457,6 +457,9 @@ pub struct JsSpeakerGateConfig {
     /// Windows scored per utterance, the first check included (default 12). `0` = no cap; `1` is
     /// rejected by the gate.
     pub recheck_max_windows: Option<u32>,
+    /// Split an utterance at a confirmed speaker change (default false). Costs one extra STT
+    /// stream per split.
+    pub split_on_speaker_change: Option<bool>,
     /// `flag` (default) | `drop`.
     pub on_mismatch: Option<String>,
     pub verify_timeout_ms: Option<u32>,
@@ -532,8 +535,9 @@ impl TryFrom<JsSpeakerGateConfig> for SpeakerGateConfig {
                 .unwrap_or(d.suppress_short_barge_in),
             recheck_on_other: value.recheck_on_other.unwrap_or(d.recheck_on_other),
             recheck_max_windows: value.recheck_max_windows.unwrap_or(d.recheck_max_windows),
-            // Not exposed to JS yet (NAPI + SDK surface is a later chunk).
-            split_on_speaker_change: d.split_on_speaker_change,
+            split_on_speaker_change: value
+                .split_on_speaker_change
+                .unwrap_or(d.split_on_speaker_change),
             on_mismatch,
             verify_timeout_ms: value.verify_timeout_ms.unwrap_or(d.verify_timeout_ms),
             barge_in,
@@ -568,6 +572,19 @@ mod speaker_gate_update_from_tests {
         }
         .try_into();
         assert!(bad.is_err());
+    }
+
+    #[test]
+    fn split_on_speaker_change_defaults_off_and_passes_through() {
+        let d: SpeakerGateConfig = JsSpeakerGateConfig::default().try_into().unwrap();
+        assert!(!d.split_on_speaker_change);
+        let c: SpeakerGateConfig = JsSpeakerGateConfig {
+            split_on_speaker_change: Some(true),
+            ..Default::default()
+        }
+        .try_into()
+        .unwrap();
+        assert!(c.split_on_speaker_change);
     }
 
     #[test]
@@ -902,6 +919,8 @@ pub enum JsSpeechEventType {
     UserSpeechIgnored,
     #[napi(value = "user_speech_final")]
     UserSpeechFinal,
+    #[napi(value = "user_utterance_split")]
+    UserUtteranceSplit,
     #[napi(value = "user_language")]
     UserLanguage,
     #[napi(value = "language_id_skipped")]
@@ -996,6 +1015,18 @@ pub struct JsSpeechEvent {
     pub speaker_rechecked: Option<bool>,
     /// `user_speech_final` with the speaker gate on: check windows scored for the utterance.
     pub speaker_check_windows: Option<u32>,
+    /// `user_utterance_split`: id of the utterance that ends at the split.
+    pub from_utterance_id: Option<String>,
+    /// `user_utterance_split`: id of the utterance that starts at the split.
+    pub to_utterance_id: Option<String>,
+    /// `user_utterance_split`: ms into the audio of the split utterance where the speaker changed.
+    pub split_at_ms: Option<u32>,
+    /// `user_utterance_split`: label before the split (`caller` | `other`).
+    #[napi(js_name = "from")]
+    pub split_from: Option<String>,
+    /// `user_utterance_split`: label after the split (`caller` | `other`).
+    #[napi(js_name = "to")]
+    pub split_to: Option<String>,
 }
 
 #[napi(string_enum)]

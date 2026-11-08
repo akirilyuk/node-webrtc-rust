@@ -382,6 +382,16 @@ Recommended with `vad.provider: 'adaptive'`. With the energy VAD, turns in backg
 
 Limit: a bystander about as loud as the caller can pass the check; the gate is tested with bystander turns 6 dB below the caller (the two long turns of the noisy-bystander roundtrip) and 15 dB below (the other turns), over babble. Turns from two people less than about 1.5 s apart end up in one transcript, labelled by the check of its first speaker, because the agent's end of turn waits that long for more speech. Other speech that opens the VAD and runs into the caller's words without a pause fills the first check window, so the first check says other. The gate keeps re-checking while the verdict stays other, so other speech that leads the caller by up to about `(recheckMaxWindows − 2) × checkSpeechMs` (15 s with the defaults) no longer hides the caller. A longer lead still does, and `recheckMaxWindows: 0` removes the cap at the false-accept cost in the table below. With `recheckOnOther: false` the barge-in stays suppressed and the final is labelled other.
 
+### Split on speaker change (`splitOnSpeakerChange`)
+
+Off by default. By default one utterance gets one label, so a caller and a bystander who talk without a pause end up in one transcript labelled by whoever was heard first. With `splitOnSpeakerChange: true` the gate keeps scoring windows for the whole utterance, in both directions, up to `recheckMaxWindows`. When two consecutive windows say the opposite of the current label, the utterance is split at the quietest point near the first of them:
+
+- The first part is re-decoded on its own STT stream and ends with a `user_speech_final` carrying `reason: 'speaker_split'` and its own label. The live text, which mixed both voices, is discarded.
+- The rest is a new utterance with a new `utteranceId`. The gate judges it from scratch, and a bystander's new utterance never barges in.
+- A `user_utterance_split` event (`fromUtteranceId`, `toUtteranceId`, `splitAtMs`, `from`, `to`) is emitted after the new utterance's `user_speaking_start`. The first part's final comes before any partial or final of the new one.
+- Cost: every split opens one extra STT stream at the vendor. That is why the flag is off. It needs `recheckMaxWindows` other than `1`.
+- If the re-decode does not finish in its bound, an `error` event with `reason: 'speaker_split_redecode_timeout'` is emitted for the first part. No split happens when the audio buffer overflowed or does not cover the utterance (logged and counted).
+
 ### Re-check after other (`recheckOnOther`, `recheckMaxWindows`)
 
 A TV or a colleague talking right before the caller can open the VAD, and if the caller starts before that speech pauses, both end up in one utterance. The first 1.5 s window then holds mostly the other voice and scores `other`. Without another look the caller would be ignored for that whole utterance.

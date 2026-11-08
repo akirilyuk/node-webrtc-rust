@@ -474,6 +474,33 @@ async fn caller_then_other_splits_and_redecodes_each_side() {
         ],
         "U1 events after U2 started"
     );
+    // The split event names both utterances, comes after U2's speaking_start and before any U2
+    // barge-in, and is emitted exactly once.
+    let split_evs: Vec<usize> = rig
+        .log
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.kind == SpeechEventKind::UserUtteranceSplit)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(split_evs.len(), 1, "one user_utterance_split");
+    let se = &rig.log[split_evs[0]];
+    assert_eq!(se.from_utterance_id.as_deref(), Some(u1.as_str()));
+    assert_eq!(se.to_utterance_id.as_deref(), Some(u2.as_str()));
+    assert_eq!(se.split_from.as_deref(), Some("caller"));
+    assert_eq!(se.split_to.as_deref(), Some("other"));
+    assert!(se.split_at_ms.is_some_and(|ms| ms > 0));
+    assert!(
+        u2_start < split_evs[0],
+        "split after U2's user_speaking_start"
+    );
+    assert!(
+        !rig.log[..split_evs[0]]
+            .iter()
+            .any(|e| e.kind == SpeechEventKind::BargeIn
+                && e.utterance_id.as_deref() == Some(u2.as_str())),
+        "no U2 barge-in before the split event"
+    );
     let (splits, _, _, _, discarded, timeouts) = rig.agent.speaker_split_counts();
     assert_eq!(splits, 1);
     assert!(discarded >= 1, "the mixed live stream's final is dropped");

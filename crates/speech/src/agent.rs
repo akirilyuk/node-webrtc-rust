@@ -3898,6 +3898,13 @@ impl VoiceAgent {
         // U2's speaking_start goes out before its SpeechStart handling: the seed already holds a
         // full check window, so U2's verdict (and an immediate barge-in) can be ready at once.
         self.emit_user_speaking_start_if_needed(u2_key).await;
+        self.emit(SpeechEvent::user_utterance_split(
+            u1_id.clone(),
+            u2_id.clone(),
+            change.split_at_ms,
+            change.from.as_str(),
+            change.to.as_str(),
+        ));
         if let Err(error) = self.on_vad_speech_start().await {
             eprintln!("[speech] speaker split: start of {u2_id} failed: {error}");
         }

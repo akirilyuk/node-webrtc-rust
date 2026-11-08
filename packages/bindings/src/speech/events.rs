@@ -16,6 +16,7 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
             SpeechEventKind::UserSpeechPartial => JsSpeechEventType::UserSpeechPartial,
             SpeechEventKind::UserSpeechFinal => JsSpeechEventType::UserSpeechFinal,
             SpeechEventKind::UserSpeechIgnored => JsSpeechEventType::UserSpeechIgnored,
+            SpeechEventKind::UserUtteranceSplit => JsSpeechEventType::UserUtteranceSplit,
             SpeechEventKind::UserLanguage => JsSpeechEventType::UserLanguage,
             SpeechEventKind::LanguageIdSkipped => JsSpeechEventType::LanguageIdSkipped,
             SpeechEventKind::AgentSpeakingStart => JsSpeechEventType::AgentSpeakingStart,
@@ -69,6 +70,11 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
         speaker_unknown_reason: event.speaker_unknown_reason,
         speaker_rechecked: event.speaker_rechecked,
         speaker_check_windows: event.speaker_check_windows,
+        from_utterance_id: event.from_utterance_id,
+        to_utterance_id: event.to_utterance_id,
+        split_at_ms: event.split_at_ms,
+        split_from: event.split_from,
+        split_to: event.split_to,
     }
 }
 
@@ -113,6 +119,20 @@ mod speech_event_to_js_tests {
         assert_eq!(js.language.as_deref(), Some("fr"));
         assert_eq!(js.text.as_deref(), Some("fr"));
         assert_eq!(js.utterance_id.as_deref(), Some("utt-1"));
+    }
+
+    #[test]
+    fn user_utterance_split_maps_fields() {
+        let js = speech_event_to_js(SpeechEvent::user_utterance_split(
+            "u1", "u2", 1200, "caller", "other",
+        ));
+        assert_eq!(js.event_type, JsSpeechEventType::UserUtteranceSplit);
+        assert_eq!(js.from_utterance_id.as_deref(), Some("u1"));
+        assert!(js.utterance_id.is_none());
+        assert_eq!(js.to_utterance_id.as_deref(), Some("u2"));
+        assert_eq!(js.split_at_ms, Some(1200));
+        assert_eq!(js.split_from.as_deref(), Some("caller"));
+        assert_eq!(js.split_to.as_deref(), Some("other"));
     }
 
     #[test]

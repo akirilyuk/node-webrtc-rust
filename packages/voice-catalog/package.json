@@ -31,6 +31,7 @@
     },
     "./catalog/vendors.json": "./catalog/vendors.json",
     "./catalog/adaptive-vad-limits.json": "./catalog/adaptive-vad-limits.json",
+    "./catalog/voice-agent-settings.json": "./catalog/voice-agent-settings.json",
     "./catalog/azure-tts-voices.json": "./catalog/azure-tts-voices.json",
     "./catalog/google-tts-voices.json": "./catalog/google-tts-voices.json"
   },

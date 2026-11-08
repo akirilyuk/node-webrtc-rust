@@ -8,6 +8,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-08
+
+### Added
+
+- **voice-catalog:** `VOICE_AGENT_SETTINGS`, `VOICE_AGENT_SETTING_PATHS`, `VOICE_AGENT_PRESETS`, `voiceAgentPresetValue()` and `resolvePostUtteranceSilenceMs()`, read from the new `catalog/voice-agent-settings.json`. For each `VoiceAgentConfig` setting that hosts commonly expose (VAD, barge-in, adaptive VAD, post-utterance silence, `tts.sentenceCase`, `events.mode`, `languageId.minSpeechMs` / `timing`, speaker gate barge-in), it publishes the config path, type, integer flag, enum values, engine default and the bounds the engine enforces. Presets: `default`, `voiceAgent` (`gateStt` on, `speechPadMs` 500) and `browserWebrtc` (`voiceAgent` plus `vad.threshold` 0.05 and `vad.minSpeechDurationMs` 200, the quieter energy levels that suit browser microphone audio). A speech crate test ties every path, type, integer flag, enum value, default and validated bound to `VoiceAgentConfig`, so a change on either side fails it. A vitest in the SDK asserts `DEFAULT_VOICE_AGENT_VAD` and `VOICE_AGENT_VAD_PRESET` equal the catalog presets.
+
 ## [0.17.1] - 2026-11-06
 
 ### Added

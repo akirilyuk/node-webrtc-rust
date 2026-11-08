@@ -3,6 +3,9 @@ import { readFileSync } from 'node:fs'
 import {
   ADAPTIVE_VAD_KEYS,
   ADAPTIVE_VAD_LIMITS,
+  VOICE_AGENT_PRESETS,
+  VOICE_AGENT_SETTINGS,
+  VOICE_AGENT_SETTING_PATHS,
   VOICE_VENDORS,
   allVendorIds,
   azureTtsVoices,
@@ -18,6 +21,8 @@ import {
   ttsTransports,
   ttsPresetVoices,
   ttsVoiceAllowlist,
+  voiceAgentPresetValue,
+  resolvePostUtteranceSilenceMs,
   validateVoiceCatalogChoice,
   validateVoiceCatalogPresets,
   type VoiceVendorEntry,
@@ -434,5 +439,74 @@ describe('adaptive VAD limits', () => {
     )
     expect(ADAPTIVE_VAD_LIMITS).toEqual(file.limits)
     expect([...ADAPTIVE_VAD_KEYS]).toEqual(file.keys)
+  })
+})
+
+describe('voice agent settings', () => {
+  test('export shape', () => {
+    const file = JSON.parse(
+      readFileSync(new URL('../catalog/voice-agent-settings.json', import.meta.url), 'utf8'),
+    )
+    expect(VOICE_AGENT_SETTINGS).toEqual(file.settings)
+    expect(VOICE_AGENT_PRESETS).toEqual(file.presets)
+    expect([...VOICE_AGENT_SETTING_PATHS]).toEqual(Object.keys(file.settings))
+    expect(Object.keys(VOICE_AGENT_PRESETS).sort()).toEqual([
+      'browserWebrtc',
+      'default',
+      'voiceAgent',
+    ])
+    for (const def of Object.values(VOICE_AGENT_SETTINGS)) {
+      expect(['boolean', 'number', 'string']).toContain(def.type)
+    }
+  })
+
+  test('preset values', () => {
+    expect(voiceAgentPresetValue('browserWebrtc', 'vad.threshold')).toBe(0.05)
+    expect(voiceAgentPresetValue('browserWebrtc', 'vad.speechPadMs')).toBe(500)
+    expect(voiceAgentPresetValue('browserWebrtc', 'vad.minSpeechDurationMs')).toBe(200)
+    expect(voiceAgentPresetValue('browserWebrtc', 'vad.minSilenceDurationMs')).toBe(1100)
+    expect(voiceAgentPresetValue('voiceAgent', 'vad.gateStt')).toBe(true)
+    expect(voiceAgentPresetValue('voiceAgent', 'vad.threshold')).toBe(0.15)
+    expect(voiceAgentPresetValue('default', 'vad.threshold')).toBe(0.15)
+    expect(voiceAgentPresetValue('default', 'vad.speechPadMs')).toBe(300)
+    expect(voiceAgentPresetValue('default', 'vad.gateStt')).toBe(false)
+    expect(voiceAgentPresetValue('default', 'postUtteranceSilenceMs')).toBeNull()
+  })
+
+  test('every preset path is a setting and fits its type, enum and bounds', () => {
+    for (const values of Object.values(VOICE_AGENT_PRESETS)) {
+      for (const [path, value] of Object.entries(values)) {
+        const def = (
+          VOICE_AGENT_SETTINGS as Record<
+            string,
+            (typeof VOICE_AGENT_SETTINGS)[keyof typeof VOICE_AGENT_SETTINGS]
+          >
+        )[path]
+        expect(def, path).toBeDefined()
+        expect(typeof value, path).toBe(def.type)
+        if (def.enum) expect(def.enum, path).toContain(value)
+        if (def.min !== undefined) expect(value as number, path).toBeGreaterThanOrEqual(def.min)
+        if (def.max !== undefined) expect(value as number, path).toBeLessThanOrEqual(def.max)
+        if (def.integer) expect(Number.isInteger(value), path).toBe(true)
+      }
+    }
+  })
+
+  test('resolvePostUtteranceSilenceMs', () => {
+    const v = { sttGateHoldMs: 400, minSilenceDurationMs: 1100 }
+    expect(resolvePostUtteranceSilenceMs(v)).toBe(1750)
+    expect(resolvePostUtteranceSilenceMs(v, undefined)).toBe(1750)
+    expect(resolvePostUtteranceSilenceMs(v, 0)).toBe(0)
+    expect(resolvePostUtteranceSilenceMs(v, 900)).toBe(900)
+  })
+
+  test('adaptive entries agree with the adaptive limits file', () => {
+    for (const key of ['noiseMarginDb', 'stuckActiveMs'] as const) {
+      const def = VOICE_AGENT_SETTINGS[`vad.adaptive.${key}`]
+      expect({ min: def.min, max: def.max, integer: def.integer }).toEqual(ADAPTIVE_VAD_LIMITS[key])
+    }
+    for (const key of ADAPTIVE_VAD_KEYS) {
+      expect(Object.keys(VOICE_AGENT_SETTINGS)).toContain(`vad.adaptive.${key}`)
+    }
   })
 })

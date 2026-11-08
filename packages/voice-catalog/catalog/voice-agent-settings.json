@@ -1,0 +1,172 @@
+{
+  "settings": {
+    "vad.enabled": {
+      "type": "boolean",
+      "default": true
+    },
+    "vad.provider": {
+      "type": "string",
+      "enum": ["energy", "adaptive", "silero"],
+      "default": "energy"
+    },
+    "vad.threshold": {
+      "type": "number",
+      "integer": false,
+      "default": 0.15
+    },
+    "vad.minSpeechDurationMs": {
+      "type": "number",
+      "integer": true,
+      "default": 250,
+      "min": 0,
+      "max": 4294967295
+    },
+    "vad.minSilenceDurationMs": {
+      "type": "number",
+      "integer": true,
+      "default": 1100,
+      "min": 0,
+      "max": 4294967295
+    },
+    "vad.speechPadMs": {
+      "type": "number",
+      "integer": true,
+      "default": 300,
+      "min": 0,
+      "max": 4294967295
+    },
+    "vad.sampleRate": {
+      "type": "string",
+      "enum": ["8000", "16000"],
+      "default": "16000"
+    },
+    "vad.gateStt": {
+      "type": "boolean",
+      "default": false
+    },
+    "vad.gateSttOpenOnPending": {
+      "type": "boolean",
+      "default": true
+    },
+    "vad.sttGateHoldMs": {
+      "type": "number",
+      "integer": true,
+      "default": 400,
+      "min": 0,
+      "max": 4294967295
+    },
+    "vad.sttListenTimeoutMs": {
+      "type": "number",
+      "integer": true,
+      "default": 4000,
+      "min": 0,
+      "max": 4294967295
+    },
+    "vad.utteranceFinalizeTimeoutMs": {
+      "type": "number",
+      "integer": true,
+      "default": 1500,
+      "min": 0,
+      "max": 4294967295
+    },
+    "vad.bargeIn.enabled": {
+      "type": "boolean",
+      "default": true
+    },
+    "vad.bargeIn.useVad": {
+      "type": "boolean",
+      "default": true
+    },
+    "vad.bargeIn.flushTts": {
+      "type": "boolean",
+      "default": true
+    },
+    "vad.bargeIn.requireSttPartial": {
+      "type": "boolean",
+      "default": true
+    },
+    "vad.bargeIn.minSttPartialTokens": {
+      "type": "number",
+      "integer": true,
+      "default": 2,
+      "min": 0,
+      "max": 4294967295
+    },
+    "vad.bargeIn.agentPlaybackGuardMs": {
+      "type": "number",
+      "integer": true,
+      "default": 0,
+      "min": 0,
+      "max": 4294967295
+    },
+    "vad.adaptive.noiseMarginDb": {
+      "type": "number",
+      "integer": false,
+      "default": 6,
+      "min": 0,
+      "max": 30
+    },
+    "vad.adaptive.useSpeechLevel": {
+      "type": "boolean",
+      "default": true
+    },
+    "vad.adaptive.stuckActiveMs": {
+      "type": "number",
+      "integer": true,
+      "default": 8000,
+      "min": 1000,
+      "max": 4294967295
+    },
+    "postUtteranceSilenceMs": {
+      "type": "number",
+      "integer": true,
+      "default": null,
+      "min": 0,
+      "max": 4294967295
+    },
+    "tts.sentenceCase": {
+      "type": "string",
+      "enum": ["auto", "off"],
+      "default": "auto"
+    },
+    "events.mode": {
+      "type": "string",
+      "enum": ["callback", "stream", "both"],
+      "default": "both"
+    },
+    "languageId.minSpeechMs": {
+      "type": "number",
+      "integer": true,
+      "default": 1000,
+      "min": 0,
+      "max": 4294967295
+    },
+    "languageId.timing": {
+      "type": "string",
+      "enum": ["end_of_utterance", "early", "continuous"],
+      "default": "end_of_utterance"
+    },
+    "speakerGate.bargeIn": {
+      "type": "string",
+      "enum": ["caller_only", "anyone"],
+      "default": "caller_only"
+    },
+    "speakerGate.suppressShortBargeIn": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "presets": {
+    "default": {},
+    "voiceAgent": {
+      "vad.gateStt": true,
+      "vad.speechPadMs": 500
+    },
+    "browserWebrtc": {
+      "vad.provider": "energy",
+      "vad.threshold": 0.05,
+      "vad.minSpeechDurationMs": 200
+    }
+  },
+  "postUtteranceSilencePadMs": 250
+}

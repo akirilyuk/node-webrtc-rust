@@ -8,9 +8,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-11-09
+
 ### Added
 
 - **speech, sdk:** opt-in `speakerGate.splitOnSpeakerChange` (default `false`). When the voice in one utterance changes from the caller to someone else for two consecutive check windows, the utterance is split there. The caller stays the caller: another voice followed by the caller upgrades the whole utterance to the caller, as with the flag off, and never splits (`from` is always `caller`, `to` always `other`). The first part is re-decoded on its own and finalized with `reason: 'speaker_split'`; the rest becomes a new utterance that the gate judges again. A `user_utterance_split` event (`fromUtteranceId`, `toUtteranceId`, `splitAtMs`, `from`, `to`) marks the split. A split opens one extra STT stream. A re-decode that does not finish in time emits an `error` event with `reason: 'speaker_split_redecode_timeout'`. Flag-off behaviour is unchanged.
+
+### Fixed
+
+- **speech:** an utterance that ends while the agent is still speaking, with no STT partial, no longer closes as `user_stt_not_found` (`reason: 'no_partial'`, stream end `listen_timeout`) before the STT vendor was asked for its final. The close of such an utterance waits for playback to end. Until then the `sttListenTimeoutMs` check is paused, and it starts counting again when playback ends. The vendor final now becomes `user_speech_final`; an empty final ends as `user_stt_not_found` (`reason: 'empty_final'`); a vendor that never answers is bounded by the STT finalize wait as before. Speech that is still going on past the timeout during playback is cut by the timeout as before. This mostly affected short phrases over a reply that was not interrupted (barge-in off, playback guard, or a held barge-in).
 
 ## [0.18.0] - 2026-11-08
 

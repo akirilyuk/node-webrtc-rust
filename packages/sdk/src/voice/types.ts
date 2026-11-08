@@ -637,7 +637,7 @@ export interface SpeechEvent {
   fromUtteranceId?: string
   /** `user_utterance_split`: id of the utterance that starts at the split. */
   toUtteranceId?: string
-  /** `user_utterance_split`: ms into the new utterance's audio where the speaker changed. */
+  /** `user_utterance_split`: ms into the audio of the split utterance (`fromUtteranceId`) where the speaker changed. */
   splitAtMs?: number
   /** `user_utterance_split`: speaker label before the split. */
   from?: 'caller' | 'other'

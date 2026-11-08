@@ -48,6 +48,17 @@ const BACKLOG_WARN: usize = 8;
 /// asserted to be 12 in their own tests.
 pub const DEFAULT_RECHECK_MAX_WINDOWS: u32 = 12;
 
+/// Consecutive windows of the opposite label that confirm a speaker change
+/// ([`SpeakerGateConfig::split_on_speaker_change`]). Starts at 2; tuned with evidence later.
+pub const SPEAKER_CHANGE_CONFIRM_WINDOWS: u32 = 2;
+
+/// The split point is searched within this many ms either side of the first opposite window's
+/// start.
+pub const SPLIT_SEARCH_MS: u32 = 300;
+
+/// Frame length (ms) of the split-point energy search.
+const SPLIT_FRAME_MS: usize = 20;
+
 /// Earliest speech time (ms of speech in the utterance) at which a barge-in released by the
 /// `window`-th scored window (1 = first check) can fire. SDK mirror:
 /// `speakerRecheckBargeEarliestMs(checkSpeechMs, window)`
@@ -89,6 +100,20 @@ pub struct Verdict {
     pub recheck: bool,
     /// Which window this result scored (1 = first check).
     pub window: u32,
+}
+
+/// A confirmed change of speaker inside one utterance (only with
+/// [`SpeakerGateConfig::split_on_speaker_change`]). Times are the gate's utterance clock: counted
+/// speech ms from the onset frame (0), which is media time for one continuous segment. The split
+/// point depends only on the audio, never on when an embedding finished.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpeakerChange {
+    pub key: u64,
+    pub from: Outcome,
+    pub to: Outcome,
+    /// Start of the lowest-energy 20 ms frame within [`SPLIT_SEARCH_MS`] of the first opposite
+    /// window's start.
+    pub split_at_ms: u32,
 }
 
 /// `speakerUnknownReason` values (the final's `speaker` is `unknown`).
@@ -168,6 +193,9 @@ enum Msg {
         recheck: bool,
         window: u32,
         attempt: u64,
+        /// Utterance clock (counted speech ms) at the end of the clip. The scored span is
+        /// `[end_ms - speech_bytes / 32, end_ms)`; the clip itself reaches back further (pre-roll).
+        end_ms: u32,
     },
     Reset,
 }
@@ -187,6 +215,10 @@ struct Book {
     /// Per re-opened key, the last check attempt sent before the re-open: the verdicts of those
     /// attempts are dropped, so a late one never answers the resumed check.
     reopened_after: VecDeque<(u64, u64)>,
+    /// Confirmed speaker changes not yet taken ([`SpeakerGate::take_speaker_changes`]).
+    changes: VecDeque<SpeakerChange>,
+    /// Keys whose speaker change was confirmed: no further window is cut for them.
+    split_keys: VecDeque<u64>,
 }
 
 struct Shared {
@@ -586,7 +618,7 @@ impl SpeakerGate {
     /// Enrolled with re-checks on: the buffer rolls (pre-roll plus the latest window) once the
     /// first check went out.
     fn rolling(&self) -> bool {
-        self.cfg.recheck_on_other && self.is_enrolled()
+        (self.cfg.recheck_on_other || self.cfg.split_on_speaker_change) && self.is_enrolled()
     }
 
     /// Cap on collected speech when the buffer does not roll.
@@ -724,8 +756,9 @@ impl SpeakerGate {
                             check,
                             false,
                             cur.windows_sent,
+                            (cur.speech_seen / BYTES_PER_MS) as u32,
                         ));
-                    } else if self.cfg.recheck_on_other
+                    } else if (self.cfg.recheck_on_other || self.cfg.split_on_speaker_change)
                         && cur.sent
                         && !cur.rechecks_closed
                         && self.windows_remain(cur.windows_sent)
@@ -739,7 +772,14 @@ impl SpeakerGate {
                         push_capped(&mut lock(&self.shared.book).rechecks_in_flight, cur.key);
                         let from = cur.buf.len().saturating_sub(keep);
                         let pcm = cur.buf[from..].to_vec();
-                        to_send = Some((cur.key, pcm, check, true, cur.windows_sent));
+                        to_send = Some((
+                            cur.key,
+                            pcm,
+                            check,
+                            true,
+                            cur.windows_sent,
+                            (cur.speech_seen / BYTES_PER_MS) as u32,
+                        ));
                     }
                     if roll && (cur.sent || cur.reopened) && cur.buf.len() > keep {
                         let n = cur.buf.len() - keep;
@@ -761,7 +801,7 @@ impl SpeakerGate {
             }
             attempt = feed.attempts;
         }
-        if let Some((key, pcm, speech_bytes, recheck, window)) = to_send {
+        if let Some((key, pcm, speech_bytes, recheck, window, end_ms)) = to_send {
             if recheck {
                 eprintln!(
                     "[speaker-gate] info: speaker gate re-check sent key={key} window={window}"
@@ -776,6 +816,7 @@ impl SpeakerGate {
                 recheck,
                 window,
                 attempt,
+                end_ms,
             });
         }
     }
@@ -871,6 +912,7 @@ impl SpeakerGate {
                 recheck: false,
                 window: cur.windows_sent + 1,
                 attempt: feed.attempts,
+                end_ms: (speech / BYTES_PER_MS) as u32,
             });
         } else if self.cfg.recheck_on_other
             && self.outcome_for(cur.key) == Some(Outcome::Other)
@@ -926,12 +968,17 @@ impl SpeakerGate {
     /// flight.
     fn recheck_due(&self, key: u64) -> bool {
         let book = lock(&self.shared.book);
-        book.verdicts
+        let label = book
+            .verdicts
             .iter()
             .rev()
             .find(|(k, _)| *k == key)
-            .map(|(_, o)| *o)
-            == Some(Outcome::Other)
+            .map(|(_, o)| *o);
+        let split = self.cfg.split_on_speaker_change;
+        // With the speaker-change watch on, a `caller` utterance is watched too, until a change
+        // was confirmed for it.
+        (label == Some(Outcome::Other) || (split && label == Some(Outcome::Caller)))
+            && !(split && book.split_keys.contains(&key))
             && !book.closed.contains(&key)
             && !book.rechecks_in_flight.contains(&key)
     }
@@ -1118,6 +1165,13 @@ impl SpeakerGate {
         lock(&self.feed).pending_barge.remove(&key)
     }
 
+    /// Confirmed speaker changes since the last call, oldest first (only with
+    /// `split_on_speaker_change`). Stored before the verdict that completed the run is delivered
+    /// to `on_verdict`, so a verdict handler can take it.
+    pub fn take_speaker_changes(&self) -> Vec<SpeakerChange> {
+        lock(&self.shared.book).changes.drain(..).collect()
+    }
+
     /// The verdict a final of `key` can carry right now: the stored verdict, or `Unknown` when no
     /// check was sent. `None` while a sent check or re-check has not settled (use
     /// [`Self::await_outcome`] off the frame path).
@@ -1202,6 +1256,109 @@ enum EmbedFail {
     Error,
 }
 
+/// Speaker-change watch of one utterance key (verifier task only).
+struct Watch {
+    /// Label of the first scored window.
+    label: Outcome,
+    /// Consecutive windows of the opposite label so far.
+    run: u32,
+    /// Span, end and clip of the first window of the run.
+    first: Option<(u32, u32, Vec<u8>)>,
+    /// A change was reported: the key is not watched further.
+    done: bool,
+}
+
+/// One scored window for the watch. The first scored (non-re-check) window labels the key. Each
+/// later window of the opposite label extends a run, any other window (same label, unscored)
+/// ends it, and [`SPEAKER_CHANGE_CONFIRM_WINDOWS`] in a row report a change. `span` is the
+/// window's `(start_ms, end_ms)` on the utterance clock; `clip` is the PCM that was scored, ending
+/// at `end_ms`.
+fn watch_step(
+    watches: &mut VecDeque<(u64, Watch)>,
+    key: u64,
+    outcome: Outcome,
+    recheck: bool,
+    span: (u32, u32),
+    clip: Vec<u8>,
+) -> Option<SpeakerChange> {
+    let scored = matches!(outcome, Outcome::Caller | Outcome::Other);
+    if !recheck {
+        if scored {
+            watches.retain(|(k, _)| *k != key);
+            watches.push_back((
+                key,
+                Watch {
+                    label: outcome,
+                    run: 0,
+                    first: None,
+                    done: false,
+                },
+            ));
+            while watches.len() > BOOK_CAP {
+                watches.pop_front();
+            }
+        }
+        return None;
+    }
+    let w = &mut watches.iter_mut().find(|(k, _)| *k == key)?.1;
+    if w.done {
+        return None;
+    }
+    if !scored || outcome == w.label {
+        w.run = 0;
+        w.first = None;
+        return None;
+    }
+    if w.run == 0 {
+        w.first = Some((span.0, span.1, clip));
+    }
+    w.run += 1;
+    if w.run < SPEAKER_CHANGE_CONFIRM_WINDOWS {
+        return None;
+    }
+    w.done = true;
+    let (start_ms, end_ms, clip) = w.first.take()?;
+    Some(SpeakerChange {
+        key,
+        from: w.label,
+        to: outcome,
+        split_at_ms: split_point(start_ms, end_ms, &clip),
+    })
+}
+
+/// Start (utterance clock, ms) of the lowest-energy 20 ms frame of `clip` within
+/// [`SPLIT_SEARCH_MS`] of `start_ms`. The clip ends at `end_ms`, so its frames sit at
+/// `end_ms - clip_ms + n * 20`; frames before the onset (pre-roll) are not candidates. Ties go to
+/// the frame nearest `start_ms`, then the earlier one. Falls back to `start_ms`.
+fn split_point(start_ms: u32, end_ms: u32, clip: &[u8]) -> u32 {
+    let frame_bytes = SPLIT_FRAME_MS * BYTES_PER_MS;
+    let clip_ms = (clip.len() / BYTES_PER_MS) as i64;
+    let clip_start = i64::from(end_ms) - clip_ms;
+    let lo = (i64::from(start_ms) - i64::from(SPLIT_SEARCH_MS)).max(0);
+    let hi = i64::from(start_ms) + i64::from(SPLIT_SEARCH_MS);
+    let mut best: Option<(u64, i64, i64)> = None;
+    for (n, frame) in clip.chunks_exact(frame_bytes).enumerate() {
+        let t = clip_start + (n * SPLIT_FRAME_MS) as i64;
+        if t < lo || t > hi {
+            continue;
+        }
+        let energy: u64 = frame
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| {
+                let v = i64::from(i16::from_le_bytes(*b));
+                (v * v) as u64
+            })
+            .sum();
+        let cand = (energy, (t - i64::from(start_ms)).abs(), t);
+        if best.is_none_or(|b| cand < b) {
+            best = Some(cand);
+        }
+    }
+    best.map_or(start_ms, |b| b.2 as u32)
+}
+
 async fn run(
     mut rx: UnboundedReceiver<Msg>,
     embedder: Arc<dyn SpeakerEmbedder>,
@@ -1214,6 +1371,7 @@ async fn run(
     let min_check_bytes = cfg.min_check_speech_ms as usize * BYTES_PER_MS;
     let mut reference: Option<Vec<f32>> = None;
     let mut enroll_pcm: Vec<u8> = Vec::new();
+    let mut watches: VecDeque<(u64, Watch)> = VecDeque::new();
 
     while let Some(msg) = rx.recv().await {
         let pending = shared
@@ -1225,6 +1383,7 @@ async fn run(
         }
         match msg {
             Msg::Reset => {
+                watches.clear();
                 reference = None;
                 enroll_pcm.clear();
                 shared.enrolled.store(false, Ordering::SeqCst);
@@ -1269,6 +1428,7 @@ async fn run(
                 recheck,
                 window,
                 attempt,
+                end_ms,
             } => {
                 let superseded = lock(&shared.book)
                     .reopened_after
@@ -1293,6 +1453,7 @@ async fn run(
                     continue;
                 }
                 let started = Instant::now();
+                let clip = cfg.split_on_speaker_change.then(|| pcm.clone());
                 let (outcome, timed_out, reason) = match reference.as_ref() {
                     None => (Outcome::Unknown, false, Some(UNKNOWN_NOT_ENROLLED)),
                     Some(_) if speech_bytes < min_check_bytes => {
@@ -1323,11 +1484,27 @@ async fn run(
                         Err(EmbedFail::Error) => (Outcome::Unknown, false, Some(UNKNOWN_ERROR)),
                     },
                 };
+                let span_start = end_ms.saturating_sub((speech_bytes / BYTES_PER_MS) as u32);
+                let change = clip.and_then(|clip| {
+                    watch_step(
+                        &mut watches,
+                        key,
+                        outcome,
+                        recheck,
+                        (span_start, end_ms),
+                        clip,
+                    )
+                });
                 {
                     let mut book = lock(&shared.book);
+                    if let Some(change) = change {
+                        push_capped(&mut book.split_keys, key);
+                        push_capped(&mut book.changes, change);
+                    }
                     if recheck {
-                        // Upgrade only: `other` -> `caller`. Anything else keeps `other`.
-                        if outcome == Outcome::Caller {
+                        // Upgrade only: `other` -> `caller`. Anything else keeps `other`. With the
+                        // speaker-change watch on, the caller's part is a new utterance instead.
+                        if outcome == Outcome::Caller && !cfg.split_on_speaker_change {
                             push_capped(&mut book.verdicts, (key, outcome));
                         }
                         book.rechecks_in_flight.retain(|k| *k != key);
@@ -1886,6 +2063,303 @@ mod tests {
         assert_eq!(gate.outcome_for(2), Some(Outcome::Caller));
         assert!(gate.rechecked(1));
         assert!(!gate.rechecked(2));
+    }
+
+    // ---- speaker-change watch (split_on_speaker_change) ----------------------------------------
+
+    /// `ms` of mono s16le at 16 kHz, every sample `amp`.
+    fn tone(ms: usize, amp: i16) -> Vec<u8> {
+        let mut out = Vec::with_capacity(ms * BYTES_PER_MS);
+        for _ in 0..ms * BYTES_PER_MS / 2 {
+            out.extend_from_slice(&amp.to_le_bytes());
+        }
+        out
+    }
+
+    /// A clip of `ms` loud audio with one silent 20 ms frame starting `quiet_at` ms into it.
+    fn clip_with_quiet_frame(ms: usize, quiet_at: usize) -> Vec<u8> {
+        let mut clip = tone(ms, 10_000);
+        let from = quiet_at * BYTES_PER_MS;
+        clip[from..from + SPLIT_FRAME_MS * BYTES_PER_MS].fill(0);
+        clip
+    }
+
+    /// First window labels the caller; two opposite re-check windows in a row confirm a change.
+    /// The split is the silent frame of the first opposite window's clip (clip: 500 ms ending at
+    /// 400 ms, so it starts at -100 ms; the silent frame is at 260 ms).
+    #[test]
+    fn caller_to_other_after_two_opposite_windows_splits_at_the_low_energy_frame() {
+        let mut w = VecDeque::new();
+        assert!(watch_step(&mut w, 1, Outcome::Caller, false, (0, 200), tone(500, 9000)).is_none());
+        let first = clip_with_quiet_frame(500, 260 + 100);
+        assert!(watch_step(&mut w, 1, Outcome::Other, true, (200, 400), first).is_none());
+        let change = watch_step(&mut w, 1, Outcome::Other, true, (400, 600), tone(500, 9000))
+            .expect("two opposite windows confirm the change");
+        assert_eq!(
+            change,
+            SpeakerChange {
+                key: 1,
+                from: Outcome::Caller,
+                to: Outcome::Other,
+                split_at_ms: 260
+            }
+        );
+        // Reported once.
+        assert!(watch_step(&mut w, 1, Outcome::Other, true, (600, 800), tone(500, 9000)).is_none());
+    }
+
+    #[test]
+    fn one_false_opposite_window_does_not_split() {
+        let mut w = VecDeque::new();
+        assert!(watch_step(&mut w, 1, Outcome::Caller, false, (0, 200), tone(500, 9000)).is_none());
+        for i in 1..=8_u32 {
+            // other, caller, other, caller ...: never two opposite windows in a row.
+            let outcome = if i % 2 == 1 {
+                Outcome::Other
+            } else {
+                Outcome::Caller
+            };
+            let span = (i * 200, i * 200 + 200);
+            assert!(
+                watch_step(&mut w, 1, outcome, true, span, tone(500, 9000)).is_none(),
+                "window {i}"
+            );
+        }
+        // An unscored window also ends the run.
+        assert!(watch_step(&mut w, 2, Outcome::Caller, false, (0, 200), tone(500, 9000)).is_none());
+        assert!(watch_step(&mut w, 2, Outcome::Other, true, (200, 400), tone(500, 9000)).is_none());
+        assert!(watch_step(
+            &mut w,
+            2,
+            Outcome::Unknown,
+            true,
+            (400, 600),
+            tone(500, 9000)
+        )
+        .is_none());
+        assert!(watch_step(&mut w, 2, Outcome::Other, true, (600, 800), tone(500, 9000)).is_none());
+    }
+
+    #[test]
+    fn other_to_caller_splits_too() {
+        let mut w = VecDeque::new();
+        assert!(watch_step(&mut w, 5, Outcome::Other, false, (0, 200), tone(500, 9000)).is_none());
+        assert!(watch_step(
+            &mut w,
+            5,
+            Outcome::Caller,
+            true,
+            (200, 400),
+            tone(500, 9000)
+        )
+        .is_none());
+        let change = watch_step(
+            &mut w,
+            5,
+            Outcome::Caller,
+            true,
+            (400, 600),
+            tone(500, 9000),
+        )
+        .unwrap();
+        assert_eq!((change.from, change.to), (Outcome::Other, Outcome::Caller));
+        // All frames equal: the tie goes to the frame nearest the window start (200 ms).
+        assert_eq!(change.split_at_ms, 200);
+    }
+
+    /// Frames before the onset and frames beyond +-300 ms of the window start are not candidates.
+    #[test]
+    fn split_point_stays_inside_the_search_range_and_after_the_onset() {
+        // Clip of 1000 ms ending at 1000 ms (starts at 0). Window starts at 600: range 300..900.
+        let mut clip = tone(1000, 10_000);
+        for at in [100_usize, 940] {
+            clip[at * BYTES_PER_MS..(at + 20) * BYTES_PER_MS].fill(0);
+        }
+        assert_eq!(
+            split_point(600, 1000, &clip),
+            600,
+            "outside quiet frames ignored"
+        );
+        // Pre-roll: clip of 500 ms ending at 200 ms starts at -300 ms; the silence at -300 ms is
+        // before the onset.
+        let clip = clip_with_quiet_frame(500, 0);
+        assert_eq!(split_point(100, 200, &clip), 100);
+    }
+
+    fn split_cfg(split: bool, cap: u32) -> SpeakerGateConfig {
+        SpeakerGateConfig {
+            enabled: true,
+            model_path: Some("m.onnx".into()),
+            enroll_speech_ms: 100,
+            check_speech_ms: 200,
+            min_check_speech_ms: 100,
+            verify_timeout_ms: 5000,
+            recheck_max_windows: cap,
+            split_on_speaker_change: split,
+            ..SpeakerGateConfig::default()
+        }
+    }
+
+    /// Feed-side window cutting (no verifier): a `caller` utterance is watched only with the flag
+    /// on, and the watch stops at `recheck_max_windows`.
+    #[test]
+    fn watch_cuts_windows_for_caller_up_to_the_cap_only_with_the_flag() {
+        for (split, expected) in [(false, 0_usize), (true, 3)] {
+            let gate = SpeakerGate::new(split_cfg(split, 4));
+            gate.shared.enrolled.store(true, Ordering::SeqCst);
+            let mut rx = lock(&gate.rx).take().unwrap();
+            start(&gate, 1, 10);
+            assert_eq!(checks(&mut rx).len(), 1);
+            store(&gate, 1, Outcome::Caller);
+            let mut cut = 0;
+            for _ in 0..200 {
+                gate.push_frame(&[3_u8; FRAME]);
+                cut += checks(&mut rx).len();
+                lock(&gate.shared.book).rechecks_in_flight.clear();
+            }
+            assert_eq!(
+                cut, expected,
+                "split={split}: windows 2..=4, the cap stops the rest"
+            );
+        }
+    }
+
+    /// Feeds `script` (one vector per window, the first is the enrollment) through a running gate
+    /// and returns the verdicts and the gate.
+    async fn run_script(
+        split: bool,
+        script: Vec<Vec<f32>>,
+        windows: usize,
+    ) -> (Arc<SpeakerGate>, Vec<Verdict>) {
+        let gate = SpeakerGate::new(split_cfg(split, 12));
+        let verdicts: Arc<Mutex<Vec<Verdict>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&verdicts);
+        let n = windows;
+        gate.spawn(
+            Box::new(SeqEmbedder {
+                queue: Mutex::new(script.into_iter().map(|v| (None, v)).collect()),
+            }),
+            Box::new(move |v| lock(&sink).push(v)),
+        );
+        gate.send(Msg::Enroll {
+            pcm: vec![0_u8; 100 * BYTES_PER_MS],
+        });
+        for _ in 0..500 {
+            if gate.is_enrolled() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(gate.is_enrolled());
+        start(&gate, 1, 10);
+        for i in 1..=n {
+            for _ in 0..500 {
+                if lock(&verdicts).len() >= i {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            assert!(lock(&verdicts).len() >= i, "verdict {i} never arrived");
+            if i < n {
+                for _ in 0..10 {
+                    gate.push_frame(&[3_u8; FRAME]);
+                }
+            }
+        }
+        // Extra speech after the last scripted window: nothing more may be cut after a change.
+        for _ in 0..40 {
+            gate.push_frame(&[3_u8; FRAME]);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let got = lock(&verdicts).clone();
+        (gate, got)
+    }
+
+    fn caller_v() -> Vec<f32> {
+        vec![1.0, 0.0]
+    }
+
+    fn other_v() -> Vec<f32> {
+        vec![0.0, 1.0]
+    }
+
+    /// Flag off: an `other` first window upgraded by a `caller` re-check behaves as before (the
+    /// verdict becomes `caller`), no change is ever reported, and a `caller` utterance gets no
+    /// further window.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn flag_off_keeps_the_upgrade_and_reports_no_change() {
+        let (gate, got) = run_script(false, vec![caller_v(), other_v(), caller_v()], 2).await;
+        assert_eq!(
+            got.iter()
+                .map(|v| (v.outcome, v.recheck, v.window))
+                .collect::<Vec<_>>(),
+            vec![(Outcome::Other, false, 1), (Outcome::Caller, true, 2)]
+        );
+        assert_eq!(gate.outcome_for(1), Some(Outcome::Caller));
+        assert!(gate.take_speaker_changes().is_empty());
+
+        let (gate, got) =
+            run_script(false, vec![caller_v(), caller_v(), other_v(), other_v()], 1).await;
+        assert_eq!(got.len(), 1, "a caller utterance is not watched: {got:?}");
+        assert_eq!(gate.outcome_for(1), Some(Outcome::Caller));
+        assert!(gate.take_speaker_changes().is_empty());
+    }
+
+    /// Flag on: caller -> other is confirmed by the second opposite window, reported once, the
+    /// verdict of the utterance stays `caller`, and the key is not watched further.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn flag_on_reports_caller_to_other_and_stops_watching() {
+        let (gate, got) = run_script(
+            true,
+            vec![
+                caller_v(),
+                caller_v(),
+                caller_v(),
+                other_v(),
+                other_v(),
+                other_v(),
+            ],
+            4,
+        )
+        .await;
+        assert_eq!(
+            got.len(),
+            4,
+            "windows 1..=4 only, none after the change: {got:?}"
+        );
+        let changes = gate.take_speaker_changes();
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert_eq!(
+            (changes[0].key, changes[0].from, changes[0].to),
+            (1, Outcome::Caller, Outcome::Other)
+        );
+        assert!(gate.take_speaker_changes().is_empty());
+        assert_eq!(gate.outcome_for(1), Some(Outcome::Caller));
+    }
+
+    /// Flag on: other -> caller splits instead of upgrading the verdict.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn flag_on_other_to_caller_splits_and_does_not_upgrade() {
+        let (gate, got) =
+            run_script(true, vec![caller_v(), other_v(), caller_v(), caller_v()], 3).await;
+        assert_eq!(got.len(), 3, "{got:?}");
+        let changes = gate.take_speaker_changes();
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert_eq!(
+            (changes[0].from, changes[0].to),
+            (Outcome::Other, Outcome::Caller)
+        );
+        assert_eq!(gate.outcome_for(1), Some(Outcome::Other), "no upgrade");
+    }
+
+    #[test]
+    fn split_flag_defaults_off_and_one_window_cap_is_rejected() {
+        assert!(!SpeakerGateConfig::default().split_on_speaker_change);
+        let mut cfg = split_cfg(true, 1);
+        cfg.recheck_on_other = false;
+        assert!(cfg.validate().unwrap_err().contains("splitOnSpeakerChange"));
+        cfg.recheck_max_windows = 0;
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]

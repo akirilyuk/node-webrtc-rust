@@ -532,6 +532,8 @@ impl TryFrom<JsSpeakerGateConfig> for SpeakerGateConfig {
                 .unwrap_or(d.suppress_short_barge_in),
             recheck_on_other: value.recheck_on_other.unwrap_or(d.recheck_on_other),
             recheck_max_windows: value.recheck_max_windows.unwrap_or(d.recheck_max_windows),
+            // Not exposed to JS yet (NAPI + SDK surface is a later chunk).
+            split_on_speaker_change: d.split_on_speaker_change,
             on_mismatch,
             verify_timeout_ms: value.verify_timeout_ms.unwrap_or(d.verify_timeout_ms),
             barge_in,

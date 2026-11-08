@@ -395,8 +395,9 @@ export interface JsSpeakerGateConfig {
    */
   recheckMaxWindows?: number
   /**
-   * Split an utterance at a confirmed speaker change (default false). Costs one extra STT
-   * stream per split.
+   * Split an utterance when the voice changes from the caller to another voice (default false).
+   * Another voice followed by the caller upgrades the utterance to the caller instead. Costs one
+   * extra STT stream per split.
    */
   splitOnSpeakerChange?: boolean
   /** `flag` (default) | `drop`. */

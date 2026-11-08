@@ -54,4 +54,44 @@ describe('voice agent VAD end-of-turn defaults', () => {
     expect(js?.threshold).toBe(0.2)
     expect(js?.adaptive).toEqual(adaptive)
   })
+
+  it('DEFAULT_VOICE_AGENT_VAD and VOICE_AGENT_VAD_PRESET equal the catalog presets on every vad path', () => {
+    const catalog = JSON.parse(
+      readFileSync(resolve(here, '../../voice-catalog/catalog/voice-agent-settings.json'), 'utf8'),
+    ) as {
+      settings: Record<string, { default: unknown }>
+      presets: Record<string, Record<string, unknown>>
+    }
+    const resolveValue = (chain: string[], path: string): unknown => {
+      for (const name of chain) {
+        if (Object.prototype.hasOwnProperty.call(catalog.presets[name], path)) {
+          return catalog.presets[name][path]
+        }
+      }
+      return catalog.settings[path].default
+    }
+    const flatten = (obj: Record<string, unknown>, prefix: string): Record<string, unknown> =>
+      Object.entries(obj).reduce<Record<string, unknown>>((acc, [k, v]) => {
+        if (v !== null && typeof v === 'object')
+          Object.assign(acc, flatten(v as Record<string, unknown>, `${prefix}${k}.`))
+        else acc[`${prefix}${k}`] = v
+        return acc
+      }, {})
+    const cases: Array<[string, Record<string, unknown>, string[]]> = [
+      ['DEFAULT_VOICE_AGENT_VAD', DEFAULT_VOICE_AGENT_VAD as Record<string, unknown>, ['default']],
+      [
+        'VOICE_AGENT_VAD_PRESET',
+        VOICE_AGENT_VAD_PRESET as Record<string, unknown>,
+        ['voiceAgent', 'default'],
+      ],
+    ]
+    for (const [name, vad, chain] of cases) {
+      const flat = flatten(vad, 'vad.')
+      expect(Object.keys(flat).length, name).toBeGreaterThan(10)
+      for (const [path, value] of Object.entries(flat)) {
+        expect(catalog.settings[path], `${name}: ${path} missing from the catalog`).toBeDefined()
+        expect(value, `${name}: ${path}`).toBe(resolveValue(chain, path))
+      }
+    }
+  })
 })

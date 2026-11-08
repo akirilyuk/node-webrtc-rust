@@ -1,7 +1,9 @@
 /**
  * Default and recommended VAD presets for {@link VoiceAgent}.
  *
- * Values match Rust `VadConfig` / `BargeInConfig` defaults unless noted.
+ * Values match Rust `VadConfig` / `BargeInConfig` defaults unless noted. The same facts are
+ * published as data in `@node-webrtc-rust/voice-catalog` (`catalog/voice-agent-settings.json`,
+ * presets `default` and `voiceAgent`); `tests/voice-vad-defaults.test.ts` fails when they differ.
  *
  * @see [VOICE-VAD-AND-BARGE-IN.md](../../VOICE-VAD-AND-BARGE-IN.md) — tuning latency vs accuracy
  * @see [VOICE-API.md](../../VOICE-API.md) — API reference

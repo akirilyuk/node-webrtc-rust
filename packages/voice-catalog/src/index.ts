@@ -1,5 +1,6 @@
 import vendorsCatalog from '../catalog/vendors.json'
 import adaptiveVadLimitsCatalog from '../catalog/adaptive-vad-limits.json'
+import voiceAgentSettingsCatalog from '../catalog/voice-agent-settings.json'
 import azureTtsVoicesCatalog from '../catalog/azure-tts-voices.json'
 import googleTtsVoicesCatalog from '../catalog/google-tts-voices.json'
 
@@ -321,3 +322,100 @@ export const ADAPTIVE_VAD_LIMITS: {
  * one is a serialized field of `AdaptiveVadConfig`, so a Rust rename fails it.
  */
 export const ADAPTIVE_VAD_KEYS: readonly string[] = adaptiveVadLimitsCatalog.keys
+
+/** Dotted camelCase path of a `VoiceAgentConfig` setting that the catalog describes. */
+export type VoiceAgentSettingPath = keyof (typeof voiceAgentSettingsCatalog)['settings']
+
+/** Value of a catalog setting or preset entry. */
+export type VoiceAgentSettingValue = boolean | number | string
+
+/**
+ * One engine setting. `min` / `max` appear only where the engine enforces a bound (a
+ * `validate()` rule) or as the `u32` range of an integer key. `default: null` means "derived by
+ * the engine" (`postUtteranceSilenceMs`, see {@link resolvePostUtteranceSilenceMs}).
+ */
+export interface VoiceAgentSettingDef {
+  readonly type: 'boolean' | 'number' | 'string'
+  readonly integer?: boolean
+  readonly enum?: readonly string[]
+  readonly default: VoiceAgentSettingValue | null
+  readonly min?: number
+  readonly max?: number
+}
+
+/** Named value sets over the engine defaults. */
+export type VoiceAgentPresetName = 'default' | 'voiceAgent' | 'browserWebrtc'
+
+/**
+ * Engine facts of the voice-agent settings (config path, type, integer flag, enum, default,
+ * enforced bounds), from `catalog/voice-agent-settings.json`. Mirrors `VoiceAgentConfig` in
+ * `crates/speech/src/config.rs`; the Rust test `voice_agent_settings_catalog_test` fails when a
+ * path, type, integer flag, enum value, default or validated bound differs from the engine.
+ */
+export const VOICE_AGENT_SETTINGS: Readonly<Record<VoiceAgentSettingPath, VoiceAgentSettingDef>> =
+  voiceAgentSettingsCatalog.settings as unknown as Readonly<
+    Record<VoiceAgentSettingPath, VoiceAgentSettingDef>
+  >
+
+/** Every path in {@link VOICE_AGENT_SETTINGS}, in catalog order. */
+export const VOICE_AGENT_SETTING_PATHS: readonly VoiceAgentSettingPath[] = Object.keys(
+  voiceAgentSettingsCatalog.settings,
+) as VoiceAgentSettingPath[]
+
+/**
+ * Named presets, each a partial map from path to value: `default` (empty: the engine defaults of
+ * {@link VOICE_AGENT_SETTINGS}), `voiceAgent` (the recommended agent preset: `gateStt` on, larger
+ * `speechPadMs`) and `browserWebrtc` (`voiceAgent` plus the quieter energy threshold and shorter
+ * minimum speech that suit browser microphone audio, as in the Sherpa examples).
+ */
+export const VOICE_AGENT_PRESETS: Readonly<
+  Record<
+    VoiceAgentPresetName,
+    Readonly<Partial<Record<VoiceAgentSettingPath, VoiceAgentSettingValue>>>
+  >
+> = voiceAgentSettingsCatalog.presets as unknown as Readonly<
+  Record<
+    VoiceAgentPresetName,
+    Readonly<Partial<Record<VoiceAgentSettingPath, VoiceAgentSettingValue>>>
+  >
+>
+
+const PRESET_CHAIN: Readonly<Record<VoiceAgentPresetName, readonly VoiceAgentPresetName[]>> = {
+  default: ['default'],
+  voiceAgent: ['voiceAgent', 'default'],
+  browserWebrtc: ['browserWebrtc', 'voiceAgent', 'default'],
+}
+
+/**
+ * The value of `path` under `preset`: the preset's own entry, else `voiceAgent` (for
+ * `browserWebrtc`), else `default`, else the setting's engine default (`null` when derived).
+ */
+export function voiceAgentPresetValue(
+  preset: VoiceAgentPresetName,
+  path: VoiceAgentSettingPath,
+): VoiceAgentSettingValue | null {
+  for (const name of PRESET_CHAIN[preset]) {
+    const values = VOICE_AGENT_PRESETS[name]
+    if (Object.prototype.hasOwnProperty.call(values, path)) {
+      return values[path] as VoiceAgentSettingValue
+    }
+  }
+  return VOICE_AGENT_SETTINGS[path].default
+}
+
+/** Padding (ms) the engine adds when `postUtteranceSilenceMs` is unset. */
+export const POST_UTTERANCE_SILENCE_PAD_MS: number =
+  voiceAgentSettingsCatalog.postUtteranceSilencePadMs
+
+/**
+ * Trailing outbound silence (ms) after TTS. Mirrors `resolved_post_utterance_silence_ms` in
+ * `crates/speech/src/config.rs`: an explicit value wins (`0` stays `0`), else
+ * `sttGateHoldMs + minSilenceDurationMs + 250`.
+ */
+export function resolvePostUtteranceSilenceMs(
+  values: { sttGateHoldMs: number; minSilenceDurationMs: number },
+  explicit?: number | null,
+): number {
+  if (explicit !== undefined && explicit !== null) return explicit
+  return values.sttGateHoldMs + values.minSilenceDurationMs + POST_UTTERANCE_SILENCE_PAD_MS
+}

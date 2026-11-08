@@ -10,7 +10,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **speech, sdk:** opt-in `speakerGate.splitOnSpeakerChange` (default `false`). When the voice in one utterance changes between the caller and someone else for two consecutive check windows, the utterance is split there. The first part is re-decoded on its own and finalized with `reason: 'speaker_split'`; the rest becomes a new utterance that the gate judges again. A `user_utterance_split` event (`fromUtteranceId`, `toUtteranceId`, `splitAtMs`, `from`, `to`) marks the split. A split opens one extra STT stream. A re-decode that does not finish in time emits an `error` event with `reason: 'speaker_split_redecode_timeout'`. Flag-off behaviour is unchanged.
+- **speech, sdk:** opt-in `speakerGate.splitOnSpeakerChange` (default `false`). When the voice in one utterance changes from the caller to someone else for two consecutive check windows, the utterance is split there. The caller stays the caller: another voice followed by the caller upgrades the whole utterance to the caller, as with the flag off, and never splits (`from` is always `caller`, `to` always `other`). The first part is re-decoded on its own and finalized with `reason: 'speaker_split'`; the rest becomes a new utterance that the gate judges again. A `user_utterance_split` event (`fromUtteranceId`, `toUtteranceId`, `splitAtMs`, `from`, `to`) marks the split. A split opens one extra STT stream. A re-decode that does not finish in time emits an `error` event with `reason: 'speaker_split_redecode_timeout'`. Flag-off behaviour is unchanged.
 
 ## [0.18.0] - 2026-11-08
 

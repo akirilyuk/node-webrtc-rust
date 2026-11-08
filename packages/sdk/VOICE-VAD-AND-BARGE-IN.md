@@ -384,11 +384,11 @@ Limit: a bystander about as loud as the caller can pass the check; the gate is t
 
 ### Split on speaker change (`splitOnSpeakerChange`)
 
-Off by default. By default one utterance gets one label, so a caller and a bystander who talk without a pause end up in one transcript labelled by whoever was heard first. With `splitOnSpeakerChange: true` the gate keeps scoring windows for the whole utterance, in both directions, up to `recheckMaxWindows`. When two consecutive windows say the opposite of the current label, the utterance is split at the quietest point near the first of them:
+Off by default. By default one utterance gets one label, so a caller and a bystander who talk without a pause end up in one transcript labelled by whoever was heard first. With `splitOnSpeakerChange: true` the gate keeps scoring windows for the whole utterance, up to `recheckMaxWindows`. The caller stays the caller, so only one direction splits. When two consecutive windows say `other` after the utterance was labelled `caller`, the utterance is split at the quietest point near the first of them. Another voice followed by the caller does not split: the first `caller` re-check window upgrades the whole utterance to `caller` and releases the barge-in, as with the flag off (see "Re-check after other"). After such an upgrade a later run of two `other` windows still splits.
 
 - The first part is re-decoded on its own STT stream and ends with a `user_speech_final` carrying `reason: 'speaker_split'` and its own label. The live text, which mixed both voices, is discarded.
 - The rest is a new utterance with a new `utteranceId`. The gate judges it from scratch, and a bystander's new utterance never barges in.
-- A `user_utterance_split` event (`fromUtteranceId`, `toUtteranceId`, `splitAtMs`, `from`, `to`) is emitted after the new utterance's `user_speaking_start`. The first part's final comes before any partial or final of the new one.
+- A `user_utterance_split` event (`fromUtteranceId`, `toUtteranceId`, `splitAtMs`, `from` (always `caller`), `to` (always `other`)) is emitted after the new utterance's `user_speaking_start`. The first part's final comes before any partial or final of the new one.
 - Cost: every split opens one extra STT stream at the vendor. That is why the flag is off. It needs `recheckMaxWindows` other than `1`.
 - If the re-decode does not finish in its bound, an `error` event with `reason: 'speaker_split_redecode_timeout'` is emitted for the first part. No split happens when the audio buffer overflowed or does not cover the utterance (logged and counted).
 

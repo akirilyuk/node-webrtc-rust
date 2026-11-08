@@ -339,7 +339,8 @@ export interface VoiceAgentConfig {
     recheckMaxWindows?: number
     /**
      * Opt-in, default `false`. Keeps scoring windows after the first verdict and, when the voice
-     * changes between caller and bystander for 2 consecutive windows, splits the utterance there:
+     * changes from the caller to someone else for 2 consecutive windows, splits the utterance there
+     * (another voice followed by the caller upgrades the utterance to the caller, as before):
      * the first part is re-decoded on its own and final-ed with `reason: 'speaker_split'`, the
      * rest becomes a new utterance. A `user_utterance_split` event marks the split. Each split
      * opens one extra STT stream. Needs `recheckMaxWindows` other than `1`. See "Split on speaker
@@ -467,7 +468,8 @@ export type SpeechEventType =
   /**
    * `speakerGate.splitOnSpeakerChange`: an utterance was split at a confirmed speaker change.
    * `fromUtteranceId` is the utterance that ends, `toUtteranceId` the one that starts,
-   * `splitAtMs` where the voice changed, `from` / `to` the labels. It has no `utteranceId`. Emitted after the new
+   * `splitAtMs` where the voice changed, `from` / `to` the labels (`from` is always `caller` and
+   * `to` always `other`: only a change from the caller to another voice splits). It has no `utteranceId`. Emitted after the new
    * utterance's `user_speaking_start`. No text.
    */
   | 'user_utterance_split'
@@ -639,9 +641,9 @@ export interface SpeechEvent {
   toUtteranceId?: string
   /** `user_utterance_split`: ms into the audio of the split utterance (`fromUtteranceId`) where the speaker changed. */
   splitAtMs?: number
-  /** `user_utterance_split`: speaker label before the split. */
+  /** `user_utterance_split`: speaker label before the split (always `caller`). */
   from?: 'caller' | 'other'
-  /** `user_utterance_split`: speaker label after the split. */
+  /** `user_utterance_split`: speaker label after the split (always `other`). */
   to?: 'caller' | 'other'
 }
 

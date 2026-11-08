@@ -103,9 +103,9 @@ pub struct Verdict {
 }
 
 /// A confirmed change of speaker inside one utterance (only with
-/// [`SpeakerGateConfig::split_on_speaker_change`]). Times are the gate's utterance clock: counted
-/// speech ms from the onset frame (0), which is media time for one continuous segment. The split
-/// point depends only on the audio, never on when an embedding finished.
+/// [`SpeakerGateConfig::split_on_speaker_change`]). Times are media ms since the key's onset frame
+/// (gap frames included; pre-roll before the onset excluded). The split point depends only on the
+/// audio, never on when an embedding finished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpeakerChange {
     pub key: u64,
@@ -193,7 +193,8 @@ enum Msg {
         recheck: bool,
         window: u32,
         attempt: u64,
-        /// Utterance clock (counted speech ms) at the end of the clip. The scored span is
+        /// Media ms since the key's onset frame at the end of the clip (gap frames included;
+        /// pre-roll before the onset excluded). The scored span is
         /// `[end_ms - speech_bytes / 32, end_ms)`; the clip itself reaches back further (pre-roll).
         end_ms: u32,
     },
@@ -266,10 +267,17 @@ struct Cur {
     /// Re-opened after a `short` end: the buffer always rolls (pre-roll plus the latest check), so
     /// the resumed window scores the latest speech whatever `recheck_on_other` says.
     reopened: bool,
+    /// Media bytes since the key's onset frame (gap frames included, pre-roll before the onset
+    /// excluded). Separate from `speech_seen`, which only schedules windows.
+    media_bytes: usize,
 }
 
 #[derive(Default)]
 struct Feed {
+    /// Frames pushed outside an utterance since the last utterance ended (a brief VAD gap).
+    gap_bytes: usize,
+    /// Per ended key, its media bytes at the end (capped at `BOOK_CAP`).
+    media_end: VecDeque<(u64, usize)>,
     ring: Vec<u8>,
     cur: Option<Cur>,
     ended: VecDeque<(u64, Vec<u8>)>,
@@ -673,9 +681,21 @@ impl SpeakerGate {
             .flatten();
         let check = self.check_bytes();
         let reopened = self.reopen_short(&mut feed, key);
+        // A key that ended before continues its media clock across the gap.
+        let media_bytes = feed
+            .media_end
+            .iter()
+            .rev()
+            .find(|(k, _)| *k == key)
+            .map_or(0, |(_, m)| m + feed.gap_bytes);
         let cur = match resumed {
             Some((k, buf)) => match reopened {
-                Some(cur) => Cur { buf, pre: 0, ..cur },
+                Some(cur) => Cur {
+                    buf,
+                    pre: 0,
+                    media_bytes,
+                    ..cur
+                },
                 None => {
                     let ws = self.windows_sent_for(k);
                     Cur {
@@ -687,6 +707,7 @@ impl SpeakerGate {
                         speech_seen: ws as usize * check,
                         rechecks_closed: self.recheck_closed(k),
                         reopened: false,
+                        media_bytes,
                     }
                 }
             },
@@ -694,7 +715,12 @@ impl SpeakerGate {
                 let buf = std::mem::take(&mut feed.ring);
                 let pre = buf.len();
                 if let Some(cur) = reopened {
-                    Cur { buf, pre, ..cur }
+                    Cur {
+                        buf,
+                        pre,
+                        media_bytes,
+                        ..cur
+                    }
                 } else {
                     let sent = self.check_sent(key);
                     let ws = if sent { self.windows_sent_for(key) } else { 0 };
@@ -709,6 +735,7 @@ impl SpeakerGate {
                         speech_seen: ws as usize * check,
                         rechecks_closed: self.recheck_closed(key),
                         reopened: false,
+                        media_bytes,
                     }
                 }
             }
@@ -740,6 +767,7 @@ impl SpeakerGate {
                         cur.buf.extend_from_slice(&frame[..frame.len().min(room)]);
                     }
                     cur.speech_seen += frame.len();
+                    cur.media_bytes += frame.len();
                     // Window k goes out at k × check of counted speech: a first check at `check`,
                     // a re-opened `short` key at (windows sent + 1) × check, its short part
                     // included. The clip is the latest pre-roll + check.
@@ -756,7 +784,7 @@ impl SpeakerGate {
                             check,
                             false,
                             cur.windows_sent,
-                            (cur.speech_seen / BYTES_PER_MS) as u32,
+                            (cur.media_bytes / BYTES_PER_MS) as u32,
                         ));
                     } else if (self.cfg.recheck_on_other || self.cfg.split_on_speaker_change)
                         && cur.sent
@@ -778,7 +806,7 @@ impl SpeakerGate {
                             check,
                             true,
                             cur.windows_sent,
-                            (cur.speech_seen / BYTES_PER_MS) as u32,
+                            (cur.media_bytes / BYTES_PER_MS) as u32,
                         ));
                     }
                     if roll && (cur.sent || cur.reopened) && cur.buf.len() > keep {
@@ -788,6 +816,7 @@ impl SpeakerGate {
                     }
                 }
                 None => {
+                    feed.gap_bytes += frame.len();
                     feed.ring.extend_from_slice(frame);
                     let max = PRE_ROLL_MS * BYTES_PER_MS;
                     if feed.ring.len() > max {
@@ -857,6 +886,7 @@ impl SpeakerGate {
             speech_seen,
             rechecks_closed: false,
             reopened: true,
+            media_bytes: 0,
         })
     }
 
@@ -879,6 +909,12 @@ impl SpeakerGate {
         let Some(cur) = feed.cur.take() else {
             return;
         };
+        feed.media_end.retain(|(k, _)| *k != cur.key);
+        feed.media_end.push_back((cur.key, cur.media_bytes));
+        while feed.media_end.len() > BOOK_CAP {
+            feed.media_end.pop_front();
+        }
+        feed.gap_bytes = 0;
         if !cur.sent {
             self.mark_sent(cur.key);
             // A re-opened key that ends before (windows sent + 1) × check of counted speech is
@@ -2350,6 +2386,53 @@ mod tests {
             (Outcome::Other, Outcome::Caller)
         );
         assert_eq!(gate.outcome_for(1), Some(Outcome::Other), "no upgrade");
+    }
+
+    /// The media clock keeps counting through a brief VAD gap (gap frames included), so the
+    /// re-check window cut at 600 ms of media reports `end_ms == 600`, not 400 (counted speech).
+    #[test]
+    fn media_clock_continues_across_a_brief_gap() {
+        let gate = SpeakerGate::new(split_cfg(true, 12));
+        gate.shared.enrolled.store(true, Ordering::SeqCst);
+        let mut rx = lock(&gate.rx).take().unwrap();
+        start(&gate, 1, 15);
+        let first: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(matches!(first[0], Msg::Check { end_ms: 200, .. }));
+        store(&gate, 1, Outcome::Other);
+        gate.end_utterance();
+        for _ in 0..5 {
+            gate.push_frame(&[1_u8; FRAME]);
+        }
+        gate.begin(1, &[2_u8; FRAME]);
+        let mut end_ms = None;
+        for _ in 0..30 {
+            if let Ok(Msg::Check { end_ms: e, .. }) = rx.try_recv() {
+                end_ms = Some(e);
+                break;
+            }
+            gate.push_frame(&[2_u8; FRAME]);
+        }
+        assert_eq!(end_ms, Some(600));
+    }
+
+    /// With the watch on and `recheck_on_other` off, `end_locked` leaves a held barge-in of an
+    /// `other` key exactly as with the watch off: the verdict handler owns it.
+    #[test]
+    fn pending_barge_after_end_matches_flag_off_without_recheck() {
+        let mut kept = Vec::new();
+        for split in [false, true] {
+            let mut cfg = split_cfg(split, 12);
+            cfg.recheck_on_other = false;
+            let gate = SpeakerGate::new(cfg);
+            gate.shared.enrolled.store(true, Ordering::SeqCst);
+            let _rx = lock(&gate.rx).take().unwrap();
+            start(&gate, 1, 10);
+            store(&gate, 1, Outcome::Other);
+            gate.set_pending_barge(1, 0);
+            gate.end_utterance();
+            kept.push(gate.has_pending_barge(1));
+        }
+        assert_eq!(kept[0], kept[1]);
     }
 
     #[test]

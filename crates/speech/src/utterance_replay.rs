@@ -11,7 +11,7 @@ pub const SPEECH_REPLAY_MAX_MS: u32 = 15_000;
 pub const SPEECH_REPLAY_MAX_AGE_MS: u64 = 10_000;
 
 /// Bytes per millisecond of mono 16 kHz s16le PCM.
-const BYTES_PER_MS_16K_MONO: usize = 32;
+pub(crate) const BYTES_PER_MS_16K_MONO: usize = 32;
 
 pub fn replay_max_bytes() -> usize {
     SPEECH_REPLAY_MAX_MS as usize * BYTES_PER_MS_16K_MONO
@@ -80,6 +80,11 @@ impl UtteranceReplayBuffer {
         self.pcm.clear();
         self.overflow = true;
         self.active = false;
+    }
+
+    /// Bytes held now (0 after an overflow).
+    pub fn len_bytes(&self) -> usize {
+        self.pcm.len()
     }
 
     pub fn overflowed(&self) -> bool {

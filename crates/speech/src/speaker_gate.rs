@@ -948,7 +948,7 @@ impl SpeakerGate {
                 recheck: false,
                 window: cur.windows_sent + 1,
                 attempt: feed.attempts,
-                end_ms: (speech / BYTES_PER_MS) as u32,
+                end_ms: (cur.media_bytes / BYTES_PER_MS) as u32,
             });
         } else if self.cfg.recheck_on_other
             && self.outcome_for(cur.key) == Some(Outcome::Other)

@@ -726,6 +726,7 @@ async fn flag_off_keeps_one_utterance() {
     rig.feed_paced(B, 40).await;
     rig.feed(0, 30).await;
     rig.idle().await;
+    assert_eq!(rig.agent.speaker_split_provisional_holds(), 0);
     rig.drain();
     let ids = rig.speaking_start_ids();
     assert_eq!(ids.len(), 3, "{ids:?}");
@@ -828,6 +829,7 @@ async fn single_caller_window_in_other_utterance_never_barges() {
     rig.agent.flush_tts().await.unwrap();
     rig.feed(0, 30).await;
     rig.idle().await;
+    assert_eq!(rig.agent.speaker_split_provisional_holds(), 1);
     rig.drain();
     let barges = rig.barge_ids();
     assert!(

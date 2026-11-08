@@ -642,6 +642,8 @@ pub struct VoiceAgent {
     speaker_split_stale: AtomicU64,
     speaker_split_discarded_results: AtomicU64,
     speaker_split_redecode_timeouts: AtomicU64,
+    /// Test hook: `caller` re-check verdicts held as provisional (not a confirmed change).
+    speaker_split_provisional_holds: AtomicU64,
     tts: Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
     /// Whether `tts` holds a provider. Written while holding the `tts` lock at every writer of
     /// `tts` (constructor, `apply_pending_tts_config_if_any`), read by sends without that lock:
@@ -873,6 +875,7 @@ impl VoiceAgent {
             speaker_split_stale: AtomicU64::new(0),
             speaker_split_discarded_results: AtomicU64::new(0),
             speaker_split_redecode_timeouts: AtomicU64::new(0),
+            speaker_split_provisional_holds: AtomicU64::new(0),
             tts_configured: AtomicBool::new(tts.is_some()),
             tts: Arc::new(Mutex::new(tts)),
             tts_drain_wake: Arc::new(Notify::new()),
@@ -3663,6 +3666,12 @@ impl VoiceAgent {
         self.speaker_verdicts_applied.load(Ordering::SeqCst)
     }
 
+    /// Test hook: `caller` re-check verdicts the split watch held as provisional.
+    #[doc(hidden)]
+    pub fn speaker_split_provisional_holds(&self) -> u64 {
+        self.speaker_split_provisional_holds.load(Ordering::SeqCst)
+    }
+
     /// Test hook: caps the utterance replay ring at `ms` (default `SPEECH_REPLAY_MAX_MS`) so a
     /// test reaches the overflow path without a long turn. Not exposed to the bindings.
     #[doc(hidden)]
@@ -4004,6 +4013,10 @@ impl VoiceAgent {
             && verdict.outcome == Outcome::Caller
             && gate.outcome_for(verdict.key) != Some(Outcome::Caller)
             && self.split_on_speaker_change;
+        if provisional_caller {
+            self.speaker_split_provisional_holds
+                .fetch_add(1, Ordering::SeqCst);
+        }
         if provisional_caller || !gate.barge_allowed(&verdict) {
             // Any non-caller re-check result (other, or unknown after a timeout or failure) keeps
             // the barge-in held while further windows can still run. A first-check `unknown`

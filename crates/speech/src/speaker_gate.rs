@@ -1330,11 +1330,6 @@ struct Watch {
     done: bool,
 }
 
-/// One scored window for the watch. The first scored (non-re-check) window labels the key. Each
-/// later window of the opposite label extends a run, any other window (same label, unscored)
-/// ends it, and [`SPEAKER_CHANGE_CONFIRM_WINDOWS`] in a row report a change. `span` is the
-/// window's `(start_ms, end_ms)` on the utterance clock; `clip` is the PCM that was scored, ending
-/// at `end_ms`.
 /// Watch on: count `window` of `key` as a reported window when the gate with the watch off would
 /// have scored it (the first window; a re-check while the stored verdict is still `other`), else
 /// as a watch window. Call it before the verdict book takes the window's own upgrade: the stored
@@ -1362,6 +1357,11 @@ fn book_reported_window(book: &mut Book, key: u64, recheck: bool, window: u32) {
     }
 }
 
+/// One scored window for the watch. The first scored (non-re-check) window labels the key. Each
+/// later window of the opposite label extends a run, any other window (same label, unscored)
+/// ends it, and [`SPEAKER_CHANGE_CONFIRM_WINDOWS`] in a row report a change. `span` is the
+/// window's `(start_ms, end_ms)` on the utterance clock; `clip` is the PCM that was scored, ending
+/// at `end_ms`.
 fn watch_step(
     watches: &mut VecDeque<(u64, Watch)>,
     key: u64,
@@ -1605,7 +1605,14 @@ async fn run(
                     if recheck {
                         // Upgrade only: `other` -> `caller`. Anything else keeps `other`. The
                         // caller stays caller, with the speaker-change watch on too.
-                        if outcome == Outcome::Caller {
+                        // Once per key: later `caller` watch windows add no duplicate entry.
+                        let still_other = book
+                            .verdicts
+                            .iter()
+                            .rev()
+                            .find(|(k, _)| *k == key)
+                            .is_some_and(|(_, o)| *o == Outcome::Other);
+                        if outcome == Outcome::Caller && still_other {
                             push_capped(&mut book.verdicts, (key, outcome));
                         }
                         book.rechecks_in_flight.retain(|k| *k != key);
@@ -2456,6 +2463,30 @@ mod tests {
         assert_eq!(gate.outcome_for(1), Some(Outcome::Caller));
         assert!(gate.rechecked(1));
         assert_eq!(gate.windows_scored(1), 2);
+    }
+
+    /// Flag on or off, [other, caller, caller, caller]: the book holds the first `other` and exactly
+    /// one `caller` upgrade, never one per watch window.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn caller_watch_windows_push_one_upgrade_verdict() {
+        let script = vec![caller_v(), other_v(), caller_v(), caller_v(), caller_v()];
+        let entries = |g: &SpeakerGate| -> Vec<(u64, Outcome)> {
+            lock(&g.shared.book)
+                .verdicts
+                .iter()
+                .filter(|(k, _)| *k == 1)
+                .copied()
+                .collect()
+        };
+        let (on, _) = run_script(true, script.clone(), 4).await;
+        let (off, _) = run_script(false, script, 2).await;
+        assert_eq!(
+            entries(&on),
+            vec![(1, Outcome::Other), (1, Outcome::Caller)]
+        );
+        assert_eq!(entries(&on), entries(&off));
+        assert_eq!(on.outcome_for(1), Some(Outcome::Caller));
+        assert_eq!(on.windows_scored(1), 2);
     }
 
     /// Flag on: other, caller, other, other -> the caller upgrade, then one change from the

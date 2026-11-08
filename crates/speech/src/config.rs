@@ -286,13 +286,13 @@ pub struct SpeakerGateConfig {
     /// default 1.5 s check).
     pub recheck_max_windows: u32,
     /// Opt-in, default false (byte-identical to earlier releases when off). While an utterance is
-    /// live the gate keeps scoring `check_speech_ms` windows in both directions (up to
-    /// `recheck_max_windows`) and reports a speaker change after
-    /// `speaker_gate::SPEAKER_CHANGE_CONFIRM_WINDOWS` consecutive windows of the opposite label,
-    /// with a split point in utterance media time (`speaker_gate::SpeakerChange`). A later
-    /// `other` -> `caller` window then no longer upgrades the utterance's verdict: the caller's
-    /// part is a new utterance. The agent splits on it at a later chunk; a split re-decodes the
-    /// first part on one extra STT stream, which is why this defaults off.
+    /// live the gate keeps scoring `check_speech_ms` windows (up to `recheck_max_windows`) and
+    /// reports a speaker change after `speaker_gate::SPEAKER_CHANGE_CONFIRM_WINDOWS` consecutive
+    /// `other` windows of a `caller`-labelled utterance, with a split point in utterance media time
+    /// (`speaker_gate::SpeakerChange`, `from` always `Caller`). The caller stays caller: `other`
+    /// followed by `caller` never splits; the first `caller` re-check upgrades the verdict as with
+    /// the flag off. A split re-decodes the first part on one extra STT stream, which is why this
+    /// defaults off.
     pub split_on_speaker_change: bool,
     pub on_mismatch: SpeakerMismatchAction,
     /// Bound (ms) on one embedding call and on a final waiting for its verdict.

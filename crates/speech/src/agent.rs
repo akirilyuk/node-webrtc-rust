@@ -642,8 +642,6 @@ pub struct VoiceAgent {
     speaker_split_stale: AtomicU64,
     speaker_split_discarded_results: AtomicU64,
     speaker_split_redecode_timeouts: AtomicU64,
-    /// Test hook: `caller` re-check verdicts held as provisional (not a confirmed change).
-    speaker_split_provisional_holds: AtomicU64,
     tts: Arc<Mutex<Option<Box<dyn TtsProvider>>>>,
     /// Whether `tts` holds a provider. Written while holding the `tts` lock at every writer of
     /// `tts` (constructor, `apply_pending_tts_config_if_any`), read by sends without that lock:
@@ -875,7 +873,6 @@ impl VoiceAgent {
             speaker_split_stale: AtomicU64::new(0),
             speaker_split_discarded_results: AtomicU64::new(0),
             speaker_split_redecode_timeouts: AtomicU64::new(0),
-            speaker_split_provisional_holds: AtomicU64::new(0),
             tts_configured: AtomicBool::new(tts.is_some()),
             tts: Arc::new(Mutex::new(tts)),
             tts_drain_wake: Arc::new(Notify::new()),
@@ -3666,12 +3663,6 @@ impl VoiceAgent {
         self.speaker_verdicts_applied.load(Ordering::SeqCst)
     }
 
-    /// Test hook: `caller` re-check verdicts the split watch held as provisional.
-    #[doc(hidden)]
-    pub fn speaker_split_provisional_holds(&self) -> u64 {
-        self.speaker_split_provisional_holds.load(Ordering::SeqCst)
-    }
-
     /// Test hook: caps the utterance replay ring at `ms` (default `SPEECH_REPLAY_MAX_MS`) so a
     /// test reaches the overflow path without a long turn. Not exposed to the bindings.
     #[doc(hidden)]
@@ -3701,22 +3692,14 @@ impl VoiceAgent {
     async fn apply_speaker_changes(&self, gate: &SpeakerGate) -> Vec<u64> {
         let mut split = Vec::new();
         for change in gate.take_speaker_changes() {
-            if self.split_live_utterance(gate, change).await {
-                split.push(change.key);
+            // The gate reports only caller -> other (the caller stays caller). Anything else is
+            // a bug upstream: counted, logged, never applied.
+            if change.from != Outcome::Caller {
+                self.skip_speaker_split(&change, "unexpected_direction");
                 continue;
             }
-            // Fail open: an other -> caller change that was not split (overflow, ring not
-            // aligned, record terminal or no longer live) gets the old re-check upgrade, so the
-            // caller can still barge in. A key whose record is gone is only dropped.
-            if change.from == Outcome::Other && change.to == Outcome::Caller {
-                let record_known = self.inner.lock().await.stt_record_ref(change.key).is_some();
-                if record_known {
-                    gate.apply_caller_upgrade(change.key);
-                    eprintln!(
-                        "[speech] speaker split not applied; caller upgrade instead key={}",
-                        change.key
-                    );
-                }
+            if self.split_live_utterance(gate, change).await {
+                split.push(change.key);
             }
         }
         split
@@ -4013,18 +3996,7 @@ impl VoiceAgent {
             }
             return;
         };
-        // With the speaker-change watch on, one `caller` re-check window does not make an `other`
-        // utterance the caller's (`rt.provisional-verdict-acted-final`): the barge-in stays held
-        // until the change is confirmed, and then it comes from the new utterance.
-        let provisional_caller = verdict.recheck
-            && verdict.outcome == Outcome::Caller
-            && gate.outcome_for(verdict.key) != Some(Outcome::Caller)
-            && self.split_on_speaker_change;
-        if provisional_caller {
-            self.speaker_split_provisional_holds
-                .fetch_add(1, Ordering::SeqCst);
-        }
-        if provisional_caller || !gate.barge_allowed(&verdict) {
+        if !gate.barge_allowed(&verdict) {
             // Any non-caller re-check result (other, or unknown after a timeout or failure) keeps
             // the barge-in held while further windows can still run. A first-check `unknown`
             // (not a re-check) does not hold.

@@ -693,57 +693,6 @@ async fn other_u2_never_barges_in() {
     rig.agent.stop().await.unwrap();
 }
 
-/// Other then caller while the agent speaks: U1 (`other`) never barges in, even on a single
-/// `caller` re-check window, and the caller's U2 barges in like a fresh caller utterance.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn caller_u2_barges_in_and_other_u1_never_does() {
-    let mut rig = rig(true).await;
-    rig.enroll().await;
-    rig.start_speaking().await;
-    rig.feed_paced(B, 20).await;
-    rig.drain();
-    assert!(rig.barge_ids().is_empty(), "other speaker barged in");
-    rig.feed_paced(A, 40).await;
-    rig.wait_splits(1).await;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        rig.drain();
-        if !rig.barge_ids().is_empty() || Instant::now() > deadline {
-            break;
-        }
-        rig.feed(A, 1).await;
-        sleep(Duration::from_millis(5)).await;
-    }
-    rig.feed(0, 30).await;
-    rig.idle().await;
-    rig.drain();
-    let (u1, u2) = split_ids(&rig);
-    assert_eq!(
-        rig.barge_ids(),
-        vec![Some(u2.clone())],
-        "one barge-in, from U2"
-    );
-    let barge_at = rig
-        .log
-        .iter()
-        .position(|e| e.kind == SpeechEventKind::BargeIn)
-        .unwrap();
-    let u2_start = rig
-        .log
-        .iter()
-        .position(|e| {
-            e.kind == SpeechEventKind::UserSpeakingStart
-                && e.utterance_id.as_deref() == Some(u2.as_str())
-        })
-        .unwrap();
-    assert!(u2_start < barge_at);
-    let (_, f1) = rig.final_of(&u1);
-    assert_eq!(f1.speaker.as_deref(), Some("other"));
-    assert_eq!(f1.reason.as_deref(), Some("speaker_split"));
-    assert_eq!(rig.final_of(&u2).1.speaker.as_deref(), Some("caller"));
-    rig.agent.stop().await.unwrap();
-}
-
 /// Flag off: the same audio stays one utterance with one final, and nothing is split.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flag_off_keeps_one_utterance() {
@@ -753,7 +702,6 @@ async fn flag_off_keeps_one_utterance() {
     rig.feed_paced(B, 40).await;
     rig.feed(0, 30).await;
     rig.idle().await;
-    assert_eq!(rig.agent.speaker_split_provisional_holds(), 0);
     rig.drain();
     let ids = rig.speaking_start_ids();
     assert_eq!(ids.len(), 3, "{ids:?}");
@@ -840,52 +788,32 @@ async fn change_on_a_c1_terminal_record_is_dropped_as_stale() {
     rig.agent.stop().await.unwrap();
 }
 
-/// One `caller` re-check window inside an `other` utterance is not a confirmed change: no split,
-/// no barge-in, and the turn stays one `other` utterance.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn single_caller_window_in_other_utterance_never_barges() {
-    let mut rig = rig(true).await;
+/// Other then caller while the agent speaks: the caller stays caller. The first `caller` re-check
+/// window upgrades the whole utterance to `caller` and releases the barge-in, exactly as with the
+/// flag off. Nothing is split.
+async fn other_then_caller(
+    split: bool,
+) -> (
+    Vec<Option<String>>,
+    Option<String>,
+    Option<String>,
+    usize,
+    (u64, u64, u64, u64, u64, u64),
+) {
+    let mut rig = rig(split).await;
     rig.enroll().await;
     rig.start_speaking().await;
-    let window_frames = agent_config(true).speaker_gate.check_speech_ms as usize / 20;
     rig.feed_paced(B, 20).await;
-    // 1.5 windows of caller audio: exactly one re-check window (window 4) is scored `caller`;
-    // the windows around it are mostly the other speaker's.
-    rig.feed_paced(A, window_frames + window_frames / 2).await;
-    rig.feed_paced(B, 20).await;
-    rig.agent.flush_tts().await.unwrap();
-    rig.feed(0, 30).await;
-    rig.idle().await;
-    assert_eq!(rig.agent.speaker_split_provisional_holds(), 1);
     rig.drain();
-    let barges = rig.barge_ids();
-    assert!(
-        barges.is_empty(),
-        "barge-in on one caller window: {barges:?}"
-    );
-    let ids = rig.speaking_start_ids();
-    assert_eq!(ids.len(), 3, "one utterance after enrollment: {ids:?}");
-    let (_, f) = rig.final_of(&ids[2]);
-    assert_eq!(f.speaker.as_deref(), Some("other"));
-    assert_eq!(f.reason, None);
-    assert_eq!(rig.agent.speaker_split_counts().0, 0);
-    rig.agent.stop().await.unwrap();
-}
-
-/// Fail open: a confirmed other -> caller change that cannot be split (replay ring overflowed)
-/// falls back to the re-check upgrade, so the caller still barges in on that utterance.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unsplit_other_to_caller_change_upgrades_and_barges_in() {
-    let mut rig = rig(true).await;
-    rig.enroll().await;
-    rig.agent.set_utterance_replay_max_ms_for_test(600).await;
-    rig.start_speaking().await;
-    rig.feed_paced(B, 40).await;
-    rig.feed_paced(0, 1).await;
+    assert!(rig.barge_ids().is_empty(), "other speaker barged in");
     let deadline = Instant::now() + Duration::from_secs(5);
-    while rig.agent.speaker_split_counts().2 == 0 {
-        assert!(Instant::now() < deadline, "no overflow skip counted");
-        rig.feed_paced(A, 1).await;
+    loop {
+        rig.drain();
+        if !rig.barge_ids().is_empty() || Instant::now() > deadline {
+            break;
+        }
+        rig.feed(A, 1).await;
+        sleep(Duration::from_millis(5)).await;
     }
     rig.feed_paced(A, 10).await;
     rig.agent.flush_tts().await.unwrap();
@@ -893,15 +821,38 @@ async fn unsplit_other_to_caller_change_upgrades_and_barges_in() {
     rig.idle().await;
     rig.drain();
     let ids = rig.speaking_start_ids();
-    assert_eq!(ids.len(), 3, "one utterance after enrollment: {ids:?}");
-    let barges = rig.barge_ids();
-    assert!(
-        barges.contains(&Some(ids[2].clone())),
-        "caller barges in on the unsplit utterance: {barges:?}"
-    );
     let (_, f) = rig.final_of(&ids[2]);
-    assert_eq!(f.speaker.as_deref(), Some("caller"));
-    let (splits, _, overflow, _, _, _) = rig.agent.speaker_split_counts();
-    assert_eq!((splits, overflow), (0, 1));
+    let out = (
+        rig.barge_ids(),
+        f.speaker.clone(),
+        f.reason.clone(),
+        ids.len(),
+        rig.agent.speaker_split_counts(),
+    );
+    assert!(!rig
+        .log
+        .iter()
+        .any(|e| e.reason.as_deref() == Some("speaker_split")));
     rig.agent.stop().await.unwrap();
+    out
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn other_then_caller_upgrades_and_barges_in_without_a_split() {
+    let (barges, speaker, reason, utterances, counts) = other_then_caller(true).await;
+    assert_eq!(utterances, 3, "one utterance after enrollment");
+    assert_eq!(barges.len(), 1, "{barges:?}");
+    assert_eq!(speaker.as_deref(), Some("caller"));
+    assert_eq!(reason, None);
+    assert_eq!(counts.0, 0);
+    assert_eq!(counts, (0, 0, 0, 0, 0, 0));
+    // Same behaviour with the flag off.
+    let (barges_off, speaker_off, reason_off, utterances_off, counts_off) =
+        other_then_caller(false).await;
+    assert_eq!(barges_off.len(), barges.len());
+    assert_eq!(
+        (speaker_off, reason_off, utterances_off),
+        (Some("caller".into()), None, 3)
+    );
+    assert_eq!(counts_off, counts);
 }

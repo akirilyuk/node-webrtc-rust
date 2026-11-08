@@ -105,7 +105,9 @@ pub struct Verdict {
 /// A confirmed change of speaker inside one utterance (only with
 /// [`SpeakerGateConfig::split_on_speaker_change`]). Times are media ms since the key's onset frame
 /// (gap frames included; pre-roll before the onset excluded). The split point depends only on the
-/// audio, never on when an embedding finished.
+/// audio, never on when an embedding finished. The caller stays caller: `from` is always
+/// `Caller` and `to` always `Other` (another voice followed by the caller upgrades the utterance
+/// instead). The fields stay so the event shape is unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpeakerChange {
     pub key: u64,
@@ -218,9 +220,6 @@ struct Book {
     reported_windows: VecDeque<(u64, u32)>,
     /// Watch on only: windows scored only because of the speaker-change watch, per key.
     watch_windows: VecDeque<(u64, u32)>,
-    /// Watch on only: keys whose counted re-check came back `caller` (the watch-off upgrade
-    /// point); later windows of the key are watch windows.
-    watch_upgraded: VecDeque<u64>,
     /// Keys whose final read its verdict: no re-check starts after that.
     closed: VecDeque<u64>,
     /// Per re-opened key, the last check attempt sent before the re-open: the verdicts of those
@@ -980,15 +979,6 @@ impl SpeakerGate {
         }
     }
 
-    /// Stores the `other` -> `caller` re-check upgrade for `key` (the behaviour without the
-    /// speaker-change watch). The agent applies it when a confirmed change was not split.
-    pub fn apply_caller_upgrade(&self, key: u64) {
-        push_capped(
-            &mut lock(&self.shared.book).verdicts,
-            (key, Outcome::Caller),
-        );
-    }
-
     /// The stored verdict for `key`, if the check finished.
     pub fn outcome_for(&self, key: u64) -> Option<Outcome> {
         lock(&self.shared.book)
@@ -1346,10 +1336,10 @@ struct Watch {
 /// window's `(start_ms, end_ms)` on the utterance clock; `clip` is the PCM that was scored, ending
 /// at `end_ms`.
 /// Watch on: count `window` of `key` as a reported window when the gate with the watch off would
-/// have scored it (the first window; a re-check while the first verdict is `other` and no counted
-/// re-check came back `caller` yet), else as a watch window. With the watch on the verdict book
-/// keeps the first verdict (no upgrade), so it is the watch-off label until the upgrade point.
-fn book_reported_window(book: &mut Book, key: u64, recheck: bool, outcome: Outcome, window: u32) {
+/// have scored it (the first window; a re-check while the stored verdict is still `other`), else
+/// as a watch window. Call it before the verdict book takes the window's own upgrade: the stored
+/// label is then the watch-off label, and the `caller` re-check that upgrades the key counts.
+fn book_reported_window(book: &mut Book, key: u64, recheck: bool, window: u32) {
     let counts = !recheck || {
         let label = book
             .verdicts
@@ -1357,12 +1347,9 @@ fn book_reported_window(book: &mut Book, key: u64, recheck: bool, outcome: Outco
             .rev()
             .find(|(k, _)| *k == key)
             .map(|(_, o)| *o);
-        label == Some(Outcome::Other) && !book.watch_upgraded.contains(&key)
+        label == Some(Outcome::Other)
     };
     if counts {
-        if recheck && outcome == Outcome::Caller {
-            push_capped(&mut book.watch_upgraded, key);
-        }
         if let Some(e) = book.reported_windows.iter_mut().find(|(k, _)| *k == key) {
             e.1 = e.1.max(window);
         } else {
@@ -1407,6 +1394,14 @@ fn watch_step(
         return None;
     }
     if !scored || outcome == w.label {
+        w.run = 0;
+        w.first = None;
+        return None;
+    }
+    if w.label == Outcome::Other {
+        // The caller stays caller: `other` -> `caller` never reports a change. The key becomes
+        // the caller's (the re-check upgrade), and only a later run of `other` windows splits.
+        w.label = Outcome::Caller;
         w.run = 0;
         w.first = None;
         return None;
@@ -1603,10 +1598,14 @@ async fn run(
                         push_capped(&mut book.split_keys, key);
                         push_capped(&mut book.changes, change);
                     }
+                    // Count the window against the label as it was before this window's upgrade.
+                    if cfg.split_on_speaker_change {
+                        book_reported_window(&mut book, key, recheck, window);
+                    }
                     if recheck {
-                        // Upgrade only: `other` -> `caller`. Anything else keeps `other`. With the
-                        // speaker-change watch on, the caller's part is a new utterance instead.
-                        if outcome == Outcome::Caller && !cfg.split_on_speaker_change {
+                        // Upgrade only: `other` -> `caller`. Anything else keeps `other`. The
+                        // caller stays caller, with the speaker-change watch on too.
+                        if outcome == Outcome::Caller {
                             push_capped(&mut book.verdicts, (key, outcome));
                         }
                         book.rechecks_in_flight.retain(|k| *k != key);
@@ -1620,9 +1619,6 @@ async fn run(
                         e.1 = e.1.max(window);
                     } else {
                         push_capped(&mut book.windows_scored, (key, window));
-                    }
-                    if cfg.split_on_speaker_change {
-                        book_reported_window(&mut book, key, recheck, outcome, window);
                     }
                 }
                 if recheck {
@@ -2246,30 +2242,23 @@ mod tests {
     }
 
     #[test]
-    fn other_to_caller_splits_too() {
+    fn other_to_caller_never_reports_then_caller_to_other_does() {
         let mut w = VecDeque::new();
+        let step = |w: &mut VecDeque<(u64, Watch)>, o, span| {
+            watch_step(w, 5, o, true, span, tone(500, 9000))
+        };
         assert!(watch_step(&mut w, 5, Outcome::Other, false, (0, 200), tone(500, 9000)).is_none());
-        assert!(watch_step(
-            &mut w,
-            5,
-            Outcome::Caller,
-            true,
-            (200, 400),
-            tone(500, 9000)
-        )
-        .is_none());
-        let change = watch_step(
-            &mut w,
-            5,
-            Outcome::Caller,
-            true,
-            (400, 600),
-            tone(500, 9000),
-        )
-        .unwrap();
-        assert_eq!((change.from, change.to), (Outcome::Other, Outcome::Caller));
-        // All frames equal: the tie goes to the frame nearest the window start (200 ms).
-        assert_eq!(change.split_at_ms, 200);
+        // Any number of caller windows after an other first window never report; the key becomes
+        // the caller's.
+        assert!(step(&mut w, Outcome::Caller, (200, 400)).is_none());
+        assert!(step(&mut w, Outcome::Caller, (400, 600)).is_none());
+        assert!(step(&mut w, Outcome::Caller, (600, 800)).is_none());
+        // Now a run of other windows splits, from the caller.
+        assert!(step(&mut w, Outcome::Other, (800, 1000)).is_none());
+        let change = step(&mut w, Outcome::Other, (1000, 1200)).unwrap();
+        assert_eq!((change.from, change.to), (Outcome::Caller, Outcome::Other));
+        // All frames equal: the tie goes to the frame nearest the first other window's start.
+        assert_eq!(change.split_at_ms, 800);
     }
 
     /// Frames before the onset and frames beyond +-300 ms of the window start are not candidates.
@@ -2452,19 +2441,43 @@ mod tests {
         assert_eq!(gate.outcome_for(1), Some(Outcome::Caller));
     }
 
-    /// Flag on: other -> caller splits instead of upgrading the verdict.
+    /// Flag on: other -> caller never splits; it upgrades the verdict like the flag off, and the
+    /// re-check counts as a re-check (window 2).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn flag_on_other_to_caller_splits_and_does_not_upgrade() {
-        let (gate, got) =
-            run_script(true, vec![caller_v(), other_v(), caller_v(), caller_v()], 3).await;
-        assert_eq!(got.len(), 3, "{got:?}");
+    async fn other_to_caller_never_splits_it_upgrades() {
+        let (gate, got) = run_script(
+            true,
+            vec![caller_v(), other_v(), caller_v(), caller_v(), caller_v()],
+            2,
+        )
+        .await;
+        assert!(got.len() >= 2, "{got:?}");
+        assert!(gate.take_speaker_changes().is_empty());
+        assert_eq!(gate.outcome_for(1), Some(Outcome::Caller));
+        assert!(gate.rechecked(1));
+        assert_eq!(gate.windows_scored(1), 2);
+    }
+
+    /// Flag on: other, caller, other, other -> the caller upgrade, then one change from the
+    /// caller; U1 keeps the `caller` verdict.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn flag_on_other_to_caller_then_other_splits_from_caller() {
+        let (gate, got) = run_script(
+            true,
+            vec![caller_v(), other_v(), caller_v(), other_v(), other_v()],
+            4,
+        )
+        .await;
+        assert_eq!(got.len(), 4, "{got:?}");
         let changes = gate.take_speaker_changes();
         assert_eq!(changes.len(), 1, "{changes:?}");
         assert_eq!(
             (changes[0].from, changes[0].to),
-            (Outcome::Other, Outcome::Caller)
+            (Outcome::Caller, Outcome::Other)
         );
-        assert_eq!(gate.outcome_for(1), Some(Outcome::Other), "no upgrade");
+        assert_eq!(gate.outcome_for(1), Some(Outcome::Caller));
+        assert!(gate.rechecked(1));
+        assert_eq!(gate.windows_scored(1), 2);
     }
 
     /// (a) Flag on: a caller-first utterance watched for 3 more windows without a change reports
@@ -2487,7 +2500,8 @@ mod tests {
     /// watch window.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn flag_on_other_first_recheck_reports_like_flag_off() {
-        // Cap 3 ends the first script at window 3 on both sides; the second ends at the change.
+        // Cap 3 ends the first script at window 3 on both sides; the second is upgraded at window
+        // 2 and the flag-on gate watches on to the cap. Neither reports a change.
         for (script, n_off, n_on) in [
             (vec![caller_v(), other_v(), other_v(), caller_v()], 3, 3),
             (vec![caller_v(), other_v(), caller_v(), caller_v()], 2, 3),
@@ -2496,6 +2510,7 @@ mod tests {
             let (on, got_on) = run_script_cap(true, script, n_on, 3).await;
             assert_eq!((got_off.len(), got_on.len()), (n_off, n_on));
             assert!(off.rechecked(1));
+            assert!(on.take_speaker_changes().is_empty());
             assert_eq!(
                 (on.rechecked(1), on.windows_scored(1)),
                 (off.rechecked(1), off.windows_scored(1))
@@ -2519,6 +2534,7 @@ mod tests {
         assert!(!gate.rechecked(1));
         assert_eq!(gate.windows_scored(1), 1);
         assert_eq!(gate.watch_windows_scored(1), 2);
+        start(&gate, 2, 10);
         assert!(!gate.rechecked(2));
         assert_eq!(gate.windows_scored(2), 0);
         assert_eq!(gate.watch_windows_scored(2), 0);

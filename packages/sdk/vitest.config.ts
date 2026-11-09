@@ -9,7 +9,7 @@ export default defineConfig(async () => ({
     // WebRTC peer tests flake when files run in parallel (shared ICE ports) — same as
     // `cargo test … peer_connection_test -- --test-threads=1` in run-pr-integration.sh.
     fileParallelism: false,
-    // Host-wide worker cap on a dev machine; {} in CI. See scripts/vitest/cap.ts.
-    ...(await workerCap()),
+    // Files run serially, so one slot is enough. Host-wide worker cap on a dev machine; {} in CI. See scripts/vitest/cap.ts.
+    ...(await workerCap({ want: 1 })),
   },
 }))

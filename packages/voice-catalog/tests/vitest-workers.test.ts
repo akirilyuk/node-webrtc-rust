@@ -69,7 +69,7 @@ describe('localWorkerLimit', () => {
   })
 
   it('takes the configured want and a second call reuses the same grant', async () => {
-    const env = { VITEST_HOST_WORKERS: '6', VITEST_MAX_WORKERS: '4' }
+    const env = { VITEST_HOST_WORKERS: '6', VITEST_LOCAL_MAX_WORKERS: '4' }
     expect(await localWorkerLimit({ env, dir, log: quiet })).toEqual({ maxWorkers: 4 })
     expect(slotNames()).toHaveLength(4)
     expect(await localWorkerLimit({ env, dir, log: quiet })).toEqual({ maxWorkers: 4 })
@@ -90,7 +90,7 @@ describe('localWorkerLimit', () => {
     }
     resetLocalGrantForTests()
     const capped = await localWorkerLimit({
-      env: { VITEST_HOST_WORKERS: '6', VITEST_MAX_WORKERS: '10' },
+      env: { VITEST_HOST_WORKERS: '6', VITEST_LOCAL_MAX_WORKERS: '10' },
       dir,
       log: quiet,
     })
@@ -101,10 +101,18 @@ describe('localWorkerLimit', () => {
 describe('workerCap', () => {
   it('returns {} in CI and maxWorkers with a lowered minWorkers locally', async () => {
     expect(await workerCap({ env: { CI: '1' }, dir })).toEqual({})
-    expect(await workerCap({ env: { VITEST_MAX_WORKERS: '3' }, dir, log: quiet })).toEqual({
+    expect(await workerCap({ env: { VITEST_LOCAL_MAX_WORKERS: '3' }, dir, log: quiet })).toEqual({
       maxWorkers: 3,
       minWorkers: 1,
     })
+  })
+
+  it('takes only the wanted slots with want: 1', async () => {
+    expect(await workerCap({ want: 1, env: {}, dir, log: quiet })).toEqual({
+      maxWorkers: 1,
+      minWorkers: 1,
+    })
+    expect(slotNames()).toHaveLength(1)
   })
 })
 
@@ -124,7 +132,7 @@ describe('localWorkerLimit grant sharing and fallback', () => {
     const warnings: string[] = []
     try {
       const result = await localWorkerLimit({
-        env: { VITEST_MAX_WORKERS: '3' },
+        env: { VITEST_LOCAL_MAX_WORKERS: '3' },
         dir: join(parent, 'sub', 'slots'),
         log: (m) => warnings.push(m),
       })

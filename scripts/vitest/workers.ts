@@ -3,7 +3,7 @@
 // user share a budget of slot directories under /tmp (default 6 workers in
 // total); a run that finds none free waits. In CI (CI set) nothing changes.
 //
-// Env: VITEST_HOST_WORKERS (budget, default 6), VITEST_MAX_WORKERS (workers
+// Env: VITEST_HOST_WORKERS (budget, default 6), VITEST_LOCAL_MAX_WORKERS (workers
 // wanted by one run, default 6, capped by the budget). `--maxWorkers` on the
 // vitest command line still overrides the config.
 //
@@ -182,6 +182,8 @@ function positiveInt(raw: string | undefined, fallback: number): number {
 }
 
 export type LocalLimitOptions = {
+  // Upper bound for this run, e.g. 1 when the config runs files serially.
+  want?: number
   env?: Record<string, string | undefined>
   dir?: string
   pollMs?: number
@@ -206,7 +208,8 @@ export async function localWorkerLimit(
   const env = opts.env ?? process.env
   if (env.CI) return {}
   const budget = positiveInt(env.VITEST_HOST_WORKERS, DEFAULT_BUDGET)
-  const want = Math.min(positiveInt(env.VITEST_MAX_WORKERS, DEFAULT_BUDGET), budget)
+  const wanted = opts.want ?? positiveInt(env.VITEST_LOCAL_MAX_WORKERS, DEFAULT_BUDGET)
+  const want = Math.min(wanted, budget)
   const g = globalThis as WithGrant
   let entry = g[GRANT_KEY]
   if (!entry || entry.pid !== process.pid) {

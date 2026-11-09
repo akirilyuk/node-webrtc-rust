@@ -9,7 +9,7 @@ export default defineConfig(async () => ({
     // Native bindings are not safe to share across vitest worker threads.
     pool: 'forks',
     fileParallelism: false,
-    // Host-wide worker cap on a dev machine; {} in CI. See scripts/vitest/cap.ts.
-    ...(await workerCap()),
+    // Files run serially, so one slot is enough. Host-wide worker cap on a dev machine; {} in CI. See scripts/vitest/cap.ts.
+    ...(await workerCap({ want: 1 })),
   },
 }))

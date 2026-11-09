@@ -426,13 +426,28 @@ impl Rig {
         panic!("caller not enrolled");
     }
 
+    /// Starts a long agent reply and returns once the agent is speaking (`agent_speaking_start`),
+    /// so the next user speech starts during playback. A fixed sleep is not enough: when TTS
+    /// starts after the user's onset, no barge-in is held at `SpeechStart` and the utterance runs
+    /// into C1 (`user_stt_not_found`) instead.
     async fn start_speaking(&self) {
+        let mut events = self.agent.subscribe_events();
         let agent = Arc::clone(&self.agent);
         let text = "interrupt this mock playback please ".repeat(40);
         tokio::spawn(async move {
             let _ = agent.send_text_to_tts(&text).await;
         });
-        sleep(Duration::from_millis(200)).await;
+        let started = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match events.recv().await {
+                    Ok(e) if e.kind == SpeechEventKind::AgentSpeakingStart => return,
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => panic!("event stream closed"),
+                }
+            }
+        })
+        .await;
+        assert!(started.is_ok(), "agent did not start speaking within 5 s");
     }
 
     async fn wait_splits(&self, n: u64) {

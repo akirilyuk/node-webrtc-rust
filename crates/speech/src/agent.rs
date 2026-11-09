@@ -3755,8 +3755,8 @@ impl VoiceAgent {
     /// Splits the live utterance U1 at a confirmed speaker change (`splitOnSpeakerChange`).
     ///
     /// Nothing here awaits the vendor: the commands go to the STT actor, in order.
-    /// 1. U1's live stream (both speakers) is ended into a `SplitDiscard` record: its text and
-    ///    close are dropped.
+    /// 1. U1's live stream (both speakers) is ended into a `SplitDiscard` record without a decode
+    ///    where the provider supports it (Inline: Sherpa); otherwise it is finalized and its text dropped.
     /// 2. `pcm[..split]` from the replay ring (plus the endpoint tail) is decoded on a fresh
     ///    stream ended with U1's key, so U1's final comes from its own audio only, keeps U1's id
     ///    and verdict, and carries `reason: "speaker_split"`. The actor answers in order, so U1's

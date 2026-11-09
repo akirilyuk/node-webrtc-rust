@@ -65,6 +65,8 @@ struct Scripted {
     gated: bool,
     stop_hangs: bool,
     abandon: Option<bool>,
+    abandon_sleep_ms: u64,
+    abandon_queues: Option<&'static str>,
 }
 
 fn scripted(mode: FinalizeMode) -> (Scripted, Arc<Probe>) {
@@ -78,6 +80,8 @@ fn scripted(mode: FinalizeMode) -> (Scripted, Arc<Probe>) {
             gated: false,
             stop_hangs: false,
             abandon: None,
+            abandon_sleep_ms: 0,
+            abandon_queues: None,
         },
         probe,
     )
@@ -137,6 +141,12 @@ impl SttProvider for Scripted {
     async fn abandon_utterance(&mut self) -> SpeechResult<bool> {
         match self.abandon {
             Some(true) => {
+                if self.abandon_sleep_ms > 0 {
+                    tokio::time::sleep(Duration::from_millis(self.abandon_sleep_ms)).await;
+                }
+                if let Some(text) = self.abandon_queues {
+                    self.probe.out(partial(text));
+                }
                 self.probe.state.lock().unwrap().abandons += 1;
                 Ok(true)
             }
@@ -971,7 +981,12 @@ async fn stt_latency_attrs_follow_swap() {
 async fn abandon_inline_skips_finalize() {
     let (mut provider, probe) = scripted(FinalizeMode::Inline);
     provider.abandon = Some(true);
-    probe.state.lock().unwrap().push_hooks.push_back(partial("queued"));
+    probe
+        .state
+        .lock()
+        .unwrap()
+        .push_hooks
+        .push_back(partial("queued"));
     let (handle, mut rx) = spawn(provider, options());
     assert!(handle.send_audio(Bytes::from_static(&[1, 2, 3, 4])));
     assert!(handle.send(SttCommand::AbandonUtterance { key: 7 }));
@@ -1017,4 +1032,34 @@ async fn abandon_deferred_falls_back_to_request_finalize() {
     let s = probe.state.lock().unwrap();
     assert_eq!(s.abandons, 0);
     assert_eq!(s.finalize_requests, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn abandon_timeout_falls_back_to_finalize() {
+    let (mut provider, probe) = scripted(FinalizeMode::Inline);
+    provider.abandon = Some(true);
+    provider.abandon_sleep_ms = 10_000;
+    provider.wait_ms = 100;
+    let (handle, mut rx) = spawn(provider, options());
+    assert!(handle.send_audio(Bytes::from_static(&[1, 2, 3, 4])));
+    assert!(handle.send(SttCommand::AbandonUtterance { key: 5 }));
+
+    expect_done(next_result(&mut rx, 5000).await, 5, 0, false);
+    assert_quiet(&mut rx, 500).await;
+    let s = probe.state.lock().unwrap();
+    assert_eq!(s.finalize_calls, 1);
+    assert_eq!(s.abandons, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn abandon_drops_transcript_queued_during_abandon() {
+    let (mut provider, _probe) = scripted(FinalizeMode::Inline);
+    provider.abandon = Some(true);
+    provider.abandon_queues = Some("late");
+    let (handle, mut rx) = spawn(provider, options());
+    assert!(handle.send_audio(Bytes::from_static(&[1, 2, 3, 4])));
+    assert!(handle.send(SttCommand::AbandonUtterance { key: 6 }));
+
+    expect_done(next_result(&mut rx, 1000).await, 6, 0, false);
+    assert_quiet(&mut rx, 500).await;
 }

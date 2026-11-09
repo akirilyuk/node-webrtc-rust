@@ -853,7 +853,19 @@ impl Actor {
                     let Some(provider) = self.provider.as_mut() else {
                         return;
                     };
-                    match provider.abandon_utterance().await {
+                    let wait_ms = provider.finalize_wait_ms();
+                    let started = Instant::now();
+                    let outcome =
+                        timeout(Duration::from_millis(wait_ms), provider.abandon_utterance()).await;
+                    let Ok(outcome) = outcome else {
+                        eprintln!(
+                            "[speech] stt abandon timed out key={key} waitedMs={}",
+                            started.elapsed().as_millis()
+                        );
+                        self.on_end_utterance(key).await;
+                        return;
+                    };
+                    match outcome {
                         Ok(true) => {
                             let dropped = provider.discard_queued_transcripts();
                             eprintln!("[speech] stt stream abandoned key={key} dropped={dropped}");

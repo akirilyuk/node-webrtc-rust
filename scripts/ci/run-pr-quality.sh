@@ -15,6 +15,9 @@ bash scripts/ci/run-release-tag-local-ci.sh --self-test
 echo "==> CI shell tests (scripts/ci/*.test.sh)"
 bash scripts/ci/run-ci-shell-tests.sh
 
+echo "==> sherpa-onnx archive baked in the ci-build image matches Cargo.lock"
+bash scripts/ci/check-sherpa-onnx-archive.sh --static
+
 echo "==> validate package-lock optional bindings"
 bash scripts/ci/validate-package-lock-optional-bindings.sh
 

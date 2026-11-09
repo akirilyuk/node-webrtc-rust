@@ -13,8 +13,8 @@ use std::time::Instant;
 use async_trait::async_trait;
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::{
-    SpeakerGateConfig, SpeakerGateUpdate, SpeakerMismatchAction, SttVendor, TtsConfig, TtsVendor, VadConfig,
-    VoiceAgentConfig,
+    SpeakerGateConfig, SpeakerGateUpdate, SpeakerMismatchAction, SttVendor, TtsConfig, TtsVendor,
+    VadConfig, VoiceAgentConfig,
 };
 use node_webrtc_rust_speech::events::{SpeechEvent, SpeechEventKind};
 use node_webrtc_rust_speech::pipeline::{

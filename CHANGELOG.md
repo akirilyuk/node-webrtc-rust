@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **speech:** with `speakerGate.splitOnSpeakerChange`, the mixed live stream at a split is dropped without a decode on providers that support it (local Sherpa), instead of being decoded and discarded. Saves one decode per split; no change in events or text. Flag off: unchanged.
+
 ## [0.18.2] - 2026-11-09
 
 ### Added

@@ -3827,7 +3827,7 @@ impl VoiceAgent {
             discard.close_reason = "speaker_split_discard";
             let discard_key = discard.key;
             inner.closing.push_back(discard);
-            actor.send(SttCommand::EndUtterance { key: discard_key });
+            actor.send(SttCommand::AbandonUtterance { key: discard_key });
             // 2. Re-decode U1 from its own PCM on a fresh stream.
             for chunk in pcm[..split_byte].chunks(640) {
                 actor.send_audio(Bytes::copy_from_slice(chunk));

@@ -31,6 +31,8 @@ struct Shared {
     /// One output moved into `out` by every `push_audio`.
     push_hooks: VecDeque<SttOutput>,
     finalize_requests: usize,
+    finalize_calls: usize,
+    abandons: usize,
     started: bool,
     stopped: bool,
 }
@@ -62,6 +64,7 @@ struct Scripted {
     gate_first_push: bool,
     gated: bool,
     stop_hangs: bool,
+    abandon: Option<bool>,
 }
 
 fn scripted(mode: FinalizeMode) -> (Scripted, Arc<Probe>) {
@@ -74,6 +77,7 @@ fn scripted(mode: FinalizeMode) -> (Scripted, Arc<Probe>) {
             gate_first_push: false,
             gated: false,
             stop_hangs: false,
+            abandon: None,
         },
         probe,
     )
@@ -130,8 +134,29 @@ impl SttProvider for Scripted {
         Ok(self.probe.state.lock().unwrap().out.pop_front())
     }
 
+    async fn abandon_utterance(&mut self) -> SpeechResult<bool> {
+        match self.abandon {
+            Some(true) => {
+                self.probe.state.lock().unwrap().abandons += 1;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn discard_queued_transcripts(&mut self) -> usize {
+        if self.abandon.is_none() {
+            return 0;
+        }
+        let mut s = self.probe.state.lock().unwrap();
+        let before = s.out.len();
+        s.out.retain(|o| !matches!(o, SttOutput::Transcript(_)));
+        before - s.out.len()
+    }
+
     async fn finalize_utterance(&mut self) -> SpeechResult<()> {
         let mut s = self.probe.state.lock().unwrap();
+        s.finalize_calls += 1;
         let queued = std::mem::take(&mut s.on_finalize);
         for t in queued {
             s.out.push_back(SttOutput::Transcript(t));
@@ -940,4 +965,56 @@ async fn stt_latency_attrs_follow_swap() {
     assert_eq!(got[0].1.stt_language, "de");
     assert_eq!(got[0].1.stt_vendor, "mock");
     assert_eq!(got[0].1.project_id, "proj-1");
+}
+
+#[tokio::test(start_paused = true)]
+async fn abandon_inline_skips_finalize() {
+    let (mut provider, probe) = scripted(FinalizeMode::Inline);
+    provider.abandon = Some(true);
+    probe.state.lock().unwrap().push_hooks.push_back(partial("queued"));
+    let (handle, mut rx) = spawn(provider, options());
+    assert!(handle.send_audio(Bytes::from_static(&[1, 2, 3, 4])));
+    assert!(handle.send(SttCommand::AbandonUtterance { key: 7 }));
+
+    // The partial queued before the command is attributed to no key (drained before the command).
+    expect_transcript(
+        next_result(&mut rx, 1000).await,
+        None,
+        0,
+        SttTranscript::Partial("queued".into()),
+    );
+    expect_done(next_result(&mut rx, 1000).await, 7, 0, false);
+    assert_quiet(&mut rx, 200).await;
+    let s = probe.state.lock().unwrap();
+    assert_eq!(s.finalize_calls, 0);
+    assert_eq!(s.abandons, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn abandon_unsupported_falls_back_to_finalize() {
+    let (provider, probe) = scripted(FinalizeMode::Inline);
+    let (handle, mut rx) = spawn(provider, options());
+    assert!(handle.send_audio(Bytes::from_static(&[1, 2, 3, 4])));
+    assert!(handle.send(SttCommand::AbandonUtterance { key: 8 }));
+
+    expect_done(next_result(&mut rx, 1000).await, 8, 0, false);
+    let s = probe.state.lock().unwrap();
+    assert_eq!(s.finalize_calls, 1);
+    assert_eq!(s.abandons, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn abandon_deferred_falls_back_to_request_finalize() {
+    let (mut provider, probe) = scripted(FinalizeMode::Deferred);
+    provider.abandon = Some(true);
+    let (handle, mut rx) = spawn(provider, options());
+    assert!(handle.send_audio(Bytes::from_static(&[1, 2, 3, 4])));
+    assert!(handle.send(SttCommand::AbandonUtterance { key: 9 }));
+    probe.finalize_requested.notified().await;
+    probe.out(SttOutput::FinalizeDone);
+
+    expect_done(next_result(&mut rx, 1000).await, 9, 0, false);
+    let s = probe.state.lock().unwrap();
+    assert_eq!(s.abandons, 0);
+    assert_eq!(s.finalize_requests, 1);
 }

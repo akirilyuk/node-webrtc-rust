@@ -174,6 +174,14 @@ pub trait SttProvider: Send + Sync {
         0
     }
 
+    /// Drop the current stream without decoding it (its audio and any queued transcript).
+    /// `Ok(true)` when done; `Ok(false)` (default) when not supported: the caller then ends
+    /// the utterance with a normal finalize. Used for a stream whose text is discarded anyway
+    /// (speaker split). Inline providers only.
+    async fn abandon_utterance(&mut self) -> SpeechResult<bool> {
+        Ok(false)
+    }
+
     /// How this provider ends an utterance. Default: [`FinalizeMode::Inline`].
     fn finalize_mode(&self) -> FinalizeMode {
         FinalizeMode::Inline

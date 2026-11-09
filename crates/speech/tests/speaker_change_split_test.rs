@@ -18,7 +18,7 @@ use node_webrtc_rust_speech::config::{
 };
 use node_webrtc_rust_speech::events::{SpeechEvent, SpeechEventKind};
 use node_webrtc_rust_speech::pipeline::{
-    SpeakerEmbedder, SttProvider, SttTranscript, VendorFactory,
+    FinalizeMode, SpeakerEmbedder, SttOutput, SttProvider, SttTranscript, VendorFactory,
 };
 use node_webrtc_rust_speech::{PcmWriter, SpeechResult, VendorRegistry, VoiceAgent};
 use node_webrtc_rust_vendor_mock::MockFactory;
@@ -100,12 +100,23 @@ struct Script {
     finalize_wait_ms: Option<u64>,
     /// Frame classes of every finalized stream, in finalize order.
     streams: Vec<String>,
+    /// The provider ends an utterance like Deepgram or ElevenLabs: `request_finalize` returns at
+    /// once and the answer (the final, then `FinalizeDone`) arrives through `poll_output`, in
+    /// request order.
+    deferred: bool,
+    /// Deferred mode: the answer to the finalize call with this index is withheld (and so is every
+    /// later one, since answers keep request order) until the index leaves this list.
+    held_calls: Vec<usize>,
 }
 
 struct LevelStt {
     script: Arc<Mutex<Script>>,
     cur: Vec<u8>,
     queue: VecDeque<SttTranscript>,
+    /// Deferred mode: finalizes not yet answered, oldest first: (call index, frame classes).
+    pending: VecDeque<(usize, String)>,
+    /// Deferred mode: transcripts and markers ready for `poll_output`.
+    outputs: VecDeque<SttOutput>,
 }
 
 #[async_trait]
@@ -125,6 +136,61 @@ impl SttProvider for LevelStt {
     }
     async fn poll_transcript(&mut self) -> SpeechResult<Option<SttTranscript>> {
         Ok(self.queue.pop_front())
+    }
+    fn finalize_mode(&self) -> FinalizeMode {
+        if self.script.lock().unwrap().deferred {
+            FinalizeMode::Deferred
+        } else {
+            FinalizeMode::Inline
+        }
+    }
+    fn discard_queued_transcripts(&mut self) -> usize {
+        let before = self.outputs.len();
+        self.outputs
+            .retain(|o| !matches!(o, SttOutput::Transcript(_)));
+        before - self.outputs.len()
+    }
+    async fn request_finalize(&mut self) -> SpeechResult<()> {
+        if !self.script.lock().unwrap().deferred {
+            return self.finalize_utterance().await;
+        }
+        let c = classes(&std::mem::take(&mut self.cur));
+        let call = {
+            let mut script = self.script.lock().unwrap();
+            script.finalize_calls += 1;
+            script.streams.push(c.clone());
+            script.finalize_calls
+        };
+        self.pending.push_back((call, c));
+        Ok(())
+    }
+    async fn poll_output(&mut self) -> SpeechResult<Option<SttOutput>> {
+        if !self.script.lock().unwrap().deferred {
+            return Ok(self.poll_transcript().await?.map(SttOutput::Transcript));
+        }
+        // Answers keep request order: a held or never-answered front blocks the ones behind it.
+        loop {
+            if let Some(o) = self.outputs.pop_front() {
+                return Ok(Some(o));
+            }
+            let Some((call, c)) = self.pending.front().cloned() else {
+                return Ok(None);
+            };
+            {
+                let script = self.script.lock().unwrap();
+                if script.held_calls.contains(&call) || script.no_final_on_call == Some(call) {
+                    return Ok(None);
+                }
+            }
+            self.pending.pop_front();
+            self.outputs
+                .push_back(SttOutput::Transcript(SttTranscript::Final(format!(
+                    "a{} b{}",
+                    count(&c, 'A'),
+                    count(&c, 'B')
+                ))));
+            self.outputs.push_back(SttOutput::FinalizeDone);
+        }
     }
     async fn finalize_utterance(&mut self) -> SpeechResult<()> {
         let c = classes(&std::mem::take(&mut self.cur));
@@ -175,6 +241,8 @@ impl VendorFactory for SplitFactory {
             script: Arc::clone(&self.script),
             cur: Vec::new(),
             queue: VecDeque::new(),
+            pending: VecDeque::new(),
+            outputs: VecDeque::new(),
         }))
     }
     fn create_tts(
@@ -259,8 +327,25 @@ async fn rig(split: bool) -> Rig {
     rig_with(agent_config(split)).await
 }
 
+/// A rig whose STT ends utterances in [`FinalizeMode::Deferred`] (Deepgram, ElevenLabs, Mistral,
+/// Fish, cluster-speech shape).
+async fn rig_deferred(split: bool) -> Rig {
+    rig_with_script(
+        agent_config(split),
+        Script {
+            deferred: true,
+            ..Script::default()
+        },
+    )
+    .await
+}
+
 async fn rig_with(config: VoiceAgentConfig) -> Rig {
-    let script = Arc::new(Mutex::new(Script::default()));
+    rig_with_script(config, Script::default()).await
+}
+
+async fn rig_with_script(config: VoiceAgentConfig, initial: Script) -> Rig {
+    let script = Arc::new(Mutex::new(initial));
     let mut registry = VendorRegistry::new();
     registry.register_stt(
         SttVendor::LocalSherpa,
@@ -855,4 +940,134 @@ async fn other_then_caller_upgrades_and_barges_in_without_a_split() {
         (Some("caller".into()), None, 3)
     );
     assert_eq!(counts_off, counts);
+}
+
+// ---- Deferred finalize mode -----------------------------------------------------------------
+
+/// The same split with a provider that answers each finalize later through `poll_output`: U1 is
+/// decoded only from its own PCM, U2 only from the other speaker's, U1's final comes before U2's,
+/// and the mixed live stream's final is discarded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_provider_redecodes_each_side_and_orders_the_finals() {
+    let mut rig = rig_deferred(true).await;
+    rig.enroll().await;
+    rig.feed_paced(A, 20).await;
+    rig.feed_paced(0, 1).await;
+    rig.feed_paced(B, 40).await;
+    rig.wait_splits(1).await;
+    rig.feed(0, 30).await;
+    rig.idle().await;
+    rig.drain();
+    let (u1, u2) = split_ids(&rig);
+    let (i1, f1) = rig.final_of(&u1);
+    let (i2, f2) = rig.final_of(&u2);
+    assert!(i1 < i2, "U1 final before U2 final");
+    assert_eq!(f1.reason.as_deref(), Some("speaker_split"));
+    assert_eq!(f1.speaker.as_deref(), Some("caller"));
+    assert_eq!(f2.speaker.as_deref(), Some("other"));
+    let ((a1, b1), (a2, b2)) = (ab(&f1), ab(&f2));
+    assert!(b1 <= 1, "U1 holds other-speaker frames: a{a1} b{b1}");
+    assert!(a2 <= 1, "U2 holds caller frames: a{a2} b{b2}");
+    assert!((19..=21).contains(&(a1 + a2)), "caller frames {a1}+{a2}");
+    assert!((39..=41).contains(&(b1 + b2)), "other frames {b1}+{b2}");
+    assert_eq!(
+        rig.log
+            .iter()
+            .filter(|e| e.kind == SpeechEventKind::UserSpeechFinal
+                && e.utterance_id.as_deref() == Some(u1.as_str()))
+            .count(),
+        1,
+        "exactly one final for U1"
+    );
+    let (splits, _, _, _, discarded, timeouts) = rig.agent.speaker_split_counts();
+    assert_eq!(splits, 1);
+    assert!(discarded >= 1, "the mixed live stream's final is dropped");
+    assert_eq!(timeouts, 0);
+    rig.agent.stop().await.unwrap();
+}
+
+/// U1's re-decode answer arrives after U2 closed (answers keep request order, so U2's finalize
+/// waits behind it): the late result is applied to U1 only, and U1's final still precedes U2's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_late_redecode_is_applied_to_u1_only() {
+    let mut rig = rig_deferred(true).await;
+    rig.enroll().await;
+    // Finalize calls: 2 enrollment, 3 the discarded live stream, 4 U1's re-decode.
+    rig.script.lock().unwrap().held_calls = vec![4];
+    rig.feed_paced(A, 20).await;
+    rig.feed_paced(0, 1).await;
+    rig.feed_paced(B, 40).await;
+    rig.wait_splits(1).await;
+    rig.feed(0, 30).await;
+    sleep(Duration::from_millis(300)).await;
+    rig.drain();
+    let ids = rig.speaking_start_ids();
+    assert!(ids.len() >= 4, "speaking starts: {ids:?}");
+    assert!(
+        !rig.log
+            .iter()
+            .any(|e| e.kind == SpeechEventKind::UserSpeechFinal
+                && e.utterance_id.as_deref() == Some(ids[2].as_str())),
+        "U1's final waits for its re-decode"
+    );
+    rig.script.lock().unwrap().held_calls.clear();
+    rig.idle().await;
+    rig.drain();
+    let (u1, u2) = split_ids(&rig);
+    let (i1, f1) = rig.final_of(&u1);
+    let (i2, f2) = rig.final_of(&u2);
+    assert!(i1 < i2, "U1 final before U2 final");
+    let ((a1, b1), (a2, b2)) = (ab(&f1), ab(&f2));
+    assert!(a1 >= 18 && b1 <= 1, "U1 text a{a1} b{b1}");
+    assert!(b2 >= 38 && a2 <= 1, "U2 text a{a2} b{b2}");
+    assert_eq!(
+        rig.log
+            .iter()
+            .filter(|e| e.kind == SpeechEventKind::UserSpeechFinal
+                && e.utterance_id.as_deref() == Some(u1.as_str()))
+            .count(),
+        1
+    );
+    rig.agent.stop().await.unwrap();
+}
+
+/// The vendor never answers the re-decode finalize: the named timeout error is emitted once for
+/// U1, U1 ends without a final, and the timeout is counted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_redecode_timeout_emits_named_error_and_does_not_hang() {
+    let mut rig = rig_deferred(true).await;
+    rig.enroll().await;
+    {
+        let mut script = rig.script.lock().unwrap();
+        script.no_final_on_call = Some(4);
+        script.finalize_wait_ms = Some(400);
+    }
+    rig.feed_paced(A, 20).await;
+    rig.feed_paced(0, 1).await;
+    rig.feed_paced(B, 40).await;
+    rig.wait_splits(1).await;
+    rig.feed(0, 30).await;
+    // The fake never answers call 4, and answers keep request order, so nothing behind it is
+    // answered; the actor's finalize bound closes the entry.
+    sleep(Duration::from_millis(1500)).await;
+    rig.drain();
+    let (u1, _u2) = split_ids(&rig);
+    let errors: Vec<_> = rig
+        .log
+        .iter()
+        .filter(|e| {
+            e.kind == SpeechEventKind::Error
+                && e.reason.as_deref()
+                    == Some(node_webrtc_rust_speech::agent::SPEAKER_SPLIT_REDECODE_TIMEOUT)
+        })
+        .collect();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].utterance_id.as_deref(), Some(u1.as_str()));
+    assert!(!rig
+        .log
+        .iter()
+        .any(|e| e.kind == SpeechEventKind::UserSpeechFinal
+            && e.utterance_id.as_deref() == Some(u1.as_str())));
+    assert_eq!(rig.agent.speaker_split_counts().5, 1);
+    rig.agent.stop().await.unwrap();
 }

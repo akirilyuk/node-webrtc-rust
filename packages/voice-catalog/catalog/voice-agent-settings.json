@@ -154,8 +154,70 @@
     "speakerGate.suppressShortBargeIn": {
       "type": "boolean",
       "default": false
+    },
+    "speakerGate.splitOnSpeakerChange": {
+      "type": "boolean",
+      "default": false
+    },
+    "speakerGate.recheckOnOther": {
+      "type": "boolean",
+      "default": true
+    },
+    "speakerGate.recheckMaxWindows": {
+      "type": "number",
+      "integer": true,
+      "default": 12,
+      "min": 0,
+      "max": 4294967295
+    },
+    "speakerGate.threshold": {
+      "type": "number",
+      "integer": false,
+      "default": 0.459,
+      "min": 0,
+      "max": 1,
+      "exclusiveMin": true,
+      "exclusiveMax": true
+    },
+    "speakerGate.enrollSpeechMs": {
+      "type": "number",
+      "integer": true,
+      "default": 3000,
+      "min": 0,
+      "max": 4294967295
+    },
+    "speakerGate.checkSpeechMs": {
+      "type": "number",
+      "integer": true,
+      "default": 1500,
+      "min": 0,
+      "max": 4294967295
+    },
+    "speakerGate.minCheckSpeechMs": {
+      "type": "number",
+      "integer": true,
+      "default": 1500,
+      "min": 0,
+      "max": 4294967295
     }
   },
+  "constraints": [
+    {
+      "id": "speakerGate.recheckMaxWindows.minWithRecheck",
+      "when": {
+        "anyTrue": ["speakerGate.recheckOnOther", "speakerGate.splitOnSpeakerChange"]
+      },
+      "path": "speakerGate.recheckMaxWindows",
+      "notEqual": 1,
+      "message": "speakerGate.recheckMaxWindows must be 0 (no cap) or at least 2 while speakerGate.recheckOnOther or speakerGate.splitOnSpeakerChange is on; set both to false first to use one check"
+    },
+    {
+      "id": "speakerGate.checkSpeechMs.atLeastMin",
+      "path": "speakerGate.checkSpeechMs",
+      "gte": "speakerGate.minCheckSpeechMs",
+      "message": "speakerGate.checkSpeechMs must be at least speakerGate.minCheckSpeechMs, otherwise every utterance is shorter than the minimum and is never checked"
+    }
+  ],
   "presets": {
     "default": {},
     "voiceAgent": {

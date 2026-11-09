@@ -3,11 +3,13 @@ import { readFileSync } from 'node:fs'
 import {
   ADAPTIVE_VAD_KEYS,
   ADAPTIVE_VAD_LIMITS,
+  VOICE_AGENT_CONSTRAINTS,
   VOICE_AGENT_PRESETS,
   VOICE_AGENT_SETTINGS,
   VOICE_AGENT_SETTING_PATHS,
   VOICE_VENDORS,
   allVendorIds,
+  checkVoiceAgentConstraints,
   azureTtsVoices,
   customerSttProviderIds,
   customerTtsProviderIds,
@@ -508,5 +510,86 @@ describe('voice agent settings', () => {
     for (const key of ADAPTIVE_VAD_KEYS) {
       expect(Object.keys(VOICE_AGENT_SETTINGS)).toContain(`vad.adaptive.${key}`)
     }
+  })
+})
+
+describe('speaker gate entries and constraints', () => {
+  const R1 = 'speakerGate.recheckMaxWindows.minWithRecheck'
+  const R2 = 'speakerGate.checkSpeechMs.atLeastMin'
+  const ids = (v: Parameters<typeof checkVoiceAgentConstraints>[0]) =>
+    checkVoiceAgentConstraints(v).map((f) => f.id)
+
+  test('export shape of the seven tuning entries', () => {
+    const file = JSON.parse(
+      readFileSync(new URL('../catalog/voice-agent-settings.json', import.meta.url), 'utf8'),
+    )
+    expect(VOICE_AGENT_CONSTRAINTS).toEqual(file.constraints)
+    const s = VOICE_AGENT_SETTINGS
+    expect(s['speakerGate.splitOnSpeakerChange']).toEqual({ type: 'boolean', default: false })
+    expect(s['speakerGate.recheckOnOther']).toEqual({ type: 'boolean', default: true })
+    expect(s['speakerGate.recheckMaxWindows'].default).toBe(12)
+    expect(s['speakerGate.threshold']).toMatchObject({
+      type: 'number',
+      integer: false,
+      default: 0.459,
+      min: 0,
+      max: 1,
+      exclusiveMin: true,
+      exclusiveMax: true,
+    })
+    expect(s['speakerGate.enrollSpeechMs'].default).toBe(3000)
+    expect(s['speakerGate.checkSpeechMs'].default).toBe(1500)
+    expect(s['speakerGate.minCheckSpeechMs'].default).toBe(1500)
+  })
+
+  test('every constraint path exists in settings', () => {
+    for (const c of VOICE_AGENT_CONSTRAINTS) {
+      expect(Object.keys(VOICE_AGENT_SETTINGS), c.id).toContain(c.path)
+      if (c.gte) expect(Object.keys(VOICE_AGENT_SETTINGS), c.id).toContain(c.gte)
+      for (const p of c.when?.anyTrue ?? []) {
+        expect(Object.keys(VOICE_AGENT_SETTINGS), c.id).toContain(p)
+      }
+    }
+  })
+
+  test('defaults break nothing', () => {
+    expect(ids({})).toEqual([])
+  })
+
+  test('R1: one window is rejected while re-check or split is on', () => {
+    expect(ids({ 'speakerGate.recheckOnOther': true, 'speakerGate.recheckMaxWindows': 1 })).toEqual(
+      [R1],
+    )
+    expect(
+      ids({
+        'speakerGate.splitOnSpeakerChange': true,
+        'speakerGate.recheckOnOther': false,
+        'speakerGate.recheckMaxWindows': 1,
+      }),
+    ).toEqual([R1])
+    // recheckOnOther defaults to true, so a bare 1 breaks R1.
+    expect(ids({ 'speakerGate.recheckMaxWindows': 1 })).toEqual([R1])
+    expect(
+      ids({
+        'speakerGate.recheckOnOther': false,
+        'speakerGate.splitOnSpeakerChange': false,
+        'speakerGate.recheckMaxWindows': 1,
+      }),
+    ).toEqual([])
+    expect(ids({ 'speakerGate.recheckMaxWindows': 0 })).toEqual([])
+    expect(ids({ 'speakerGate.recheckMaxWindows': 2 })).toEqual([])
+  })
+
+  test('R2: check must be at least min check', () => {
+    expect(ids({ 'speakerGate.checkSpeechMs': 1000 })).toEqual([R2])
+    expect(
+      ids({ 'speakerGate.checkSpeechMs': 1500, 'speakerGate.minCheckSpeechMs': 1500 }),
+    ).toEqual([])
+    expect(
+      ids({ 'speakerGate.checkSpeechMs': 1000, 'speakerGate.minCheckSpeechMs': 1000 }),
+    ).toEqual([])
+    expect(checkVoiceAgentConstraints({ 'speakerGate.checkSpeechMs': 1000 })[0].message).toContain(
+      'speakerGate.minCheckSpeechMs',
+    )
   })
 })

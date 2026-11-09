@@ -8,6 +8,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.18.3] - 2026-11-10
+
+### Fixed
+
+- **speech:** `speakerGate.splitOnSpeakerChange` now splits an utterance when the speaker gate is enabled at runtime with `setSpeakerGate({ enabled: true })`. The flag was only honored when the gate was already enabled at construction, so a gate built off and turned on later skipped every confirmed speaker change (`speaker split skipped … reason=replay_not_aligned`) and kept one mixed utterance.
+
 ## [0.18.2] - 2026-11-09
 
 ### Added

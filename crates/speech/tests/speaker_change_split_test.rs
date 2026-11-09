@@ -13,7 +13,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::{
-    SpeakerGateConfig, SpeakerMismatchAction, SttVendor, TtsConfig, TtsVendor, VadConfig,
+    SpeakerGateConfig, SpeakerGateUpdate, SpeakerMismatchAction, SttVendor, TtsConfig, TtsVendor, VadConfig,
     VoiceAgentConfig,
 };
 use node_webrtc_rust_speech::events::{SpeechEvent, SpeechEventKind};
@@ -1069,5 +1069,115 @@ async fn deferred_redecode_timeout_emits_named_error_and_does_not_hang() {
         .any(|e| e.kind == SpeechEventKind::UserSpeechFinal
             && e.utterance_id.as_deref() == Some(u1.as_str())));
     assert_eq!(rig.agent.speaker_split_counts().5, 1);
+    rig.agent.stop().await.unwrap();
+}
+
+// ---- gate built off, enabled at runtime ------------------------------------------------------
+
+/// The runner builds the gate with `enabled: false` and turns it on later through
+/// `set_speaker_gate`. The split flag must not depend on the construction-time `enabled`.
+fn off_config(split: bool) -> VoiceAgentConfig {
+    let mut config = agent_config(split);
+    config.speaker_gate.enabled = false;
+    config
+}
+
+async fn enable_at_runtime(rig: &Rig) {
+    rig.agent
+        .set_speaker_gate(SpeakerGateUpdate {
+            enabled: Some(true),
+            on_mismatch: Some(SpeakerMismatchAction::Flag),
+            barge_in: None,
+        })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !rig.agent.speaker_gate_loaded() {
+        assert!(Instant::now() < deadline, "speaker model not loaded");
+        sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// Asserts the one-split outcome of a caller-then-other turn on a rig whose gate was enabled at
+/// runtime.
+async fn assert_runtime_enable_splits(mut rig: Rig) {
+    enable_at_runtime(&rig).await;
+    rig.enroll().await;
+    rig.feed_paced(A, 20).await;
+    rig.feed_paced(B, 40).await;
+    rig.wait_splits(1).await;
+    rig.feed(0, 30).await;
+    rig.idle().await;
+    rig.drain();
+    let (u1, u2) = split_ids(&rig);
+    let (_, f1) = rig.final_of(&u1);
+    let (_, f2) = rig.final_of(&u2);
+    assert_eq!(f1.reason.as_deref(), Some("speaker_split"));
+    assert_eq!(f2.speaker.as_deref(), Some("other"));
+    let n = rig
+        .log
+        .iter()
+        .filter(|e| e.kind == SpeechEventKind::UserUtteranceSplit)
+        .count();
+    assert_eq!(n, 1, "one user_utterance_split");
+    let (splits, skipped, _, _, _, timeouts) = rig.agent.speaker_split_counts();
+    assert_eq!((splits, skipped, timeouts), (1, 0, 0));
+    rig.agent.stop().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_enabled_gate_splits_inline() {
+    assert_runtime_enable_splits(rig_with(off_config(true)).await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_enabled_gate_splits_deferred() {
+    let rig = rig_with_script(
+        off_config(true),
+        Script {
+            deferred: true,
+            ..Script::default()
+        },
+    )
+    .await;
+    assert_runtime_enable_splits(rig).await;
+}
+
+/// Split flag on, gate never enabled: no scoring, no split, an unchanged final.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gate_never_enabled_never_splits() {
+    let mut rig = rig_with(off_config(true)).await;
+    rig.feed_paced(A, 20).await;
+    rig.feed_paced(B, 40).await;
+    rig.feed(0, 30).await;
+    rig.idle().await;
+    rig.drain();
+    let ids = rig.speaking_start_ids();
+    assert_eq!(ids.len(), 1, "{ids:?}");
+    let (_, f) = rig.final_of(&ids[0]);
+    assert_eq!(f.reason, None);
+    assert!(!rig
+        .log
+        .iter()
+        .any(|e| e.kind == SpeechEventKind::UserUtteranceSplit));
+    assert_eq!(rig.agent.speaker_split_counts(), (0, 0, 0, 0, 0, 0));
+    rig.agent.stop().await.unwrap();
+}
+
+/// Split flag off with the gate enabled at runtime: nothing is split, as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_enabled_gate_with_split_off_keeps_one_utterance() {
+    let mut rig = rig_with(off_config(false)).await;
+    enable_at_runtime(&rig).await;
+    rig.enroll().await;
+    rig.feed_paced(A, 20).await;
+    rig.feed_paced(B, 40).await;
+    rig.feed(0, 30).await;
+    rig.idle().await;
+    rig.drain();
+    let ids = rig.speaking_start_ids();
+    assert_eq!(ids.len(), 3, "{ids:?}");
+    let (_, f) = rig.final_of(&ids[2]);
+    assert_eq!(f.reason, None);
+    assert_eq!(rig.agent.speaker_split_counts(), (0, 0, 0, 0, 0, 0));
     rig.agent.stop().await.unwrap();
 }

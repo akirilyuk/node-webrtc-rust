@@ -247,6 +247,11 @@ export function utteranceEndMs(utteranceId: string, seen: Seen[]): number | unde
  * The bystander turn then has no utterance; the caller turn index goes into `merged`. Anything
  * else keeps its slot pairing, so a re-checked `caller` that never reaches a caller turn still
  * fails as a bystander barge-in.
+ *
+ * A second re-pairing covers an utterance that slot matching left unpaired: noise opened it in
+ * a bystander slot after that slot's own utterance, and the caller's onset joined it (no new
+ * speech start). It goes to the immediately following caller turn under the same final, span and
+ * deciding-window conditions; the bystander turn keeps its own utterance.
  */
 export function pairTurnUtterances(
   turns: Turn[],

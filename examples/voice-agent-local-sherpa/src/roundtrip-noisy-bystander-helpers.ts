@@ -498,9 +498,9 @@ export function glueCounts(turns: Turn[], seen: Seen[]): { trailing: number; lea
     if (turn.role !== 'main' || turn.kind !== 'qualified') return
     const id = starts[i]?.utteranceId
     if (id == null || mergedIds.has(id)) return
-    const final = seen.find(
-      (e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal && e.utteranceId === id,
-    )
+    const final = [...seen]
+      .reverse()
+      .find((e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal && e.utteranceId === id)
     if (final?.speaker !== 'caller') return
     const callerWords = normWords(turn.text)
     const words = normWords(final.text ?? '')
@@ -741,7 +741,7 @@ export function evaluateTurns(
   const distMax = distances.length > 0 ? Math.max(...distances.map((d) => d.distanceMs)) : undefined
   const glue = glueCounts(turns, seen)
   console.log(
-    `${label}: user_utterance_split events: ${splits.length}; merged caller finals: ${mergedFinals.length}; near misses (similarity <= ${NEAR_MISS_SIMILARITY.toFixed(2)}): ${nearMissCount}; min similarity: ${minSimilarity == null ? 'n/a' : minSimilarity.toFixed(2)}; split distance ms min/max: ${distMin ?? 'n/a'}/${distMax ?? 'n/a'}; trailing glue finals: ${glue.trailing}; leading glue finals: ${glue.leading}; exact-threshold (0.75) finals: ${exactThresholdCount(sims)}`,
+    `${label}: user_utterance_split events: ${splits.length}; merged caller finals: ${mergedFinals.length}; near misses (similarity <= ${NEAR_MISS_SIMILARITY.toFixed(2)}): ${nearMissCount}; min similarity: ${minSimilarity == null ? 'n/a' : minSimilarity.toFixed(2)}; sceneStartMediaMs=${opts.sceneStartMediaMs ?? 'n/a'}; split distance ms min/max: ${distMin ?? 'n/a'}/${distMax ?? 'n/a'}; trailing glue finals: ${glue.trailing}; leading glue finals: ${glue.leading}; exact-threshold (0.75) finals: ${exactThresholdCount(sims)}`,
   )
   for (const m of mergedFinals) {
     failures.push(

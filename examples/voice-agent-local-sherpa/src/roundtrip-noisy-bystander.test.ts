@@ -1152,6 +1152,51 @@ describe('split distance, glue and exact-threshold counts (reporting only)', () 
     })
   })
 
+  it('glueCounts uses the last final of an utterance, like evaluateTurns', () => {
+    const seen = [
+      ...callerSeen('victor seven eight nine', 10_100),
+      ev('user_speech_final', 12_900, {
+        utteranceId: 'c1',
+        text: 'victor seven eight nine suddenly',
+        speaker: 'caller',
+      }),
+    ]
+    expect(glueCounts([glueCaller, glueNext], seen)).toEqual({ trailing: 1, leading: 0 })
+  })
+
+  it('splitDistances picks the latest caller turn starting at or before the split', () => {
+    const turns: Turn[] = [
+      { role: 'main', startMs: 1000, endMs: 2000, text: 'one', kind: 'qualified' },
+      { role: 'main', startMs: 4000, endMs: 5000, text: 'two', kind: 'qualified' },
+    ]
+    const d = splitDistances(turns, [splitEv(0, 4000, 1100)], 600)
+    expect(d).toHaveLength(1)
+    expect(d[0]!.sceneSplitMs).toBe(4500)
+    expect(d[0]!.callerTurnIndex).toBe(1)
+    expect(d[0]!.callerEndMs).toBe(5000)
+    expect(d[0]!.distanceMs).toBe(-500)
+    expect(d[0]!.nextBystanderStartMs).toBeUndefined()
+  })
+
+  it('glueCounts ignores a word beyond the first 3 of the next bystander', () => {
+    const seen = callerSeen('victor seven eight nine creaked', 10_100)
+    expect(glueCounts([glueCaller, glueNext], seen)).toEqual({ trailing: 0, leading: 0 })
+  })
+
+  it('glueCounts takes the first best window on a tie', () => {
+    const turn: Turn = { ...glueCaller, text: 'nine nine' }
+    const seen = callerSeen('nine nine nine suddenly', 10_100)
+    expect(glueCounts([turn, glueNext], seen)).toEqual({ trailing: 1, leading: 0 })
+  })
+
+  it('glueCounts skips non-qualified caller turns', () => {
+    const seen = callerSeen('victor seven eight nine suddenly', 10_100)
+    expect(glueCounts([{ ...glueCaller, kind: 'long' }, glueNext], seen)).toEqual({
+      trailing: 0,
+      leading: 0,
+    })
+  })
+
   it('exactThresholdCount counts only similarities on 0.75', () => {
     expect(exactThresholdCount([0.75, 0.7500000001, 0.76, 1])).toBe(2)
   })

@@ -8,6 +8,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-11-09
+
+### Added
+
+- **voice-catalog:** `VOICE_AGENT_SETTINGS` now lists the speaker gate tuning keys `speakerGate.splitOnSpeakerChange`, `recheckOnOther`, `recheckMaxWindows`, `threshold`, `enrollSpeechMs`, `checkSpeechMs` and `minCheckSpeechMs`, with the engine defaults. A setting def may carry `exclusiveMin` / `exclusiveMax` (`speakerGate.threshold` accepts values strictly between 0 and 1). The new `VOICE_AGENT_CONSTRAINTS` lists the two cross-field rules of `SpeakerGateConfig::validate()` (`recheckMaxWindows` must not be 1 while `recheckOnOther` or `splitOnSpeakerChange` is on; `checkSpeechMs` must be at least `minCheckSpeechMs`), and `checkVoiceAgentConstraints(values)` returns the ones a set of values breaks. A speech crate test checks every new entry and every combination of the two rules against `validate()`.
+
+### Tests
+
+- **speech:** the speaker-change split is now also tested with an STT provider in deferred finalize mode (the shape of Deepgram, ElevenLabs, Mistral, Fish and cluster-speech): each side is re-decoded from its own audio, a late re-decode result is applied to the first utterance only, and a re-decode the provider never answers ends with the named timeout error.
+
 ## [0.18.1] - 2026-11-09
 
 ### Added

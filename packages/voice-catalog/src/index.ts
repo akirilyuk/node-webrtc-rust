@@ -341,6 +341,10 @@ export interface VoiceAgentSettingDef {
   readonly default: VoiceAgentSettingValue | null
   readonly min?: number
   readonly max?: number
+  /** `min` is excluded from the accepted range (the engine requires `value > min`). */
+  readonly exclusiveMin?: boolean
+  /** `max` is excluded from the accepted range (the engine requires `value < max`). */
+  readonly exclusiveMax?: boolean
 }
 
 /** Named value sets over the engine defaults. */
@@ -356,6 +360,48 @@ export const VOICE_AGENT_SETTINGS: Readonly<Record<VoiceAgentSettingPath, VoiceA
   voiceAgentSettingsCatalog.settings as unknown as Readonly<
     Record<VoiceAgentSettingPath, VoiceAgentSettingDef>
   >
+
+/**
+ * One rule across several settings that the engine enforces in `validate()`. `when.anyTrue` makes
+ * the rule apply only while one of the listed boolean paths is true; `notEqual` rejects that
+ * value at `path`; `gte` requires `path` to be at least the value of another path.
+ */
+export interface VoiceAgentConstraint {
+  readonly id: string
+  readonly when?: { readonly anyTrue: readonly VoiceAgentSettingPath[] }
+  readonly path: VoiceAgentSettingPath
+  readonly notEqual?: number
+  readonly gte?: VoiceAgentSettingPath
+  readonly message: string
+}
+
+/** Cross-field rules of the engine, from `catalog/voice-agent-settings.json`. */
+export const VOICE_AGENT_CONSTRAINTS: readonly VoiceAgentConstraint[] =
+  voiceAgentSettingsCatalog.constraints as unknown as readonly VoiceAgentConstraint[]
+
+/**
+ * The constraints that `values` breaks, with the engine's messages. A path missing from `values`
+ * (or `null`) takes its catalog default. Mirrors `SpeakerGateConfig::validate()`; the Rust test
+ * `voice_agent_settings_catalog_test` ties each constraint to the engine.
+ */
+export function checkVoiceAgentConstraints(
+  values: Partial<Record<VoiceAgentSettingPath, VoiceAgentSettingValue | null>>,
+): { id: string; message: string }[] {
+  const valueOf = (path: VoiceAgentSettingPath): VoiceAgentSettingValue | null => {
+    const v = values[path]
+    return v === undefined || v === null ? VOICE_AGENT_SETTINGS[path].default : v
+  }
+  const failed: { id: string; message: string }[] = []
+  for (const c of VOICE_AGENT_CONSTRAINTS) {
+    if (c.when && !c.when.anyTrue.some((p) => valueOf(p) === true)) continue
+    const value = valueOf(c.path)
+    const broken =
+      (c.notEqual !== undefined && value === c.notEqual) ||
+      (c.gte !== undefined && Number(value) < Number(valueOf(c.gte)))
+    if (broken) failed.push({ id: c.id, message: c.message })
+  }
+  return failed
+}
 
 /** Every path in {@link VOICE_AGENT_SETTINGS}, in catalog order. */
 export const VOICE_AGENT_SETTING_PATHS: readonly VoiceAgentSettingPath[] = Object.keys(

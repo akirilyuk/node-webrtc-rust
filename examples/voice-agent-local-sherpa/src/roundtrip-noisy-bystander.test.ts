@@ -4,12 +4,16 @@ import {
   callerWindowSimilarity,
   countMergedCallerFinals,
   evaluateTurns,
+  exactThresholdCount,
   expectedBargeAtMs,
+  glueCounts,
   matchTurnUtterances,
   maxBystanderLeadMs,
   mergedCallerFinals,
   pairTurnUtterances,
   similaritySummary,
+  splitDistances,
+  splitSceneMs,
   sttPartialTokenCount,
   voicedMsBetween,
   type Seen,
@@ -1064,5 +1068,101 @@ describe('similaritySummary (near misses)', () => {
   })
   it('has no minimum for a pass with no qualified turns', () => {
     expect(similaritySummary([])).toEqual({ nearMissCount: 0, minSimilarity: undefined })
+  })
+})
+
+describe('split distance, glue and exact-threshold counts (reporting only)', () => {
+  const splitEv = (atMs: number, fromStartMs: number, splitAtMs: number): Seen =>
+    ev('user_utterance_split', atMs, { fromUtteranceId: 'u1', fromStartMs, splitAtMs })
+
+  it('splitSceneMs maps the media clock onto the scene clock', () => {
+    expect(splitSceneMs(splitEv(0, 1200, 900), 600)).toBe(1500)
+    expect(splitSceneMs(ev('user_utterance_split', 0, { splitAtMs: 900 }), 600)).toBeUndefined()
+    expect(splitSceneMs(ev('user_utterance_split', 0, { fromStartMs: 900 }), 600)).toBeUndefined()
+  })
+
+  it('splitDistances measures the split against the caller turn end', () => {
+    const turns: Turn[] = [
+      { role: 'main', startMs: 4000, endMs: 5000, text: 'victor seven', kind: 'qualified' },
+      { role: 'bystander', startMs: 5600, endMs: 8000, text: 'two hikers', kind: 'long' },
+    ]
+    const d = splitDistances(turns, [splitEv(0, 4100, 1600)], 600)
+    expect(d).toEqual([
+      {
+        fromUtteranceId: 'u1',
+        sceneSplitMs: 5100,
+        callerTurnIndex: 0,
+        callerEndMs: 5000,
+        distanceMs: 100,
+        nextBystanderStartMs: 5600,
+      },
+    ])
+    // Before any caller turn: skipped.
+    expect(splitDistances(turns, [splitEv(0, 1000, 500)], 600)).toEqual([])
+  })
+
+  const glueCaller: Turn = {
+    role: 'main',
+    startMs: 10_000,
+    endMs: 12_000,
+    text: 'victor seven eight nine',
+    kind: 'qualified',
+  }
+  const glueNext: Turn = {
+    role: 'bystander',
+    startMs: 14_000,
+    endMs: 16_000,
+    text: 'Suddenly the door creaked open',
+    kind: 'long',
+  }
+  const gluePrev: Turn = {
+    role: 'bystander',
+    startMs: 2000,
+    endMs: 4000,
+    text: 'the trail passed two hikers',
+    kind: 'long',
+  }
+  const callerSeen = (text: string, startAt: number): Seen[] => [
+    ev('user_speaking_start', startAt, { utteranceId: 'c1' }),
+    ev('user_speech_final', startAt + 2500, { utteranceId: 'c1', text, speaker: 'caller' }),
+  ]
+
+  it('glueCounts counts one trailing word', () => {
+    const seen = callerSeen('victor seven eight nine suddenly', 10_100)
+    expect(glueCounts([glueCaller, glueNext], seen)).toEqual({ trailing: 1, leading: 0 })
+  })
+
+  it('glueCounts counts one leading word', () => {
+    const seen = [
+      ev('user_speaking_start', 2100, { utteranceId: 'b0' }),
+      ev('user_speech_final', 5000, { utteranceId: 'b0', text: 'the trail', speaker: 'other' }),
+      ...callerSeen('hikers victor seven eight nine', 10_100),
+    ]
+    expect(glueCounts([gluePrev, glueCaller], seen)).toEqual({ trailing: 0, leading: 1 })
+  })
+
+  it('glueCounts leaves a merged final to mergedCallerFinals and an exact final at 0/0', () => {
+    const turns = [glueCaller, glueNext]
+    const mergedSeen = callerSeen('victor seven eight nine suddenly the door creaked open', 10_100)
+    expect(countMergedCallerFinals(turns, mergedSeen)).toBe(1)
+    expect(glueCounts(turns, mergedSeen)).toEqual({ trailing: 0, leading: 0 })
+    expect(glueCounts(turns, callerSeen('victor seven eight nine', 10_100))).toEqual({
+      trailing: 0,
+      leading: 0,
+    })
+  })
+
+  it('exactThresholdCount counts only similarities on 0.75', () => {
+    expect(exactThresholdCount([0.75, 0.7500000001, 0.76, 1])).toBe(2)
+  })
+
+  it('evaluateTurns returns the same failures with and without sceneStartMediaMs', () => {
+    const seen = [
+      ...healthy(),
+      ev('user_utterance_split', 12_500, { splitAtMs: 800, fromStartMs: 10_000 }),
+    ]
+    expect(evaluateTurns(TURNS, seen, 'p', { sceneStartMediaMs: 500 })).toEqual(
+      evaluateTurns(TURNS, seen, 'p'),
+    )
   })
 })

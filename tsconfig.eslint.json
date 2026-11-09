@@ -10,6 +10,7 @@
     "packages/**/src/**/*.ts",
     "packages/**/tests/**/*.ts",
     "packages/**/vitest.config.ts",
+    "scripts/vitest/*.ts",
     "examples/**/*.ts"
   ]
 }

@@ -289,6 +289,37 @@ export function pairTurnUtterances(
     starts[i] = undefined
     merged.add(j)
   })
+  // Second re-pairing: noise opened an utterance in a bystander slot after that slot's own
+  // utterance, and the caller's onset joined it (STT hold-back, no new `user_speaking_start`).
+  // Its start sits before the gap midpoint, so slot matching left it unpaired and the caller turn
+  // empty. Same conditions as above, for an unpaired start in the bystander slot after the slot's
+  // own paired utterance, credited to the next turn (which must be a caller turn).
+  const pairedIds = new Set(starts.filter((s) => s != null).map((s) => s!.utteranceId!))
+  for (const unpaired of allStarts) {
+    if (pairedIds.has(unpaired.utteranceId!)) continue
+    const i = turns.findIndex(
+      (t, k) =>
+        t.role === 'bystander' && unpaired.atMs >= boundary(k) && unpaired.atMs < boundary(k + 1),
+    )
+    if (i < 0) continue
+    const own = starts[i]
+    if (own == null || !(unpaired.atMs > own.atMs)) continue
+    const j = i + 1
+    if (turns[j]?.role !== 'main' || starts[j] != null) continue
+    const final = seen.find(
+      (e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal && e.utteranceId === unpaired.utteranceId,
+    )
+    if (final?.speaker !== 'caller' || final.speakerCheckWindows == null) continue
+    const callerStartMs = turns[j]!.startMs
+    const endMs = utteranceEndMs(unpaired.utteranceId!, seen)
+    if (endMs == null || !(unpaired.atMs < callerStartMs && endMs > callerStartMs)) continue
+    const decidedBy =
+      unpaired.atMs + speakerRecheckBargeEarliestMs(CHECK_SPEECH_MS, final.speakerCheckWindows)
+    if (callerStartMs >= decidedBy) continue
+    starts[j] = unpaired
+    pairedIds.add(unpaired.utteranceId!)
+    merged.add(j)
+  }
   return { starts, merged }
 }
 

@@ -1001,6 +1001,115 @@ describe('caller turn inside an earlier caller utterance', () => {
   })
 })
 
+/**
+ * Shape of eu-load stress run 42644051982, iteration 20, turns 7-8: after the bystander's
+ * utterance A, noise opened utterance B before the caller; the caller's onset joined B (no new
+ * `user_speaking_start`). B's start falls before the turn gap midpoint (66 418 ms), in the
+ * bystander slot that already holds A.
+ */
+describe('caller onset joined a noise-opened utterance in the bystander gap', () => {
+  const b7: Turn = {
+    role: 'bystander',
+    startMs: 62_200,
+    endMs: 65_000,
+    text: 'her garden is full of tomatoes',
+    kind: 'background',
+  }
+  const c8: Turn = {
+    role: 'main',
+    startMs: 67_836,
+    endMs: 69_600,
+    text: 'charlie one two three',
+    kind: 'qualified',
+  }
+  const SCENE = [b7, c8]
+  const FAIL = /turn 1 \(main qualified "charlie one two three"\): caller speech start not detected/
+
+  function scene(
+    bStart: number,
+    final: Partial<Seen> = { speaker: 'caller', speakerCheckWindows: 2 },
+    bEnd = 70_800,
+  ): Seen[] {
+    return [
+      ev('user_speaking_start', 62_700, { utteranceId: 'utt-9' }),
+      ev('barge_in', 65_800, { utteranceId: 'utt-9' }),
+      ev('user_speech_final', 65_900, {
+        utteranceId: 'utt-9',
+        text: 'large tomato',
+        speaker: 'unknown',
+        speakerUnknownReason: 'short',
+      }),
+      ev('user_speaking_start', bStart, { utteranceId: 'utt-10' }),
+      ev('user_speech_partial', 69_300, { utteranceId: 'utt-10', text: 'charlie one two three' }),
+      ev('barge_in', 69_300, { utteranceId: 'utt-10' }),
+      ev('user_speaking_end', bEnd, { utteranceId: 'utt-10' }),
+      ev('user_speech_final', bEnd + 400, {
+        utteranceId: 'utt-10',
+        text: 'Charlie one two three',
+        ...final,
+      }),
+    ]
+  }
+
+  it('pairs B with the caller turn when its caller final decided over the caller onset', () => {
+    const seen = scene(66_300)
+    const { starts, merged } = pairTurnUtterances(SCENE, seen)
+    expect(starts[0]?.utteranceId).toBe('utt-9')
+    expect(starts[1]?.utteranceId).toBe('utt-10')
+    expect([...merged]).toEqual([1])
+    expect(evaluateTurns(SCENE, seen, 'p').join('\n')).not.toMatch(
+      /caller speech start not detected/,
+    )
+  })
+
+  it('keeps failing when B is not tagged caller', () => {
+    for (const speaker of ['other', 'unknown'] as const) {
+      const seen = scene(66_300, { speaker, speakerCheckWindows: 2 })
+      expect(pairTurnUtterances(SCENE, seen).starts[1]).toBeUndefined()
+      expect(evaluateTurns(SCENE, seen, 'p').join('\n')).toMatch(FAIL)
+    }
+  })
+
+  it('keeps failing when the deciding window ends before the caller start', () => {
+    // 66 300 + 1 x 1500 = 67 800 <= 67 836
+    const seen = scene(66_300, { speaker: 'caller', speakerCheckWindows: 1 })
+    expect(pairTurnUtterances(SCENE, seen).starts[1]).toBeUndefined()
+    expect(evaluateTurns(SCENE, seen, 'p').join('\n')).toMatch(FAIL)
+  })
+
+  it('keeps failing when B ends before the caller start', () => {
+    const seen = scene(66_300, { speaker: 'caller', speakerCheckWindows: 2 }, 67_000)
+    expect(pairTurnUtterances(SCENE, seen).starts[1]).toBeUndefined()
+    expect(evaluateTurns(SCENE, seen, 'p').join('\n')).toMatch(FAIL)
+  })
+
+  it('leaves B alone when it already starts in the caller slot', () => {
+    const seen = scene(66_500)
+    const { starts, merged } = pairTurnUtterances(SCENE, seen)
+    expect(starts[1]?.utteranceId).toBe('utt-10')
+    expect([...merged]).toEqual([])
+    expect(evaluateTurns(SCENE, seen, 'p').join('\n')).not.toMatch(
+      /caller speech start not detected/,
+    )
+  })
+
+  it('does not re-pair B when the caller turn has an utterance of its own', () => {
+    const seen = [
+      ...scene(66_300),
+      ev('user_speaking_start', 67_900, { utteranceId: 'utt-11' }),
+      ev('user_speech_final', 71_000, {
+        utteranceId: 'utt-11',
+        text: 'Charlie one two three',
+        speaker: 'caller',
+        speakerCheckWindows: 1,
+      }),
+    ]
+    const { starts, merged } = pairTurnUtterances(SCENE, seen)
+    expect(starts[1]?.utteranceId).toBe('utt-11')
+    expect([...merged]).toEqual([])
+  })
+})
+
 describe('countMergedCallerFinals', () => {
   const c: Turn = {
     role: 'main',

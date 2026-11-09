@@ -794,6 +794,66 @@ async fn redecode_timeout_emits_named_error_and_does_not_hang() {
     rig.agent.stop().await.unwrap();
 }
 
+/// Feeds 25 silent frames, then `a` caller frames, `gap` silent frames and `b` other frames, and
+/// checks the split event against the inbound media clock built from the frames the test fed:
+/// `from_start_ms + split_at_ms` is the first `B` frame's media time (±1 frame), `from_start_ms`
+/// is U1's speech onset (first `A` frame plus at most the VAD's `min_speech_duration_ms` + 1
+/// frame), and `inbound_media_ms()` equals frames fed × 20.
+async fn assert_split_on_media_clock(gap: usize) {
+    const FRAME_MS: u64 = 20;
+    let mut rig = rig(true).await;
+    rig.enroll().await;
+    // Enrollment fed 2 × (20 + 30) frames.
+    let mut fed: u64 = 2 * (20 + 30);
+    rig.feed(0, 25).await;
+    fed += 25;
+    let first_a_ms = fed * FRAME_MS;
+    rig.feed_paced(A, 20).await;
+    rig.feed_paced(0, gap).await;
+    fed += 20 + gap as u64;
+    let first_b_ms = fed * FRAME_MS;
+    rig.feed_paced(B, 40).await;
+    fed += 40;
+    rig.wait_splits(1).await;
+    rig.feed(0, 30).await;
+    fed += 30;
+    rig.idle().await;
+    rig.drain();
+    assert_eq!(rig.agent.inbound_media_ms().await, fed * FRAME_MS);
+    let splits: Vec<_> = rig
+        .log
+        .iter()
+        .filter(|e| e.kind == SpeechEventKind::UserUtteranceSplit)
+        .collect();
+    assert_eq!(splits.len(), 1, "{splits:?}");
+    let from = u64::from(splits[0].from_start_ms.expect("from_start_ms"));
+    let split_at = u64::from(splits[0].split_at_ms.expect("split_at_ms"));
+    let min_speech = u64::from(agent_config(true).vad.min_speech_duration_ms);
+    assert!(
+        (first_a_ms..=first_a_ms + min_speech + FRAME_MS).contains(&from),
+        "from_start_ms {from} vs first A {first_a_ms} (+{min_speech} + {FRAME_MS})"
+    );
+    let split_media = from + split_at;
+    assert!(
+        split_media.abs_diff(first_b_ms) <= FRAME_MS,
+        "split {from}+{split_at}={split_media} vs first B {first_b_ms}"
+    );
+    rig.agent.stop().await.unwrap();
+}
+
+/// The split event places the split on the inbound media clock (`from_start_ms + split_at_ms`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn split_event_from_start_ms_maps_onto_the_media_clock() {
+    assert_split_on_media_clock(1).await;
+}
+
+/// Same after a brief VAD gap: the gate's media clock counts the gap frames, so does the inbound
+/// clock, and the onset stays the first speech start of the utterance.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn split_event_from_start_ms_maps_onto_the_media_clock_after_a_brief_vad_gap() {
+    assert_split_on_media_clock(3).await;
+}
+
 /// Caller then other while the agent speaks: the caller's U1 barges in, then a new reply plays,
 /// and the other speaker's U2 never barges in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

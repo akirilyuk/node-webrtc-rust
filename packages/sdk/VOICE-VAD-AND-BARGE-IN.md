@@ -388,7 +388,8 @@ Off by default. By default one utterance gets one label, so a caller and a bysta
 
 - The first part is re-decoded on its own STT stream and ends with a `user_speech_final` carrying `reason: 'speaker_split'` and its own label. The live text, which mixed both voices, is discarded.
 - The rest is a new utterance with a new `utteranceId`. The gate judges it from scratch, and a bystander's new utterance never barges in.
-- A `user_utterance_split` event (`fromUtteranceId`, `toUtteranceId`, `splitAtMs`, `from` (always `caller`), `to` (always `other`)) is emitted after the new utterance's `user_speaking_start`. The first part's final comes before any partial or final of the new one.
+- A `user_utterance_split` event (`fromUtteranceId`, `toUtteranceId`, `splitAtMs`, `fromStartMs`, `from` (always `caller`), `to` (always `other`)) is emitted after the new utterance's `user_speaking_start`. The first part's final comes before any partial or final of the new one.
+- `splitAtMs` counts from the speech onset of the cut utterance (the VAD speech-start frame; the pre-roll before it is not counted). `fromStartMs` is that speech onset on the agent's inbound media clock, which `VoiceAgent.inboundMediaMs()` returns: ms of inbound audio processed since `attach`, concealed frames included. `fromStartMs + splitAtMs` is the split point on that clock. To place it on your input's timeline, read `inboundMediaMs()` when your input starts and subtract it.
 - Cost: every split opens one extra STT stream at the vendor. That is why the flag is off. It needs `recheckMaxWindows` other than `1`.
 - If the re-decode does not finish in its bound, an `error` event with `reason: 'speaker_split_redecode_timeout'` is emitted for the first part. No split happens when the audio buffer overflowed or does not cover the utterance (logged and counted).
 

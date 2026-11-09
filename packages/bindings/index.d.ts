@@ -532,6 +532,12 @@ export interface JsSpeechEvent {
   toUtteranceId?: string
   /** `user_utterance_split`: ms into the audio of the split utterance where the speaker changed. */
   splitAtMs?: number
+  /**
+   * `user_utterance_split`: media time of the cut utterance's speech onset frame (VAD speech
+   * start; pre-roll excluded) on the agent's inbound media clock (`inboundMediaMs()`).
+   * `fromStartMs + splitAtMs` is the split point on that clock.
+   */
+  fromStartMs?: number
   /** `user_utterance_split`: label before the split (`caller` | `other`). */
   from?: string
   /** `user_utterance_split`: label after the split (`caller` | `other`). */
@@ -853,6 +859,11 @@ export declare class JsVoiceAgent {
   /** When `false`, inbound PCM still runs VAD but skips STT and user speech events. */
   setSttEnabled(enabled: boolean): Promise<void>
   sttEnabled(): Promise<boolean>
+  /**
+   * Inbound media clock: ms of inbound audio processed since attach (concealed frames
+   * included). `user_utterance_split.fromStartMs` is on this clock.
+   */
+  inboundMediaMs(): Promise<number>
   /** Apply a new STT config after the current utterance finalizes (or immediately when idle). */
   updateStt(config: JsSttConfig): Promise<void>
   /** Apply a new TTS config before the next synthesis job. */

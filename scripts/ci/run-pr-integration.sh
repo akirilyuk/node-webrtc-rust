@@ -22,6 +22,9 @@ DEFAULT_NPM_TEST_TIMEOUT_SEC="${CI_NPM_TEST_TIMEOUT_SEC:-600}"
 # Budget for compiling every cargo test binary below (cache-dependent: cold cache ~2x warm).
 DEFAULT_CARGO_BUILD_TIMEOUT_SEC="${CI_CARGO_BUILD_TIMEOUT_SEC:-900}"
 
+# Cargo builds below must use the sherpa-onnx archive baked into the image, never a live download.
+bash "$ROOT/scripts/ci/check-sherpa-onnx-archive.sh" --runtime
+
 CI_TEST_SUITES="${CI_TEST_SUITES:-}"
 suite_enabled() { [[ -z "$CI_TEST_SUITES" || ",$CI_TEST_SUITES," == *",$1,"* ]]; }
 echo "==> test suites: ${CI_TEST_SUITES:-rust,node,sherpa (all)}"

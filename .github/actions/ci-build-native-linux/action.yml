@@ -143,6 +143,13 @@ runs:
       shell: bash
       run: bash scripts/ci/bindings-napi-surface.sh snapshot
 
+    # glibc x64 builds run in the ci-build image, which bakes the sherpa-onnx archive; fail with a
+    # named error instead of letting sherpa-onnx-sys download it from GitHub releases.
+    - name: Require baked sherpa-onnx archive
+      if: steps.resolve.outputs.build_required == 'true' && inputs.target == 'x86_64-unknown-linux-gnu'
+      shell: bash
+      run: bash scripts/ci/check-sherpa-onnx-archive.sh --runtime --require
+
     - name: Build native addon
       if: steps.resolve.outputs.build_required == 'true'
       shell: bash

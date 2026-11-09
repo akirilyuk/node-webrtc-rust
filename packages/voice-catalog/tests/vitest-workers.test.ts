@@ -4,7 +4,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
-  chmodSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -127,20 +126,21 @@ describe('localWorkerLimit grant sharing and fallback', () => {
   })
 
   it('skips the host gate but keeps the cap when the slot dir is unusable', async () => {
-    const parent = mkdtempSync(join(tmpdir(), 'vitest-ro-'))
-    chmodSync(parent, 0o500)
+    // A regular file in the path makes mkdir fail with ENOTDIR for every user,
+    // root included (a read-only dir does not stop root).
+    const parent = mkdtempSync(join(tmpdir(), 'vitest-notdir-'))
+    writeFileSync(join(parent, 'not-a-dir'), '')
     const warnings: string[] = []
     try {
       const result = await localWorkerLimit({
         env: { VITEST_LOCAL_MAX_WORKERS: '3' },
-        dir: join(parent, 'sub', 'slots'),
+        dir: join(parent, 'not-a-dir', 'slots'),
         log: (m) => warnings.push(m),
       })
       expect(result).toEqual({ maxWorkers: 3 })
       expect(warnings).toHaveLength(1)
-      expect(warnings[0]).toMatch(/EACCES|EROFS|EPERM/)
+      expect(warnings[0]).toMatch(/ENOTDIR|EACCES|EROFS|EPERM/)
     } finally {
-      chmodSync(parent, 0o700)
       rmSync(parent, { recursive: true, force: true })
     }
   })
@@ -292,14 +292,46 @@ describe('across processes', () => {
     return { child, line }
   }
 
+  const ownedBy = (pid: number) =>
+    slotNames().filter((s) => readFileSync(join(dir, s, 'owner'), 'utf8') === String(pid))
+
+  const exited = (child: ChildProcess) =>
+    new Promise<void>((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) resolve()
+      else child.once('exit', () => resolve())
+    })
+
   it('a second process waits until the first exits', async () => {
     const first = runner()
     expect(await first.line('GOT')).toBe('GOT 6')
     const second = runner()
     await second.line('WAITING')
     first.child.stdin!.end()
-    expect(await second.line('GOT')).toBe('GOT 6')
+    // The first child frees its slots one at a time, so a poll of the second in
+    // between legitimately takes a partial grant.
+    const got = await second.line('GOT')
+    const n = Number(got.split(' ')[1])
+    expect(n).toBeGreaterThanOrEqual(1)
+    expect(n).toBeLessThanOrEqual(6)
+    await exited(first.child)
+    expect(ownedBy(second.child.pid!)).toHaveLength(n)
+    expect(ownedBy(first.child.pid!)).toEqual([])
   })
+
+  it('a second process takes all 6 when the holder is killed', async () => {
+    const first = runner()
+    expect(await first.line('GOT')).toBe('GOT 6')
+    first.child.kill('SIGKILL')
+    await exited(first.child)
+    // All six slots are stale before the second process starts, so its first
+    // acquire pass reclaims every one. (A second process already polling when
+    // the kill lands may see only the later slots as stale and get a partial
+    // grant, which is why this one starts after the exit.)
+    const second = runner()
+    expect(await second.line('GOT')).toBe('GOT 6')
+    expect(ownedBy(second.child.pid!)).toHaveLength(6)
+  })
+
   // One pass, no waiting: GOT n, NONE (no slot free) or ERR msg (a real failure).
   const onePassScript = `
     const { acquireSlots } = await import(${JSON.stringify(HELPER_URL)});

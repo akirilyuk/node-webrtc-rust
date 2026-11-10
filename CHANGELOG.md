@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.18.4] - 2026-11-10
+
 ### Added
 
 - **speech, sdk:** `user_utterance_split.fromStartMs` and `VoiceAgent.inboundMediaMs()`: the cut utterance's speech onset and the agent's inbound media clock, so a split point can be placed on the input's timeline (`fromStartMs + splitAtMs`).
@@ -15,8 +17,6 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **speech:** with `speakerGate.splitOnSpeakerChange`, the mixed live stream at a split is dropped without a decode on providers that support it (local Sherpa), instead of being decoded and discarded. Saves one decode per split; no change in events or text. Flag off: unchanged.
-
-## [0.18.4] - 2026-11-10
 
 ### Fixed
 

@@ -1226,8 +1226,9 @@ async fn enable_at_runtime(rig: &Rig) {
 }
 
 /// Asserts the one-split outcome of a caller-then-other turn on a rig whose gate was enabled at
-/// runtime.
-async fn assert_runtime_enable_splits(mut rig: Rig) {
+/// runtime. `abandoned` is how many mixed streams the split drops without a decode (1 Inline,
+/// 0 Deferred), and the split event carries U1's onset on the media clock on this path too.
+async fn assert_runtime_enable_splits(mut rig: Rig, abandoned: usize) {
     enable_at_runtime(&rig).await;
     rig.enroll().await;
     rig.feed_paced(A, 20).await;
@@ -1247,6 +1248,13 @@ async fn assert_runtime_enable_splits(mut rig: Rig) {
         .filter(|e| e.kind == SpeechEventKind::UserUtteranceSplit)
         .count();
     assert_eq!(n, 1, "one user_utterance_split");
+    let split = rig
+        .log
+        .iter()
+        .find(|e| e.kind == SpeechEventKind::UserUtteranceSplit)
+        .unwrap();
+    assert!(split.from_start_ms.is_some(), "from_start_ms on {split:?}");
+    assert_eq!(rig.script.lock().unwrap().abandoned.len(), abandoned);
     let (splits, skipped, _, _, _, timeouts) = rig.agent.speaker_split_counts();
     assert_eq!((splits, skipped, timeouts), (1, 0, 0));
     rig.agent.stop().await.unwrap();
@@ -1254,7 +1262,7 @@ async fn assert_runtime_enable_splits(mut rig: Rig) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runtime_enabled_gate_splits_inline() {
-    assert_runtime_enable_splits(rig_with(off_config(true)).await).await;
+    assert_runtime_enable_splits(rig_with(off_config(true)).await, 1).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1267,7 +1275,7 @@ async fn runtime_enabled_gate_splits_deferred() {
         },
     )
     .await;
-    assert_runtime_enable_splits(rig).await;
+    assert_runtime_enable_splits(rig, 0).await;
 }
 
 /// Split flag on, gate never enabled: no scoring, no split, an unchanged final.

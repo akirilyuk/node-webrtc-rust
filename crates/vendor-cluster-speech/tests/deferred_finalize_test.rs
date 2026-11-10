@@ -328,3 +328,75 @@ async fn request_finalize_after_worker_exit_returns_error() {
     );
     stt.stop().await.unwrap();
 }
+
+/// Speaker split on a Deferred vendor while the speech pod lags.
+/// The agent ends the mixed stream, re-sends U1's PCM and ends it, then seeds U2 with the
+/// post-split PCM, all while the mixed stream's finalize is still pending. Live U2 audio follows
+/// while U1's finalize is pending on the next stream. U1's final holds only U1's audio, and U2's
+/// final holds the seed plus the live audio: nothing sent after a Finalize is left on a stream
+/// that closes at its Finalized.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn speaker_split_seed_reaches_u2_final_behind_pending_finalize() {
+    let state = MockSpeechState::default();
+    state
+        .final_reports_audio_bytes
+        .store(true, Ordering::SeqCst);
+    // Every final lags 1.5 s behind its Finalize (pod behind), so the split's commands queue.
+    state.final_delay_ms.store(1_500, Ordering::SeqCst);
+    let (url, shutdown) = spawn_mock_speech(state.clone()).await.unwrap();
+    let mut stt = new_stt(&url).await;
+
+    // Mixed stream (caller 4.7 s + bystander 2.8 s), then its end (discarded by the agent).
+    let mixed = push_tone(&mut stt, 7_540).await;
+    let t_mixed_fin = Instant::now();
+    timed_request_finalize(&mut stt).await;
+    // U1 re-decode: caller PCM + endpoint tail, then its end.
+    let u1 = push_tone(&mut stt, 4_740).await + push_tone(&mut stt, 500).await;
+    timed_request_finalize(&mut stt).await;
+    // U2 seed: the bystander's 2.8 s already heard.
+    let seed = push_tone(&mut stt, 2_800).await;
+    assert!(
+        t_mixed_fin.elapsed() < Duration::from_millis(1_000),
+        "precondition: U1, its finalize and the seed must queue behind the pending mixed finalize ({:?})",
+        t_mixed_fin.elapsed()
+    );
+    assert_eq!(state.transcribe_streams.load(Ordering::SeqCst), 1);
+
+    // The mixed finalize is answered and the queued items move to the next stream.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while state.transcribe_streams.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
+        sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(state.transcribe_streams.load(Ordering::SeqCst), 2);
+    let t_stream_2 = Instant::now();
+    // Live U2 audio while U1's finalize is pending on that stream.
+    let live = push_tone(&mut stt, 1_000).await;
+    assert!(
+        t_stream_2.elapsed() < Duration::from_millis(1_000),
+        "precondition: the live U2 audio must arrive while U1's finalize is pending ({:?})",
+        t_stream_2.elapsed()
+    );
+    timed_request_finalize(&mut stt).await;
+
+    let outputs = collect_until_n_finalize_done(&mut stt, 3, 20_000).await;
+    assert_eq!(count_markers(&outputs), 3, "{outputs:?}");
+    let finals: Vec<String> = outputs
+        .iter()
+        .filter_map(|o| match o {
+            SttOutput::Transcript(SttTranscript::Final(t)) => Some(t.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        finals,
+        vec![
+            format!("bytes-{mixed}"),
+            format!("bytes-{u1}"),
+            format!("bytes-{}", seed + live),
+        ],
+        "{outputs:?}"
+    );
+    assert_eq!(state.transcribe_streams.load(Ordering::SeqCst), 3);
+    stt.stop().await.unwrap();
+    let _ = shutdown.send(());
+}

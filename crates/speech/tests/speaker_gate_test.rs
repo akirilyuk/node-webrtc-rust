@@ -371,17 +371,42 @@ impl Rig {
         panic!("caller not enrolled");
     }
 
-    async fn start_speaking(&self) {
-        self.start_speaking_for(8).await;
-    }
-
-    /// Playback long enough for tests that feed many windows of speech.
-    async fn start_speaking_for(&self, repeat: usize) {
+    /// Sends a reply without waiting for its playback: while a final waits for its speaker
+    /// verdict the reply's first TTS frame does not go out, so there is no start to wait for.
+    async fn queue_reply_for(&self, repeat: usize) {
         let agent = Arc::clone(&self.agent);
         let text = "interrupt this mock playback please ".repeat(repeat);
         tokio::spawn(async move {
             let _ = agent.send_text_to_tts(&text).await;
         });
+        sleep(Duration::from_millis(200)).await;
+    }
+
+    async fn start_speaking(&mut self) {
+        self.start_speaking_for(8).await;
+    }
+
+    /// Playback long enough for tests that feed many windows of speech. Returns once playback
+    /// has started (a new `agent_speaking_start`): a barge-in is attempted only at the caller's
+    /// VAD SpeechStart while the agent speaks, so caller audio fed before the first TTS frame
+    /// never barges. A fixed sleep alone let a loaded host start playback after that audio.
+    async fn start_speaking_for(&mut self, repeat: usize) {
+        self.drain();
+        let started_before = self.count(SpeechEventKind::AgentSpeakingStart);
+        let agent = Arc::clone(&self.agent);
+        let text = "interrupt this mock playback please ".repeat(repeat);
+        tokio::spawn(async move {
+            let _ = agent.send_text_to_tts(&text).await;
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            self.drain();
+            if self.count(SpeechEventKind::AgentSpeakingStart) > started_before {
+                break;
+            }
+            assert!(Instant::now() < deadline, "agent playback never started");
+            sleep(Duration::from_millis(5)).await;
+        }
         sleep(Duration::from_millis(200)).await;
     }
 }
@@ -2471,7 +2496,8 @@ async fn wait_final_pending(rig: &Rig) {
 
 /// The agent stops speaking (playback ends) and the utterance closes: a final cannot be produced
 /// while the agent speaks (`should_finalize_utterance` needs an idle agent), so the final starts
-/// waiting for its verdict, and the agent speaks again before the verdict arrives.
+/// waiting for its verdict, and a new reply is queued before the verdict arrives (its playback
+/// does not start while the final waits for its verdict).
 async fn end_utterance_then_speak_again(rig: &mut Rig) {
     rig.feed(&silent_stereo_frame(), 30).await;
     rig.agent.flush_tts().await.unwrap();
@@ -2481,11 +2507,11 @@ async fn end_utterance_then_speak_again(rig: &mut Rig) {
     );
     rig.feed(&silent_stereo_frame(), 30).await;
     wait_final_pending(rig).await;
-    rig.start_speaking_for(600).await;
+    rig.queue_reply_for(600).await;
 }
 
 /// The caller's window result is stored while the final waits for it, but the reply the barge-in
-/// was held against has ended and a new reply (R2) speaks when the final is emitted: the held
+/// was held against has ended and a new reply (R2) is queued when the final is emitted: the held
 /// barge-in is dropped, before and after the final (`rt.stale-event-by-key`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn caller_recheck_after_its_playback_ended_never_barges_the_next_reply() {
@@ -3062,7 +3088,7 @@ async fn short_verdict_delivered_after_rejoin_is_ignored() {
     rig.script.lock().unwrap().final_on_finalize = Some("short then caller".into());
     rig.feed(&loud_stereo_frame(), 6).await;
     rig.feed(&silent_stereo_frame(), 2).await;
-    rig.start_speaking_for(400).await;
+    rig.queue_reply_for(400).await;
     // Rejoin (same key), then let the verifier run: A, B's late short, B's resumed check.
     rig.feed(&loud_stereo_frame(), 2).await;
     assert_eq!(
@@ -3217,7 +3243,7 @@ async fn short_short_then_rejoin_late_short_verdicts_are_ignored() {
     rig.feed(&silent_stereo_frame(), 2).await;
     rig.feed(&loud_stereo_frame(), 4).await;
     rig.feed(&silent_stereo_frame(), 2).await;
-    rig.start_speaking_for(400).await;
+    rig.queue_reply_for(400).await;
     queue_checks(
         &rig,
         vec![Behavior::WaitFor(Arc::clone(&release_c), REF.to_vec())],
@@ -3847,7 +3873,7 @@ async fn policy_change_mid_utterance_applies_from_next_onset() {
     let mut rig = rig_with(agent_config(gate_cfg(SpeakerMismatchAction::Flag))).await;
     rig.enroll().await;
     *rig.default.lock().unwrap() = Behavior::Vector(OTHER.to_vec());
-    rig.start_speaking_for(20).await;
+    rig.start_speaking_for(400).await;
     let base = rig.log.len();
     rig.script.lock().unwrap().final_on_finalize = Some("first bystander".into());
     feed_speech_with_partial(&mut rig, base, 15, "first").await;
@@ -3923,10 +3949,15 @@ async fn feed_speech_with_partial(rig: &mut Rig, base: usize, loud: usize, parti
         }
     }
     assert!(scripted, "stt stream never opened");
+    // One frame of audio after the script (the fake hands the partial out only after audio
+    // pushed since it was scripted), then wait without feeding. Feeding silence until the poll
+    // runs let a slow poll close the utterance (VAD min silence is two frames), so the speech
+    // fed next opened a new utterance.
+    rig.feed(&silent_stereo_frame(), 1).await;
     let deadline = Instant::now() + Duration::from_secs(3);
     while rig.script.lock().unwrap().partial_next.is_some() {
         assert!(Instant::now() < deadline, "partial never polled");
-        rig.feed(&silent_stereo_frame(), 1).await;
+        sleep(Duration::from_millis(5)).await;
     }
 }
 
@@ -3985,7 +4016,7 @@ async fn disable_while_held_during_playback_fires_barge_then_the_final() {
     let mut rig = rig_with(agent_config(cfg)).await;
     rig.enroll().await;
     *rig.default.lock().unwrap() = Behavior::Pending;
-    rig.start_speaking_for(20).await;
+    rig.start_speaking_for(400).await;
     let base = rig.log.len();
     let checks = rig.lens.lock().unwrap().len();
     rig.script.lock().unwrap().final_on_finalize = Some("held then off".into());
@@ -4024,7 +4055,7 @@ async fn disable_while_final_waits_fires_barge_once_before_the_final() {
     let mut rig = rig_with(agent_config(cfg)).await;
     rig.enroll().await;
     *rig.default.lock().unwrap() = Behavior::Pending;
-    rig.start_speaking_for(20).await;
+    rig.start_speaking_for(400).await;
     let base = rig.log.len();
     rig.script.lock().unwrap().final_on_finalize = Some("final waits".into());
     feed_speech_with_partial(&mut rig, base, 15, "partial").await;
@@ -4061,7 +4092,7 @@ async fn other_verdict_right_after_disable_still_fires_barge_once_before_the_fin
         &rig,
         vec![Behavior::WaitFor(Arc::clone(&release), OTHER.to_vec())],
     );
-    rig.start_speaking_for(20).await;
+    rig.start_speaking_for(400).await;
     let base = rig.log.len();
     rig.script.lock().unwrap().final_on_finalize = Some("other after disable".into());
     feed_speech_with_partial(&mut rig, base, 15, "partial").await;

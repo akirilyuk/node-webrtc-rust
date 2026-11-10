@@ -348,12 +348,19 @@ async fn speaker_split_seed_reaches_u2_final_behind_pending_finalize() {
 
     // Mixed stream (caller 4.7 s + bystander 2.8 s), then its end (discarded by the agent).
     let mixed = push_tone(&mut stt, 7_540).await;
+    let t_mixed_fin = Instant::now();
     timed_request_finalize(&mut stt).await;
     // U1 re-decode: caller PCM + endpoint tail, then its end.
     let u1 = push_tone(&mut stt, 4_740).await + push_tone(&mut stt, 500).await;
     timed_request_finalize(&mut stt).await;
     // U2 seed: the bystander's 2.8 s already heard.
     let seed = push_tone(&mut stt, 2_800).await;
+    assert!(
+        t_mixed_fin.elapsed() < Duration::from_millis(1_000),
+        "precondition: U1, its finalize and the seed must queue behind the pending mixed finalize ({:?})",
+        t_mixed_fin.elapsed()
+    );
+    assert_eq!(state.transcribe_streams.load(Ordering::SeqCst), 1);
 
     // The mixed finalize is answered and the queued items move to the next stream.
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -361,8 +368,14 @@ async fn speaker_split_seed_reaches_u2_final_behind_pending_finalize() {
         sleep(Duration::from_millis(5)).await;
     }
     assert_eq!(state.transcribe_streams.load(Ordering::SeqCst), 2);
+    let t_stream_2 = Instant::now();
     // Live U2 audio while U1's finalize is pending on that stream.
     let live = push_tone(&mut stt, 1_000).await;
+    assert!(
+        t_stream_2.elapsed() < Duration::from_millis(1_000),
+        "precondition: the live U2 audio must arrive while U1's finalize is pending ({:?})",
+        t_stream_2.elapsed()
+    );
     timed_request_finalize(&mut stt).await;
 
     let outputs = collect_until_n_finalize_done(&mut stt, 3, 20_000).await;
@@ -383,6 +396,7 @@ async fn speaker_split_seed_reaches_u2_final_behind_pending_finalize() {
         ],
         "{outputs:?}"
     );
+    assert_eq!(state.transcribe_streams.load(Ordering::SeqCst), 3);
     stt.stop().await.unwrap();
     let _ = shutdown.send(());
 }

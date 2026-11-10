@@ -3873,7 +3873,7 @@ async fn policy_change_mid_utterance_applies_from_next_onset() {
     let mut rig = rig_with(agent_config(gate_cfg(SpeakerMismatchAction::Flag))).await;
     rig.enroll().await;
     *rig.default.lock().unwrap() = Behavior::Vector(OTHER.to_vec());
-    rig.start_speaking_for(20).await;
+    rig.start_speaking_for(400).await;
     let base = rig.log.len();
     rig.script.lock().unwrap().final_on_finalize = Some("first bystander".into());
     feed_speech_with_partial(&mut rig, base, 15, "first").await;
@@ -3949,10 +3949,15 @@ async fn feed_speech_with_partial(rig: &mut Rig, base: usize, loud: usize, parti
         }
     }
     assert!(scripted, "stt stream never opened");
+    // One frame of audio after the script (the fake hands the partial out only after audio
+    // pushed since it was scripted), then wait without feeding. Feeding silence until the poll
+    // runs let a slow poll close the utterance (VAD min silence is two frames), so the speech
+    // fed next opened a new utterance.
+    rig.feed(&silent_stereo_frame(), 1).await;
     let deadline = Instant::now() + Duration::from_secs(3);
     while rig.script.lock().unwrap().partial_next.is_some() {
         assert!(Instant::now() < deadline, "partial never polled");
-        rig.feed(&silent_stereo_frame(), 1).await;
+        sleep(Duration::from_millis(5)).await;
     }
 }
 
@@ -4011,7 +4016,7 @@ async fn disable_while_held_during_playback_fires_barge_then_the_final() {
     let mut rig = rig_with(agent_config(cfg)).await;
     rig.enroll().await;
     *rig.default.lock().unwrap() = Behavior::Pending;
-    rig.start_speaking_for(20).await;
+    rig.start_speaking_for(400).await;
     let base = rig.log.len();
     let checks = rig.lens.lock().unwrap().len();
     rig.script.lock().unwrap().final_on_finalize = Some("held then off".into());
@@ -4050,7 +4055,7 @@ async fn disable_while_final_waits_fires_barge_once_before_the_final() {
     let mut rig = rig_with(agent_config(cfg)).await;
     rig.enroll().await;
     *rig.default.lock().unwrap() = Behavior::Pending;
-    rig.start_speaking_for(20).await;
+    rig.start_speaking_for(400).await;
     let base = rig.log.len();
     rig.script.lock().unwrap().final_on_finalize = Some("final waits".into());
     feed_speech_with_partial(&mut rig, base, 15, "partial").await;
@@ -4087,7 +4092,7 @@ async fn other_verdict_right_after_disable_still_fires_barge_once_before_the_fin
         &rig,
         vec![Behavior::WaitFor(Arc::clone(&release), OTHER.to_vec())],
     );
-    rig.start_speaking_for(20).await;
+    rig.start_speaking_for(400).await;
     let base = rig.log.len();
     rig.script.lock().unwrap().final_on_finalize = Some("other after disable".into());
     feed_speech_with_partial(&mut rig, base, 15, "partial").await;

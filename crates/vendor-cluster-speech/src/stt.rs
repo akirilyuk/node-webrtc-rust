@@ -553,6 +553,13 @@ async fn stream_worker(
                         carry_send_failed = true;
                         break;
                     }
+                    if per_utterance {
+                        // This stream closes at its Finalized, so audio sent after the Finalize
+                        // would never be transcribed (a speaker split's U2 seed queued behind
+                        // U1's end). What is left goes to the next stream, like live audio
+                        // arriving while a finalize is pending.
+                        break;
+                    }
                 }
             }
         }

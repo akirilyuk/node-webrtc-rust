@@ -8,6 +8,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.18.4] - 2026-11-10
+
+### Fixed
+
+- **speech:** With `cluster-sherpa` in per-utterance stream mode, the second utterance of a speaker split (`toUtteranceId`) no longer ends empty when the speech pod is behind. The post-split audio queued behind the first utterance's end was sent on the stream that closes at that end, so it was never transcribed. Audio queued after an end now always goes to the next stream.
+
 ## [0.18.3] - 2026-11-10
 
 ### Fixed

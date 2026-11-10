@@ -67,6 +67,11 @@ pub struct MockSpeechState {
     pub open_header_delay_once_after: Arc<AtomicUsize>,
     /// When `true`, final transcripts read `final-{n}` with `n` = the finalize count.
     pub numbered_finals: Arc<AtomicBool>,
+    /// When `true`, a `Finalize` answers like the speech pod's Sherpa recognizer: the final reads
+    /// `bytes-{n}` with `n` = audio bytes this stream received since its previous `Finalize`, and
+    /// no final is sent when `n` is 0. Audio a stream received after its last `Finalize` is never
+    /// transcribed (the pod starts a fresh recognizer stream per finalize).
+    pub final_reports_audio_bytes: Arc<AtomicBool>,
     /// Every audio message the server read: `(1-based stream index, bytes)` in arrival order.
     pub audio_log: AudioLog,
     /// `synthesize` answers `UNAVAILABLE` for this many ms after the first call, then serves.
@@ -160,6 +165,8 @@ impl Speech for MockSpeech {
                     })),
                 }))
                 .await;
+            // Audio bytes this stream received since its previous Finalize.
+            let mut bytes_since_finalize = 0usize;
             loop {
                 // Stalled-server mode: do not read the next inbound message while paused.
                 // `enable()` registers the waiter before the flag check, so a resume that lands
@@ -187,6 +194,7 @@ impl Speech for MockSpeech {
                             .lock()
                             .expect("audio log")
                             .push((stream_idx, pcm_s16le.to_vec()));
+                        bytes_since_finalize += pcm_s16le.len();
                         if state.error_on_audio.load(Ordering::SeqCst) {
                             let _ = tx
                                 .send(Ok(TranscribeResponse {
@@ -238,23 +246,31 @@ impl Speech for MockSpeech {
                         if final_delay > 0 {
                             tokio::time::sleep(Duration::from_millis(final_delay as u64)).await;
                         }
-                        let _ = tx
-                            .send(Ok(TranscribeResponse {
-                                msg: Some(transcribe_response::Msg::Transcript(SttTranscript {
-                                    text: if state.numbered_finals.load(Ordering::SeqCst) {
-                                        format!("final-{finalize_n}")
-                                    } else if state
-                                        .leftover_empty_final_on_first_audio
-                                        .load(Ordering::SeqCst)
-                                    {
-                                        "one two three".into()
-                                    } else {
-                                        "final text".into()
-                                    },
-                                    is_final: true,
-                                })),
-                            }))
-                            .await;
+                        let decoded = std::mem::take(&mut bytes_since_finalize);
+                        let by_bytes = state.final_reports_audio_bytes.load(Ordering::SeqCst);
+                        if !by_bytes || decoded > 0 {
+                            let _ = tx
+                                .send(Ok(TranscribeResponse {
+                                    msg: Some(transcribe_response::Msg::Transcript(
+                                        SttTranscript {
+                                            text: if by_bytes {
+                                                format!("bytes-{decoded}")
+                                            } else if state.numbered_finals.load(Ordering::SeqCst) {
+                                                format!("final-{finalize_n}")
+                                            } else if state
+                                                .leftover_empty_final_on_first_audio
+                                                .load(Ordering::SeqCst)
+                                            {
+                                                "one two three".into()
+                                            } else {
+                                                "final text".into()
+                                            },
+                                            is_final: true,
+                                        },
+                                    )),
+                                }))
+                                .await;
+                        }
                         let delay_ms = state.finalized_delay_ms.load(Ordering::SeqCst);
                         if delay_ms > 0 {
                             tokio::time::sleep(Duration::from_millis(delay_ms as u64)).await;

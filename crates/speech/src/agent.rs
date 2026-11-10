@@ -760,8 +760,11 @@ impl VoiceAgent {
             .speaker_gate
             .validate()
             .map_err(SpeechError::Config)?;
-        let split_on_speaker_change =
-            config.speaker_gate.enabled && config.speaker_gate.split_on_speaker_change;
+        // Not ANDed with `enabled`: the gate can be built off and enabled later through
+        // `set_speaker_gate`, and the onset/replay tracking must already run for that utterance.
+        // The tracking is bounded (offsets are capped and cleared per onset, the replay ring has
+        // its own cap) and only runs where a gate exists; a gate that stays off emits no change.
+        let split_on_speaker_change = config.speaker_gate.split_on_speaker_change;
         let (speaker_gate, speaker_embedder) = if config.speaker_gate.enabled {
             let embedder = registry.create_speaker_embedder(&config.speaker_gate)?;
             if embedder.is_none() {

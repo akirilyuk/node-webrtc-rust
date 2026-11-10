@@ -371,6 +371,7 @@ export function fromJsSpeechEvent(event: JsSpeechEvent): SpeechEvent {
     fromUtteranceId: event.fromUtteranceId ?? undefined,
     toUtteranceId: event.toUtteranceId ?? undefined,
     splitAtMs: event.splitAtMs ?? undefined,
+    fromStartMs: event.fromStartMs ?? undefined,
     from: (event.from as SpeechEvent['from']) ?? undefined,
     to: (event.to as SpeechEvent['to']) ?? undefined,
   }
@@ -585,6 +586,11 @@ export class VoiceAgent {
   /** Returns whether STT is enabled for inbound PCM. */
   async sttEnabled(): Promise<boolean> {
     return this.native.sttEnabled()
+  }
+
+  /** Inbound media clock: ms of inbound audio processed since attach (concealed frames included); `user_utterance_split.fromStartMs` is on this clock. */
+  async inboundMediaMs(): Promise<number> {
+    return this.native.inboundMediaMs()
   }
 
   /**

@@ -641,6 +641,12 @@ export interface SpeechEvent {
   toUtteranceId?: string
   /** `user_utterance_split`: ms into the audio of the split utterance (`fromUtteranceId`) where the speaker changed. */
   splitAtMs?: number
+  /**
+   * `user_utterance_split`: media time of the cut utterance's speech onset frame (VAD speech start)
+   * on the agent's inbound media clock (`VoiceAgent.inboundMediaMs()`). `fromStartMs + splitAtMs`
+   * is the split point on that clock.
+   */
+  fromStartMs?: number
   /** `user_utterance_split`: speaker label before the split (always `caller`). */
   from?: 'caller' | 'other'
   /** `user_utterance_split`: speaker label after the split (always `other`). */

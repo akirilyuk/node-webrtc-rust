@@ -116,6 +116,7 @@ describe('splitOnSpeakerChange', () => {
       fromUtteranceId: 'u1',
       toUtteranceId: 'u2',
       splitAtMs: 1240,
+      fromStartMs: 5020,
       from: 'caller',
       to: 'other',
     })
@@ -124,6 +125,7 @@ describe('splitOnSpeakerChange', () => {
     expect(ev.utteranceId).toBeUndefined()
     expect(ev.toUtteranceId).toBe('u2')
     expect(ev.splitAtMs).toBe(1240)
+    expect(ev.fromStartMs).toBe(5020)
     expect(ev.from).toBe('caller')
     expect(ev.to).toBe('other')
     expect(ev.text).toBeUndefined()
@@ -133,5 +135,6 @@ describe('splitOnSpeakerChange', () => {
     const ev = fromJsSpeechEvent({ eventType: JsSpeechEventType.UserSpeechFinal, text: 'hi' })
     expect(ev.toUtteranceId).toBeUndefined()
     expect(ev.splitAtMs).toBeUndefined()
+    expect(ev.fromStartMs).toBeUndefined()
   })
 })

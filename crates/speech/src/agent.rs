@@ -439,6 +439,14 @@ struct AgentInner {
     /// pre-roll audio the gate's media clock does not count. Only with `splitOnSpeakerChange`.
     replay_onset_key: Option<u64>,
     replay_frame_offsets: Vec<usize>,
+    /// Inbound media clock: ms of inbound audio processed since attach (every frame that reached
+    /// `process_inbound_pcm_with_meta` while running, concealed frames included).
+    inbound_media_ms: u64,
+    /// Media start (on `inbound_media_ms`) of the speaker-gate onset frame of `replay_onset_key`
+    /// (VAD speech start; pre-roll excluded). A gate `split_at_ms` counts from this frame, so
+    /// `onset + split_at_ms` is the split point on the inbound media clock. Set and replaced
+    /// together with `replay_onset_key`.
+    gate_onset_media_ms: Option<u64>,
     /// The user utterance currently being assembled (STT/turn and LID state). `None` until the
     /// first utterance and after its record moved to `closing`.
     live: Option<SttUtterance>,
@@ -848,6 +856,8 @@ impl VoiceAgent {
                 replay_begun_at_pre_roll: false,
                 replay_onset_key: None,
                 replay_frame_offsets: Vec::new(),
+                inbound_media_ms: 0,
+                gate_onset_media_ms: None,
                 live: None,
                 next_utterance_key: 1,
                 closing: VecDeque::new(),
@@ -3706,6 +3716,13 @@ impl VoiceAgent {
         );
     }
 
+    /// Inbound media clock: ms of inbound audio processed since attach (every frame passed to
+    /// [`process_inbound_pcm_with_meta`](Self::process_inbound_pcm_with_meta) while running,
+    /// concealed frames included). `user_utterance_split.from_start_ms` is on this clock.
+    pub async fn inbound_media_ms(&self) -> u64 {
+        self.inner.lock().await.inbound_media_ms
+    }
+
     /// Test hook: `(applied, skipped, overflow_skipped, stale, discarded_results,
     /// redecode_timeouts)` speaker-split counters.
     #[doc(hidden)]
@@ -3758,8 +3775,8 @@ impl VoiceAgent {
     /// Splits the live utterance U1 at a confirmed speaker change (`splitOnSpeakerChange`).
     ///
     /// Nothing here awaits the vendor: the commands go to the STT actor, in order.
-    /// 1. U1's live stream (both speakers) is ended into a `SplitDiscard` record: its text and
-    ///    close are dropped.
+    /// 1. U1's live stream (both speakers) is ended into a `SplitDiscard` record without a decode
+    ///    where the provider supports it (Inline: Sherpa); otherwise it is finalized and its text dropped.
     /// 2. `pcm[..split]` from the replay ring (plus the endpoint tail) is decoded on a fresh
     ///    stream ended with U1's key, so U1's final comes from its own audio only, keeps U1's id
     ///    and verdict, and carries `reason: "speaker_split"`. The actor answers in order, so U1's
@@ -3822,6 +3839,10 @@ impl VoiceAgent {
                 drop(inner);
                 return self.skip_speaker_split(&change, "split_out_of_range");
             }
+            // U1's speech onset on the inbound media clock; U2's gate starts at the split frame.
+            let u1_onset_media_ms = inner.gate_onset_media_ms;
+            let u2_onset_media_ms =
+                u1_onset_media_ms.map(|onset| onset + (frame * SPLIT_FRAME_MS) as u64);
             let mut u1 = inner.live.take().expect("live record checked");
             // 1. The live stream mixes both speakers: end it and drop what it produces.
             let mut discard = inner.new_record();
@@ -3830,7 +3851,7 @@ impl VoiceAgent {
             discard.close_reason = "speaker_split_discard";
             let discard_key = discard.key;
             inner.closing.push_back(discard);
-            actor.send(SttCommand::EndUtterance { key: discard_key });
+            actor.send(SttCommand::AbandonUtterance { key: discard_key });
             // 2. Re-decode U1 from its own PCM on a fresh stream.
             for chunk in pcm[..split_byte].chunks(640) {
                 actor.send_audio(Bytes::copy_from_slice(chunk));
@@ -3873,10 +3894,21 @@ impl VoiceAgent {
             inner.utterance_replay_buffer.push(&seed);
             inner.replay_begun_at_pre_roll = true;
             inner.replay_onset_key = Some(u2_key);
+            inner.gate_onset_media_ms = u2_onset_media_ms;
             inner.replay_frame_offsets = (0..seed.len().div_ceil(640)).map(|i| i * 640).collect();
-            (u1_key, u1_id, u2_key, u2_id, seed, speaking_end_needed, rx)
+            (
+                u1_key,
+                u1_id,
+                u2_key,
+                u2_id,
+                seed,
+                speaking_end_needed,
+                rx,
+                u1_onset_media_ms,
+            )
         };
-        let (u1_key, u1_id, u2_key, u2_id, seed, speaking_end_needed, rx) = split;
+        let (u1_key, u1_id, u2_key, u2_id, seed, speaking_end_needed, rx, u1_onset_media_ms) =
+            split;
         // The gate judges U2 as a new utterance from its first post-split frame.
         let mut frames = seed.chunks(640);
         if let Some(first) = frames.next() {
@@ -3887,11 +3919,12 @@ impl VoiceAgent {
         }
         self.speaker_splits.fetch_add(1, Ordering::SeqCst);
         eprintln!(
-            "[speech] speaker split {u1_id} -> {u2_id} from={} to={} split_at_ms={} seed_ms={}",
+            "[speech] speaker split {u1_id} -> {u2_id} from={} to={} split_at_ms={} seed_ms={} u1_onset_media_ms={}",
             change.from.as_str(),
             change.to.as_str(),
             change.split_at_ms,
-            seed.len() / BYTES_PER_MS_16K_MONO
+            seed.len() / BYTES_PER_MS_16K_MONO,
+            u1_onset_media_ms.map_or_else(|| "none".to_string(), |ms| ms.to_string())
         );
         if speaking_end_needed {
             self.emit_user_speaking_end_for(u1_key).await;
@@ -3920,6 +3953,7 @@ impl VoiceAgent {
             change.split_at_ms,
             change.from.as_str(),
             change.to.as_str(),
+            u1_onset_media_ms.map(|ms| u32::try_from(ms).unwrap_or(u32::MAX)),
         ));
         if let Err(error) = self.on_vad_speech_start().await {
             eprintln!("[speech] speaker split: start of {u2_id} failed: {error}");
@@ -5707,6 +5741,7 @@ impl VoiceAgent {
             let mut inner = self.inner.lock().await;
             inner.last_inbound_pcm_at = Some(Instant::now());
             inner.utterance_media_ms = inner.utterance_media_ms.saturating_add(duration_ms as u64);
+            inner.inbound_media_ms = inner.inbound_media_ms.saturating_add(duration_ms as u64);
             if inner.stt_listen_deadline_ms > 0 && inner.stt_listen_started_at.is_some() {
                 inner.stt_listen_media_ms = inner.stt_listen_media_ms.saturating_add(duration_ms);
             }
@@ -6160,6 +6195,10 @@ impl VoiceAgent {
                                 if inner.replay_onset_key != Some(key) {
                                     inner.replay_onset_key = Some(key);
                                     inner.replay_frame_offsets.clear();
+                                    // The clock already counts this frame: its start is the onset.
+                                    inner.gate_onset_media_ms = Some(
+                                        inner.inbound_media_ms.saturating_sub(duration_ms as u64),
+                                    );
                                 }
                                 Self::note_replay_frame_offset(&mut inner);
                             }

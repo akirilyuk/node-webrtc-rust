@@ -107,6 +107,8 @@ struct Script {
     /// Deferred mode: the answer to the finalize call with this index is withheld (and so is every
     /// later one, since answers keep request order) until the index leaves this list.
     held_calls: Vec<usize>,
+    /// Frame classes of every abandoned (never decoded) stream, in abandon order.
+    abandoned: Vec<String>,
 }
 
 struct LevelStt {
@@ -191,6 +193,12 @@ impl SttProvider for LevelStt {
                 ))));
             self.outputs.push_back(SttOutput::FinalizeDone);
         }
+    }
+    async fn abandon_utterance(&mut self) -> SpeechResult<bool> {
+        let c = classes(&std::mem::take(&mut self.cur));
+        self.script.lock().unwrap().abandoned.push(c);
+        self.queue.clear();
+        Ok(true)
     }
     async fn finalize_utterance(&mut self) -> SpeechResult<()> {
         let c = classes(&std::mem::take(&mut self.cur));
@@ -418,13 +426,28 @@ impl Rig {
         panic!("caller not enrolled");
     }
 
+    /// Starts a long agent reply and returns once the agent is speaking (`agent_speaking_start`),
+    /// so the next user speech starts during playback. A fixed sleep is not enough: when TTS
+    /// starts after the user's onset, no barge-in is held at `SpeechStart` and the utterance runs
+    /// into C1 (`user_stt_not_found`) instead.
     async fn start_speaking(&self) {
+        let mut events = self.agent.subscribe_events();
         let agent = Arc::clone(&self.agent);
         let text = "interrupt this mock playback please ".repeat(40);
         tokio::spawn(async move {
             let _ = agent.send_text_to_tts(&text).await;
         });
-        sleep(Duration::from_millis(200)).await;
+        let started = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match events.recv().await {
+                    Ok(e) if e.kind == SpeechEventKind::AgentSpeakingStart => return,
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => panic!("event stream closed"),
+                }
+            }
+        })
+        .await;
+        assert!(started.is_ok(), "agent did not start speaking within 5 s");
     }
 
     async fn wait_splits(&self, n: u64) {
@@ -588,8 +611,35 @@ async fn caller_then_other_splits_and_redecodes_each_side() {
     );
     let (splits, _, _, _, discarded, timeouts) = rig.agent.speaker_split_counts();
     assert_eq!(splits, 1);
-    assert!(discarded >= 1, "the mixed live stream's final is dropped");
+    // Inline providers abandon the mixed stream: there is no result to drop.
+    assert_eq!(
+        discarded, 0,
+        "the mixed live stream is abandoned, not decoded"
+    );
     assert_eq!(timeouts, 0);
+    rig.agent.stop().await.unwrap();
+}
+
+/// Inline split: the mixed live stream is dropped without a decode (one abandon), so only
+/// enrollment, U1 and U2 are finalized.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inline_split_abandons_the_mixed_stream_without_a_decode() {
+    let mut rig = rig(true).await;
+    rig.enroll().await;
+    rig.feed_paced(A, 20).await;
+    rig.feed_paced(0, 1).await;
+    rig.feed_paced(B, 40).await;
+    rig.wait_splits(1).await;
+    rig.feed(0, 30).await;
+    rig.idle().await;
+    rig.drain();
+    {
+        let script = rig.script.lock().unwrap();
+        assert_eq!(script.finalize_calls, 4, "2 enrollment + U1 + U2");
+        assert_eq!(script.abandoned.len(), 1);
+    }
+    // Abandoned, not decoded: no discarded result exists.
+    assert_eq!(rig.agent.speaker_split_counts().4, 0);
     rig.agent.stop().await.unwrap();
 }
 
@@ -616,16 +666,26 @@ async fn split_after_a_brief_vad_gap_maps_onto_the_replay_pcm() {
     assert!((19..=21).contains(&(a1 + a2)), "caller frames {a1}+{a2}");
     assert!((39..=41).contains(&(b1 + b2)), "other frames {b1}+{b2}");
     // The re-decoded U1 stream ends at the split ± 1 frame, followed only by the agent's
-    // endpoint tail (`agent::stt_endpoint_tail_ms`). Streams in order: enrollment, the live
-    // stream (both speakers, discarded at the split), U1's re-decode, U2.
-    let streams = rig.script.lock().unwrap().streams.clone();
-    let live_idx = streams
-        .iter()
-        .position(|s| count(s, 'A') >= 18 && count(s, 'B') >= 1)
-        .unwrap_or_else(|| panic!("live stream: {streams:?}"));
-    let after = &streams[live_idx + 1..];
+    // endpoint tail (`agent::stt_endpoint_tail_ms`). Streams in order: enrollment, U1's
+    // re-decode, U2 (the mixed live stream is abandoned).
+    let (streams, abandoned) = {
+        let script = rig.script.lock().unwrap();
+        (script.streams.clone(), script.abandoned.clone())
+    };
+    assert_eq!(
+        abandoned.len(),
+        1,
+        "one abandoned live stream: {abandoned:?}"
+    );
+    assert!(
+        count(&abandoned[0], 'A') >= 18 && count(&abandoned[0], 'B') >= 1,
+        "abandoned stream mixes both speakers: {abandoned:?}"
+    );
+    let after = &streams[..];
+    // Last match: the enrollment streams are caller-only too and come first.
     let u1_stream = after
         .iter()
+        .rev()
         .find(|s| count(s, 'A') >= 18 && count(s, 'B') == 0)
         .unwrap_or_else(|| panic!("re-decoded U1 stream: {streams:?}"));
     let u2_stream = after
@@ -660,8 +720,8 @@ async fn late_redecode_after_u2_closed_is_applied_to_u1_only() {
     let mut rig = rig(true).await;
     rig.enroll().await;
     let release = Arc::new(Notify::new());
-    // Finalize calls: 2 enrollment, 3 the discarded live stream, 4 U1's re-decode.
-    rig.script.lock().unwrap().block_on_call = Some((4, Arc::clone(&release)));
+    // Finalize calls: 2 enrollment, 3 U1's re-decode; the mixed live stream is abandoned, not finalized.
+    rig.script.lock().unwrap().block_on_call = Some((3, Arc::clone(&release)));
     rig.feed_paced(A, 20).await;
     rig.feed_paced(0, 1).await;
     rig.feed_paced(B, 40).await;
@@ -709,7 +769,8 @@ async fn redecode_timeout_emits_named_error_and_does_not_hang() {
     rig.enroll().await;
     {
         let mut script = rig.script.lock().unwrap();
-        script.block_on_call = Some((4, Arc::new(Notify::new())));
+        // 2 enrollment, 3 U1's re-decode; the mixed live stream is abandoned, not finalized.
+        script.block_on_call = Some((3, Arc::new(Notify::new())));
         script.finalize_wait_ms = Some(400);
     }
     rig.feed_paced(A, 20).await;
@@ -746,6 +807,66 @@ async fn redecode_timeout_emits_named_error_and_does_not_hang() {
     assert!(ab(&f2).1 >= 38);
     assert_eq!(rig.agent.speaker_split_counts().5, 1);
     rig.agent.stop().await.unwrap();
+}
+
+/// Feeds 25 silent frames, then `a` caller frames, `gap` silent frames and `b` other frames, and
+/// checks the split event against the inbound media clock built from the frames the test fed:
+/// `from_start_ms + split_at_ms` is the first `B` frame's media time (±1 frame), `from_start_ms`
+/// is U1's speech onset (first `A` frame plus at most the VAD's `min_speech_duration_ms` + 1
+/// frame), and `inbound_media_ms()` equals frames fed × 20.
+async fn assert_split_on_media_clock(gap: usize) {
+    const FRAME_MS: u64 = 20;
+    let mut rig = rig(true).await;
+    rig.enroll().await;
+    // Enrollment fed 2 × (20 + 30) frames.
+    let mut fed: u64 = 2 * (20 + 30);
+    rig.feed(0, 25).await;
+    fed += 25;
+    let first_a_ms = fed * FRAME_MS;
+    rig.feed_paced(A, 20).await;
+    rig.feed_paced(0, gap).await;
+    fed += 20 + gap as u64;
+    let first_b_ms = fed * FRAME_MS;
+    rig.feed_paced(B, 40).await;
+    fed += 40;
+    rig.wait_splits(1).await;
+    rig.feed(0, 30).await;
+    fed += 30;
+    rig.idle().await;
+    rig.drain();
+    assert_eq!(rig.agent.inbound_media_ms().await, fed * FRAME_MS);
+    let splits: Vec<_> = rig
+        .log
+        .iter()
+        .filter(|e| e.kind == SpeechEventKind::UserUtteranceSplit)
+        .collect();
+    assert_eq!(splits.len(), 1, "{splits:?}");
+    let from = u64::from(splits[0].from_start_ms.expect("from_start_ms"));
+    let split_at = u64::from(splits[0].split_at_ms.expect("split_at_ms"));
+    let min_speech = u64::from(agent_config(true).vad.min_speech_duration_ms);
+    assert!(
+        (first_a_ms..=first_a_ms + min_speech + FRAME_MS).contains(&from),
+        "from_start_ms {from} vs first A {first_a_ms} (+{min_speech} + {FRAME_MS})"
+    );
+    let split_media = from + split_at;
+    assert!(
+        split_media.abs_diff(first_b_ms) <= FRAME_MS,
+        "split {from}+{split_at}={split_media} vs first B {first_b_ms}"
+    );
+    rig.agent.stop().await.unwrap();
+}
+
+/// The split event places the split on the inbound media clock (`from_start_ms + split_at_ms`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn split_event_from_start_ms_maps_onto_the_media_clock() {
+    assert_split_on_media_clock(1).await;
+}
+
+/// Same after a brief VAD gap: the gate's media clock counts the gap frames, so does the inbound
+/// clock, and the onset stays the first speech start of the utterance.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn split_event_from_start_ms_maps_onto_the_media_clock_after_a_brief_vad_gap() {
+    assert_split_on_media_clock(3).await;
 }
 
 /// Caller then other while the agent speaks: the caller's U1 barges in, then a new reply plays,
@@ -795,6 +916,11 @@ async fn flag_off_keeps_one_utterance() {
     let (a, b) = ab(&f);
     assert!(a >= 19 && b >= 39, "a{a} b{b}");
     assert_eq!(rig.agent.speaker_split_counts(), (0, 0, 0, 0, 0, 0));
+    {
+        let script = rig.script.lock().unwrap();
+        assert!(script.abandoned.is_empty());
+        assert_eq!(script.finalize_calls, 3, "2 enrollment + 1");
+    }
     rig.agent.stop().await.unwrap();
 }
 
@@ -983,6 +1109,8 @@ async fn deferred_provider_redecodes_each_side_and_orders_the_finals() {
     assert_eq!(splits, 1);
     assert!(discarded >= 1, "the mixed live stream's final is dropped");
     assert_eq!(timeouts, 0);
+    // Deferred providers are not abandoned: the actor falls back to `request_finalize`.
+    assert!(rig.script.lock().unwrap().abandoned.is_empty());
     rig.agent.stop().await.unwrap();
 }
 
@@ -1098,8 +1226,9 @@ async fn enable_at_runtime(rig: &Rig) {
 }
 
 /// Asserts the one-split outcome of a caller-then-other turn on a rig whose gate was enabled at
-/// runtime.
-async fn assert_runtime_enable_splits(mut rig: Rig) {
+/// runtime. `abandoned` is how many mixed streams the split drops without a decode (1 Inline,
+/// 0 Deferred), and the split event carries U1's onset on the media clock on this path too.
+async fn assert_runtime_enable_splits(mut rig: Rig, abandoned: usize) {
     enable_at_runtime(&rig).await;
     rig.enroll().await;
     rig.feed_paced(A, 20).await;
@@ -1119,6 +1248,13 @@ async fn assert_runtime_enable_splits(mut rig: Rig) {
         .filter(|e| e.kind == SpeechEventKind::UserUtteranceSplit)
         .count();
     assert_eq!(n, 1, "one user_utterance_split");
+    let split = rig
+        .log
+        .iter()
+        .find(|e| e.kind == SpeechEventKind::UserUtteranceSplit)
+        .unwrap();
+    assert!(split.from_start_ms.is_some(), "from_start_ms on {split:?}");
+    assert_eq!(rig.script.lock().unwrap().abandoned.len(), abandoned);
     let (splits, skipped, _, _, _, timeouts) = rig.agent.speaker_split_counts();
     assert_eq!((splits, skipped, timeouts), (1, 0, 0));
     rig.agent.stop().await.unwrap();
@@ -1126,7 +1262,7 @@ async fn assert_runtime_enable_splits(mut rig: Rig) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runtime_enabled_gate_splits_inline() {
-    assert_runtime_enable_splits(rig_with(off_config(true)).await).await;
+    assert_runtime_enable_splits(rig_with(off_config(true)).await, 1).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1139,7 +1275,7 @@ async fn runtime_enabled_gate_splits_deferred() {
         },
     )
     .await;
-    assert_runtime_enable_splits(rig).await;
+    assert_runtime_enable_splits(rig, 0).await;
 }
 
 /// Split flag on, gate never enabled: no scoring, no split, an unchanged final.

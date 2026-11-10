@@ -173,6 +173,11 @@ pub struct SpeechEvent {
     pub to_utterance_id: Option<String>,
     /// `user_utterance_split`: ms into the split utterance's audio where the speaker changed.
     pub split_at_ms: Option<u32>,
+    /// `user_utterance_split`: media time of the cut utterance's speech onset frame (VAD speech
+    /// start; pre-roll excluded) on the agent's inbound media clock (ms of inbound audio processed
+    /// since attach, concealed frames included). `from_start_ms + split_at_ms` is the split point
+    /// on that clock.
+    pub from_start_ms: Option<u32>,
     /// `user_utterance_split`: speaker label before the split (`caller` | `other`).
     pub split_from: Option<String>,
     /// `user_utterance_split`: speaker label after the split (`caller` | `other`).
@@ -217,6 +222,7 @@ impl SpeechEvent {
             from_utterance_id: None,
             to_utterance_id: None,
             split_at_ms: None,
+            from_start_ms: None,
             split_from: None,
             split_to: None,
         }
@@ -299,8 +305,10 @@ impl SpeechEvent {
         split_at_ms: u32,
         from: &str,
         to: &str,
+        from_start_ms: Option<u32>,
     ) -> Self {
         let mut ev = Self::base(SpeechEventKind::UserUtteranceSplit);
+        ev.from_start_ms = from_start_ms;
         ev.from_utterance_id = Some(from_id.into());
         ev.to_utterance_id = Some(to_id.into());
         ev.split_at_ms = Some(split_at_ms);

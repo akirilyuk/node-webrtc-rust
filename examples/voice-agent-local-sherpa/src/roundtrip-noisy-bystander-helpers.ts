@@ -72,6 +72,11 @@ export interface Seen {
   toUtteranceId?: string
   /** `user_utterance_split`: split offset into the cut utterance's audio. */
   splitAtMs?: number
+  /**
+   * `user_utterance_split`: media time of the cut utterance's speech onset on the agent's inbound
+   * media clock (product field `fromStartMs`). `fromStartMs + splitAtMs` is the split point.
+   */
+  fromStartMs?: number
 }
 
 /**
@@ -242,6 +247,11 @@ export function utteranceEndMs(utteranceId: string, seen: Seen[]): number | unde
  * The bystander turn then has no utterance; the caller turn index goes into `merged`. Anything
  * else keeps its slot pairing, so a re-checked `caller` that never reaches a caller turn still
  * fails as a bystander barge-in.
+ *
+ * A second re-pairing covers an utterance that slot matching left unpaired: noise opened it in
+ * a bystander slot after that slot's own utterance, and the caller's onset joined it (no new
+ * speech start). It goes to the immediately following caller turn under the same final, span and
+ * deciding-window conditions; the bystander turn keeps its own utterance.
  */
 export function pairTurnUtterances(
   turns: Turn[],
@@ -284,6 +294,37 @@ export function pairTurnUtterances(
     starts[i] = undefined
     merged.add(j)
   })
+  // Second re-pairing: noise opened an utterance in a bystander slot after that slot's own
+  // utterance, and the caller's onset joined it (STT hold-back, no new `user_speaking_start`).
+  // Its start sits before the gap midpoint, so slot matching left it unpaired and the caller turn
+  // empty. Same conditions as above, for an unpaired start in the bystander slot after the slot's
+  // own paired utterance, credited to the next turn (which must be a caller turn).
+  const pairedIds = new Set(starts.filter((s) => s != null).map((s) => s!.utteranceId!))
+  for (const unpaired of allStarts) {
+    if (pairedIds.has(unpaired.utteranceId!)) continue
+    const i = turns.findIndex(
+      (t, k) =>
+        t.role === 'bystander' && unpaired.atMs >= boundary(k) && unpaired.atMs < boundary(k + 1),
+    )
+    if (i < 0) continue
+    const own = starts[i]
+    if (own == null || !(unpaired.atMs > own.atMs)) continue
+    const j = i + 1
+    if (turns[j]?.role !== 'main' || starts[j] != null) continue
+    const final = seen.find(
+      (e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal && e.utteranceId === unpaired.utteranceId,
+    )
+    if (final?.speaker !== 'caller' || final.speakerCheckWindows == null) continue
+    const callerStartMs = turns[j]!.startMs
+    const endMs = utteranceEndMs(unpaired.utteranceId!, seen)
+    if (endMs == null || !(unpaired.atMs < callerStartMs && endMs > callerStartMs)) continue
+    const decidedBy =
+      unpaired.atMs + speakerRecheckBargeEarliestMs(CHECK_SPEECH_MS, final.speakerCheckWindows)
+    if (callerStartMs >= decidedBy) continue
+    starts[j] = unpaired
+    pairedIds.add(unpaired.utteranceId!)
+    merged.add(j)
+  }
   return { starts, merged }
 }
 
@@ -419,8 +460,136 @@ export function similaritySummary(sims: number[]): {
   return { nearMissCount, minSimilarity }
 }
 
+/** `user_utterance_split` -> scene-clock ms of the split point (undefined when a field is missing). */
+export function splitSceneMs(e: Seen, sceneStartMediaMs: number): number | undefined {
+  if (e.fromStartMs == null || e.splitAtMs == null) return undefined
+  return e.fromStartMs + e.splitAtMs - sceneStartMediaMs
+}
+
+export interface SplitDistance {
+  fromUtteranceId?: string
+  sceneSplitMs: number
+  callerTurnIndex: number
+  callerEndMs: number
+  /** Split point minus the end of the last caller turn that started at or before it. */
+  distanceMs: number
+  /** First bystander turn that starts after the caller turn ends. */
+  nextBystanderStartMs?: number
+}
+
+/**
+ * Where each split lies against the caller's last word: the caller turn with the greatest start at
+ * or before the split point. Splits without a scene time or without a caller turn before them are
+ * skipped. Reporting only.
+ */
+export function splitDistances(
+  turns: Turn[],
+  seen: Seen[],
+  sceneStartMediaMs: number,
+): SplitDistance[] {
+  const out: SplitDistance[] = []
+  for (const e of seen) {
+    if (e.type !== SPEECH_EVENT_TYPE.userUtteranceSplit) continue
+    const sceneSplitMs = splitSceneMs(e, sceneStartMediaMs)
+    if (sceneSplitMs == null) continue
+    let callerTurnIndex = -1
+    turns.forEach((t, i) => {
+      if (t.role === 'main' && t.startMs <= sceneSplitMs) {
+        if (callerTurnIndex < 0 || t.startMs > turns[callerTurnIndex]!.startMs) callerTurnIndex = i
+      }
+    })
+    if (callerTurnIndex < 0) continue
+    const callerEndMs = turns[callerTurnIndex]!.endMs
+    out.push({
+      fromUtteranceId: e.fromUtteranceId,
+      sceneSplitMs,
+      callerTurnIndex,
+      callerEndMs,
+      distanceMs: sceneSplitMs - callerEndMs,
+      nextBystanderStartMs: turns.find((t) => t.role === 'bystander' && t.startMs > callerEndMs)
+        ?.startMs,
+    })
+  }
+  return out
+}
+
+function normWords(text: string): string[] {
+  return normalizeForCompare(text)
+    .split(' ')
+    .filter((w) => w.length > 0)
+}
+
+/**
+ * One-word glue at a speaker change, for `caller` finals of qualified caller turns that
+ * {@link mergedCallerFinals} does not count. `trailing`: a word after the caller-length window
+ * equals one of the first 3 words of the next bystander sentence. `leading`: a word before the
+ * window equals one of the last 3 words of the previous bystander turn. Reporting only.
+ */
+export function glueCounts(turns: Turn[], seen: Seen[]): { trailing: number; leading: number } {
+  const mergedIds = new Set(mergedCallerFinals(turns, seen).map((m) => m.utteranceId))
+  const { starts } = pairTurnUtterances(turns, seen)
+  let trailing = 0
+  let leading = 0
+  turns.forEach((turn, i) => {
+    if (turn.role !== 'main' || turn.kind !== 'qualified') return
+    const id = starts[i]?.utteranceId
+    if (id == null || mergedIds.has(id)) return
+    const final = [...seen]
+      .reverse()
+      .find((e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal && e.utteranceId === id)
+    if (final?.speaker !== 'caller') return
+    const callerWords = normWords(turn.text)
+    const words = normWords(final.text ?? '')
+    const n = callerWords.length
+    if (n === 0 || words.length <= n) return
+    let bestK = 0
+    let best = -1
+    for (let k = 0; k + n <= words.length; k += 1) {
+      const sim = wordSimilarity(turn.text, words.slice(k, k + n).join(' '))
+      if (sim > best) {
+        best = sim
+        bestK = k
+      }
+    }
+    const before = words.slice(0, bestK)
+    const after = words.slice(bestK + n)
+    let next: Turn | undefined
+    for (let j = i + 1; j < turns.length && next == null; j += 1) {
+      if (turns[j]!.role === 'bystander') next = turns[j]
+    }
+    let prev: Turn | undefined
+    for (let j = i - 1; j >= 0 && prev == null; j -= 1) {
+      if (turns[j]!.role === 'bystander') prev = turns[j]
+    }
+    if (next != null) {
+      const head = normWords(next.text).slice(0, 3)
+      if (after.some((w) => head.includes(w))) trailing += 1
+    }
+    if (prev != null) {
+      const tail = normWords(prev.text).slice(-3)
+      if (before.some((w) => tail.includes(w))) leading += 1
+    }
+  })
+  return { trailing, leading }
+}
+
+/** Float tolerance for "exactly at the threshold". */
+export const EXACT_THRESHOLD_EPS = 1e-9
+
+/** Similarities that sit exactly on {@link DEFAULT_BARGE_PHRASE_MIN_SIMILARITY} (0.75). Reporting only. */
+export function exactThresholdCount(sims: number[]): number {
+  return sims.filter(
+    (s) => Math.abs(s - DEFAULT_BARGE_PHRASE_MIN_SIMILARITY) <= EXACT_THRESHOLD_EPS,
+  ).length
+}
+
 /** Pure evaluation of one pass; exported for the evaluator unit test. */
-export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): string[] {
+export function evaluateTurns(
+  turns: Turn[],
+  seen: Seen[],
+  label: string,
+  opts: { sceneStartMediaMs?: number } = {},
+): string[] {
   const failures: string[] = []
   const sims: number[] = []
   const finals = new Map<string, Seen>()
@@ -596,8 +765,19 @@ export function evaluateTurns(turns: Turn[], seen: Seen[], label: string): strin
   }
   const mergedFinals = mergedCallerFinals(turns, seen)
   const { nearMissCount, minSimilarity } = similaritySummary(sims)
+  const distances =
+    opts.sceneStartMediaMs != null ? splitDistances(turns, seen, opts.sceneStartMediaMs) : []
+  for (const e of splits) {
+    const d = distances.find((x) => x.fromUtteranceId === e.fromUtteranceId)
+    console.log(
+      `${label}: split ${String(e.fromUtteranceId)} sceneSplitMs=${d?.sceneSplitMs ?? 'n/a'} callerTurn=${d?.callerTurnIndex ?? 'n/a'} callerEndMs=${d?.callerEndMs ?? 'n/a'} distanceMs=${d?.distanceMs ?? 'n/a'} nextBystanderStartMs=${d?.nextBystanderStartMs ?? 'n/a'}`,
+    )
+  }
+  const distMin = distances.length > 0 ? Math.min(...distances.map((d) => d.distanceMs)) : undefined
+  const distMax = distances.length > 0 ? Math.max(...distances.map((d) => d.distanceMs)) : undefined
+  const glue = glueCounts(turns, seen)
   console.log(
-    `${label}: user_utterance_split events: ${splits.length}; merged caller finals: ${mergedFinals.length}; near misses (similarity <= ${NEAR_MISS_SIMILARITY.toFixed(2)}): ${nearMissCount}; min similarity: ${minSimilarity == null ? 'n/a' : minSimilarity.toFixed(2)}`,
+    `${label}: user_utterance_split events: ${splits.length}; merged caller finals: ${mergedFinals.length}; near misses (similarity <= ${NEAR_MISS_SIMILARITY.toFixed(2)}): ${nearMissCount}; min similarity: ${minSimilarity == null ? 'n/a' : minSimilarity.toFixed(2)}; sceneStartMediaMs=${opts.sceneStartMediaMs ?? 'n/a'}; split distance ms min/max: ${distMin ?? 'n/a'}/${distMax ?? 'n/a'}; trailing glue finals: ${glue.trailing}; leading glue finals: ${glue.leading}; exact-threshold (0.75) finals: ${exactThresholdCount(sims)}`,
   )
   for (const m of mergedFinals) {
     failures.push(

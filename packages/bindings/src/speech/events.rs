@@ -73,6 +73,7 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
         from_utterance_id: event.from_utterance_id,
         to_utterance_id: event.to_utterance_id,
         split_at_ms: event.split_at_ms,
+        from_start_ms: event.from_start_ms,
         split_from: event.split_from,
         split_to: event.split_to,
     }
@@ -124,13 +125,19 @@ mod speech_event_to_js_tests {
     #[test]
     fn user_utterance_split_maps_fields() {
         let js = speech_event_to_js(SpeechEvent::user_utterance_split(
-            "u1", "u2", 1200, "caller", "other",
+            "u1",
+            "u2",
+            1200,
+            "caller",
+            "other",
+            Some(5020),
         ));
         assert_eq!(js.event_type, JsSpeechEventType::UserUtteranceSplit);
         assert_eq!(js.from_utterance_id.as_deref(), Some("u1"));
         assert!(js.utterance_id.is_none());
         assert_eq!(js.to_utterance_id.as_deref(), Some("u2"));
         assert_eq!(js.split_at_ms, Some(1200));
+        assert_eq!(js.from_start_ms, Some(5020));
         assert_eq!(js.split_from.as_deref(), Some("caller"));
         assert_eq!(js.split_to.as_deref(), Some("other"));
     }

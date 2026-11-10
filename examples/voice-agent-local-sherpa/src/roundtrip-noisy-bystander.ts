@@ -253,6 +253,7 @@ async function runPass(params: {
           fromUtteranceId: event.fromUtteranceId,
           toUtteranceId: event.toUtteranceId,
           splitAtMs: event.splitAtMs,
+          fromStartMs: event.fromStartMs,
         })
       }
     } catch (error) {
@@ -261,6 +262,7 @@ async function runPass(params: {
   })()
   void drainInbound(userInbound, () => running)
 
+  const sceneStartMediaMs = await listener.inboundMediaMs()
   anchorEpoch = Date.now()
   await playPaced(userOut, pcm)
   await streamSilence(userOut, 3)
@@ -277,7 +279,7 @@ async function runPass(params: {
       `${label}: lag turn=${i} sceneStart=${turns[i]!.startMs} firstStart=${firstStart ?? 'none'} lagMs=${firstStart != null ? firstStart - turns[i]!.startMs : 'none'}${merged.has(i) ? ' merged' : ''}`,
     )
   })
-  return evaluateTurns(turns, seen, label)
+  return evaluateTurns(turns, seen, label, { sceneStartMediaMs })
 }
 
 async function main(): Promise<void> {

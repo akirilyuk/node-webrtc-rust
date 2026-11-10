@@ -1022,6 +1022,10 @@ pub struct JsSpeechEvent {
     pub to_utterance_id: Option<String>,
     /// `user_utterance_split`: ms into the audio of the split utterance where the speaker changed.
     pub split_at_ms: Option<u32>,
+    /// `user_utterance_split`: media time of the cut utterance's speech onset frame (VAD speech
+    /// start; pre-roll excluded) on the agent's inbound media clock (`inboundMediaMs()`).
+    /// `fromStartMs + splitAtMs` is the split point on that clock.
+    pub from_start_ms: Option<u32>,
     /// `user_utterance_split`: label before the split (`caller` | `other`).
     #[napi(js_name = "from")]
     pub split_from: Option<String>,

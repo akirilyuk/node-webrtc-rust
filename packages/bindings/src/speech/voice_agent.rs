@@ -426,6 +426,13 @@ impl JsVoiceAgent {
         Ok(self.inner.stt_enabled().await)
     }
 
+    /// Inbound media clock: ms of inbound audio processed since attach (concealed frames
+    /// included). `user_utterance_split.fromStartMs` is on this clock.
+    #[napi]
+    pub async fn inbound_media_ms(&self) -> Result<f64> {
+        Ok(self.inner.inbound_media_ms().await as f64)
+    }
+
     /// Apply a new STT config after the current utterance finalizes (or immediately when idle).
     #[napi]
     pub async fn update_stt(&self, config: JsSttConfig) -> Result<()> {

@@ -341,6 +341,30 @@ impl SttProvider for SherpaStt {
         .map_err(|err| SpeechError::Internal(err.to_string()))?
     }
 
+    async fn abandon_utterance(&mut self) -> SpeechResult<bool> {
+        let state = Arc::clone(&self.state);
+        self.accepted_ms.store(0, Ordering::Relaxed);
+        tokio::task::spawn_blocking(move || -> SpeechResult<bool> {
+            let _native = NativeCallGuard::enter();
+            let mut guard = state.blocking_lock();
+            if !guard.running {
+                return Ok(true);
+            }
+            let Some(session) = guard.session.as_mut() else {
+                return Ok(true);
+            };
+            session.stream = session.shared.create_stream();
+            session.pending.clear();
+            session.last_emitted_text.clear();
+            session.decoded_since_result = false;
+            session.unread.store(false, Ordering::Release);
+            voice_debug("sherpa abandon_utterance");
+            Ok(true)
+        })
+        .await
+        .map_err(|err| SpeechError::Internal(err.to_string()))?
+    }
+
     async fn finalize_utterance(&mut self) -> SpeechResult<()> {
         let state = Arc::clone(&self.state);
         self.accepted_ms.store(0, Ordering::Relaxed);

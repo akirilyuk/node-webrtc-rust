@@ -65,6 +65,9 @@ pub enum SttCommand {
     Audio(Bytes),
     /// End the current utterance; answered by one `SttResult::FinalizeDone` with this key.
     EndUtterance { key: u64 },
+    /// End the current utterance without a decode when the provider supports it; answered by one
+    /// `FinalizeDone` with this key like `EndUtterance`.
+    AbandonUtterance { key: u64 },
     /// Replace the provider once every outstanding finalize is done. Parks later commands.
     Swap {
         config: SttConfig,
@@ -382,7 +385,9 @@ impl Actor {
                                 && self.last_work_at.is_some()
                                 && matches!(
                                     cmd,
-                                    SttCommand::Audio(_) | SttCommand::EndUtterance { .. }
+                                    SttCommand::Audio(_)
+                                        | SttCommand::EndUtterance { .. }
+                                        | SttCommand::AbandonUtterance { .. }
                                 )
                             {
                                 // Leftovers from the quiet period are attributed before new
@@ -719,6 +724,7 @@ impl Actor {
             }
             SttCommand::Audio(pcm) => self.on_audio(pcm).await,
             SttCommand::EndUtterance { key } => self.on_end_utterance(key).await,
+            SttCommand::AbandonUtterance { key } => self.on_abandon_utterance(key).await,
             SttCommand::WaitReady { timeout, done } => {
                 let ready = match self.provider.as_mut() {
                     Some(provider) => provider.wait_ready(timeout).await.unwrap_or(false),
@@ -835,6 +841,48 @@ impl Actor {
             self.drain_outputs(None).await;
         }
         self.check_backlog(false);
+    }
+
+    async fn on_abandon_utterance(&mut self, key: u64) {
+        if self.outstanding.is_empty() {
+            if let Some(provider) = self.provider.as_mut() {
+                if provider.finalize_mode() == FinalizeMode::Inline {
+                    self.flush_tap(&format!("utt{key}"));
+                    self.last_work_at = Some(Instant::now());
+                    let gen = self.gen;
+                    let Some(provider) = self.provider.as_mut() else {
+                        return;
+                    };
+                    let wait_ms = provider.finalize_wait_ms();
+                    let started = Instant::now();
+                    let outcome =
+                        timeout(Duration::from_millis(wait_ms), provider.abandon_utterance()).await;
+                    let Ok(outcome) = outcome else {
+                        eprintln!(
+                            "[speech] stt abandon timed out key={key} waitedMs={}",
+                            started.elapsed().as_millis()
+                        );
+                        self.on_end_utterance(key).await;
+                        return;
+                    };
+                    match outcome {
+                        Ok(true) => {
+                            let dropped = provider.discard_queued_transcripts();
+                            eprintln!("[speech] stt stream abandoned key={key} dropped={dropped}");
+                            self.emit(SttResult::FinalizeDone {
+                                key,
+                                gen,
+                                timed_out: false,
+                            });
+                            return;
+                        }
+                        Ok(false) => {}
+                        Err(e) => eprintln!("[speech] stt abandon failed key={key}: {e}"),
+                    }
+                }
+            }
+        }
+        self.on_end_utterance(key).await;
     }
 
     async fn on_end_utterance(&mut self, key: u64) {

@@ -514,6 +514,15 @@ impl SharedSttRecognizer {
             .expect("sherpa recognizer lock poisoned");
         f(&guard)
     }
+
+    /// `is_ready` without waiting: `None` when another session holds the recognizer.
+    pub fn try_is_ready(&self, stream: &sherpa_onnx::OnlineStream) -> Option<bool> {
+        match self.recognizer.try_lock() {
+            Ok(guard) => Some(guard.is_ready(stream)),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+            Err(std::sync::TryLockError::Poisoned(_)) => panic!("sherpa recognizer lock poisoned"),
+        }
+    }
 }
 
 impl SharedLidRecognizer {

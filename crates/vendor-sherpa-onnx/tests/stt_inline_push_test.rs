@@ -78,10 +78,7 @@ async fn build_pcm() -> Vec<u8> {
     pcm
 }
 
-/// Returns the transcripts and the number of `poll_transcript` calls made. Before the skip in
-/// `poll_transcript` every poll call that did not return a queued final read the result, so the
-/// call count is the read count of the old behavior.
-/// Returns the final texts in order and the number of messages pushed.
+/// Pushes `pcm` in 20 ms `push_and_poll` messages, then finalizes and drains. Returns the final texts in order, the number of messages, and the push blocking hops counted during the pushes.
 async fn run(cfg: &SttConfig, pcm: &[u8], inline: bool) -> (Vec<String>, u64, u64) {
     let mut stt = SherpaStt::new(cfg);
     stt.set_inline_push(inline);

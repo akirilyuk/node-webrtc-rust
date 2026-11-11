@@ -220,6 +220,10 @@ impl SherpaStt {
         if !samples.is_empty() {
             self.accepted_ms.fetch_add(sample_ms, Ordering::Relaxed);
             session.stream.accept_waveform(SAMPLE_RATE, samples);
+            let push = SHERPA_PUSH_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+            if push == 1 || push.is_multiple_of(50) {
+                voice_debug(format!("sherpa push_audio samples={}", samples.len()));
+            }
         }
         match session.shared.try_is_ready(&session.stream) {
             Some(false) => InlinePush::Done,
@@ -355,13 +359,12 @@ impl SttProvider for SherpaStt {
             if !already_accepted {
                 accepted_ms.fetch_add(sample_ms, Ordering::Relaxed);
                 session.stream.accept_waveform(SAMPLE_RATE, &samples);
+                let push = SHERPA_PUSH_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+                if push == 1 || push.is_multiple_of(50) {
+                    voice_debug(format!("sherpa push_audio samples={}", samples.len()));
+                }
             }
             session.decode_ready("sherpa decode loop capped at 64 steps (possible is_ready stuck)");
-
-            let push = SHERPA_PUSH_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-            if push == 1 || push.is_multiple_of(50) {
-                voice_debug(format!("sherpa push_audio samples={}", samples.len()));
-            }
 
             Ok(())
         })

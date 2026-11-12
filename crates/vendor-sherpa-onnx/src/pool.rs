@@ -133,6 +133,7 @@ impl Drop for ActiveSessionGuard {
 pub struct SharedSttRecognizer {
     recognizer: Mutex<OnlineRecognizer>,
     pub(crate) active_sessions: Arc<AtomicUsize>,
+    batcher: std::sync::OnceLock<crate::stt_batch::DecodeBatcher>,
 }
 
 /// Shared offline TTS engine (one slot in a [`TtsEnginePool`]).
@@ -465,8 +466,16 @@ impl SharedSttRecognizer {
         Self {
             recognizer: Mutex::new(recognizer),
             active_sessions: Arc::new(AtomicUsize::new(0)),
+            batcher: std::sync::OnceLock::new(),
         }
     }
+
+    /// The decode thread of this model, started on first use.
+    pub(crate) fn batcher(self: &Arc<Self>) -> &crate::stt_batch::DecodeBatcher {
+        self.batcher
+            .get_or_init(|| crate::stt_batch::DecodeBatcher::spawn(Arc::downgrade(self)))
+    }
+
     pub fn track_session(&self) -> ActiveSessionGuard {
         ActiveSessionGuard::acquire(&self.active_sessions)
     }

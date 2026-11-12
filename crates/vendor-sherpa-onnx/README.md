@@ -153,6 +153,8 @@ CI runs the cancel-not-cached and TTS stream-chunks suites after model download 
 
 Sherpa C API calls run inside `tokio::task::spawn_blocking`. Do not invoke `OnlineRecognizer` directly from async tasks. The exception: `accept_waveform` and a non-waiting `is_ready` run inline on the caller's task (`push_audio`, `push_and_poll`); every decode and result read stays on the blocking pool. `SHERPA_STT_INLINE_PUSH=0` restores a blocking hop per message.
 
+Opt-in batched decode: with `SHERPA_STT_BATCH_DECODE=1` (or `set_stt_batch_decode(true)` before creating sessions) each loaded STT model gets one decode thread (`sherpa-stt-decode`). `push_audio`, `push_and_poll` and `finalize_utterance` hand their session lock to that thread, which decodes every ready stream of a round with one `decode_multiple_streams` call; there is no batching window, so a lone stream pays no extra latency and batches form by themselves under load. The batched path takes no decode permit, so `SHERPA_POOL_MAX_CONCURRENT_DECODE` only applies with the switch off, or to `poll_transcript`. Default off: with batching on, a transcript can differ by a near-tie token from per-stream decoding and can depend on which other streams share the round.
+
 ## Tests
 
 ```bash

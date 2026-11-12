@@ -115,13 +115,15 @@ export function buildReport(aggregated) {
   const recognizers = new Map()
   for (const point of stt) {
     const { model, stt_num_threads: threads } = point.params
-    const key = `${model}|${threads}`
-    if (!recognizers.has(key)) recognizers.set(key, { model, threads, points: [] })
+    const batch = point.params.batch
+    const key = `${model}|${threads}|${batch ?? ''}`
+    if (!recognizers.has(key)) recognizers.set(key, { model, threads, batch, points: [] })
     recognizers.get(key).points.push({
       streams: point.params.streams,
       lag_ms_p95: point.metrics.stt_lag_ms_p95,
       final_ms_p95: point.metrics.stt_final_ms_p95,
       realtime_ok: point.metrics.stt_realtime_ok,
+      finals_differing: point.metrics.stt_finals_differing,
       cpu_s_per_audio_s: point.metrics.cpu_s_per_audio_s,
       rss_mb_peak: point.metrics.rss_mb_peak,
       runs: point.runs,
@@ -165,7 +167,7 @@ export function renderMarkdown(report) {
   }
   for (const group of report.stt) {
     lines.push(
-      `### STT streams (${group.model}, ${group.threads} threads)`,
+      `### STT streams (${group.model}, ${group.threads} threads${group.batch ? `, batch ${group.batch}` : ''})`,
       '',
       '| Streams | Lag p95 (ms) | Final p95 (ms) | Real-time ok |',
       '| ---: | ---: | ---: | :---: |',

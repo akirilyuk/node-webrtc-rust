@@ -31,6 +31,41 @@ pub const FINALIZE_TAIL_PADDING_MS: usize = 640;
 static SHERPA_PUSH_COUNT: AtomicU64 = AtomicU64::new(0);
 static SHERPA_GET_RESULT_COUNT: AtomicU64 = AtomicU64::new(0);
 static SHERPA_POLL_BLOCKING_HOPS: AtomicU64 = AtomicU64::new(0);
+static SHERPA_PUSH_BLOCKING_HOPS: AtomicU64 = AtomicU64::new(0);
+
+/// Process-wide default for the inline push path: env `SHERPA_STT_INLINE_PUSH`, off only for
+/// `0|false|no`.
+fn inline_push_default() -> bool {
+    static DEFAULT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DEFAULT.get_or_init(|| {
+        !matches!(
+            std::env::var("SHERPA_STT_INLINE_PUSH")
+                .ok()
+                .map(|v| v.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("0" | "false" | "no")
+        )
+    })
+}
+
+/// Number of `push_audio` / `push_and_poll` calls that took a decode permit and a
+/// `spawn_blocking` hop (perf probe / tests).
+pub fn sherpa_push_blocking_hops() -> u64 {
+    SHERPA_PUSH_BLOCKING_HOPS.load(Ordering::SeqCst)
+}
+
+pub fn reset_sherpa_push_blocking_hops() {
+    SHERPA_PUSH_BLOCKING_HOPS.store(0, Ordering::SeqCst);
+}
+
+enum InlinePush {
+    /// Audio is in the stream and no chunk is ready: nothing else to do.
+    Done,
+    /// Audio is in the stream; a decode or a read is due (slow path, do not accept again).
+    AcceptedNeedsDecode,
+    /// Nothing was done (lock busy, unread results, switch off): slow path does everything.
+    NotTaken,
+}
 
 /// Number of `poll_transcript` calls that took a decode permit and a `spawn_blocking` hop
 /// (perf probe / tests). Calls answered by the `unread` fast path do not count.
@@ -141,6 +176,8 @@ pub struct SherpaStt {
     unread: Arc<AtomicBool>,
     /// Audio accepted by `push_audio` not yet cleared by `poll_transcript` decode (sync read for C1).
     accepted_ms: Arc<AtomicU32>,
+    /// Feed audio and ask `is_ready` on the caller's task; hop to the blocking pool only to decode.
+    inline_push: bool,
 }
 
 impl SherpaStt {
@@ -154,6 +191,43 @@ impl SherpaStt {
             })),
             unread: Arc::new(AtomicBool::new(false)),
             accepted_ms: Arc::new(AtomicU32::new(0)),
+            inline_push: inline_push_default(),
+        }
+    }
+
+    /// A/B switch for tests and measurements.
+    pub fn set_inline_push(&mut self, enabled: bool) {
+        self.inline_push = enabled;
+    }
+
+    fn try_push_inline(&self, samples: &[f32], sample_ms: u32) -> InlinePush {
+        if !self.inline_push {
+            return InlinePush::NotTaken;
+        }
+        let Ok(mut guard) = self.state.try_lock() else {
+            return InlinePush::NotTaken;
+        };
+        if !guard.running {
+            return InlinePush::Done;
+        }
+        let Some(session) = guard.session.as_mut() else {
+            return InlinePush::Done;
+        };
+        if !session.pending.is_empty() || session.decoded_since_result {
+            return InlinePush::NotTaken;
+        }
+        let _native = NativeCallGuard::enter();
+        if !samples.is_empty() {
+            self.accepted_ms.fetch_add(sample_ms, Ordering::Relaxed);
+            session.stream.accept_waveform(SAMPLE_RATE, samples);
+            let push = SHERPA_PUSH_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+            if push == 1 || push.is_multiple_of(50) {
+                voice_debug(format!("sherpa push_audio samples={}", samples.len()));
+            }
+        }
+        match session.shared.try_is_ready(&session.stream) {
+            Some(false) => InlinePush::Done,
+            _ => InlinePush::AcceptedNeedsDecode,
         }
     }
 
@@ -257,9 +331,15 @@ impl SttProvider for SherpaStt {
             return Ok(());
         }
 
+        let sample_ms = (samples.len() as u32 * 1000) / SAMPLE_RATE as u32;
+        let already_accepted = match self.try_push_inline(&samples, sample_ms) {
+            InlinePush::Done => return Ok(()),
+            InlinePush::AcceptedNeedsDecode => true,
+            InlinePush::NotTaken => false,
+        };
+
         let state = Arc::clone(&self.state);
         let accepted_ms = Arc::clone(&self.accepted_ms);
-        let sample_ms = (samples.len() as u32 * 1000) / SAMPLE_RATE as u32;
         let decode_semaphore = self.pool.decode_semaphore();
         let _permit = otel::acquire_sherpa_permit(&decode_semaphore)
             .await
@@ -267,6 +347,7 @@ impl SttProvider for SherpaStt {
 
         tokio::task::spawn_blocking(move || -> SpeechResult<()> {
             let _native = NativeCallGuard::enter();
+            SHERPA_PUSH_BLOCKING_HOPS.fetch_add(1, Ordering::SeqCst);
             let mut guard = state.blocking_lock();
             if !guard.running {
                 return Ok(());
@@ -275,14 +356,15 @@ impl SttProvider for SherpaStt {
                 return Ok(());
             };
 
-            accepted_ms.fetch_add(sample_ms, Ordering::Relaxed);
-            session.stream.accept_waveform(SAMPLE_RATE, &samples);
-            session.decode_ready("sherpa decode loop capped at 64 steps (possible is_ready stuck)");
-
-            let push = SHERPA_PUSH_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-            if push == 1 || push.is_multiple_of(50) {
-                voice_debug(format!("sherpa push_audio samples={}", samples.len()));
+            if !already_accepted {
+                accepted_ms.fetch_add(sample_ms, Ordering::Relaxed);
+                session.stream.accept_waveform(SAMPLE_RATE, &samples);
+                let push = SHERPA_PUSH_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+                if push == 1 || push.is_multiple_of(50) {
+                    voice_debug(format!("sherpa push_audio samples={}", samples.len()));
+                }
             }
+            session.decode_ready("sherpa decode loop capped at 64 steps (possible is_ready stuck)");
 
             Ok(())
         })
@@ -433,11 +515,22 @@ impl SttProvider for SherpaStt {
         pcm: Bytes,
         out: &mut Vec<SttTranscript>,
     ) -> SpeechResult<()> {
-        let samples = mono_s16le_bytes_to_f32(pcm.as_ref());
+        let mut samples = mono_s16le_bytes_to_f32(pcm.as_ref());
+        let mut sample_ms = (samples.len() as u32 * 1000) / SAMPLE_RATE as u32;
+        match self.try_push_inline(&samples, sample_ms) {
+            InlinePush::Done => {
+                self.accepted_ms.store(0, Ordering::Relaxed);
+                return Ok(());
+            }
+            InlinePush::AcceptedNeedsDecode => {
+                samples = Vec::new();
+                sample_ms = 0;
+            }
+            InlinePush::NotTaken => {}
+        }
 
         let state = Arc::clone(&self.state);
         let accepted_ms = Arc::clone(&self.accepted_ms);
-        let sample_ms = (samples.len() as u32 * 1000) / SAMPLE_RATE as u32;
         let decode_semaphore = self.pool.decode_semaphore();
         let _permit = otel::acquire_sherpa_permit(&decode_semaphore)
             .await
@@ -445,6 +538,7 @@ impl SttProvider for SherpaStt {
 
         let ready = tokio::task::spawn_blocking(move || -> SpeechResult<Vec<SttTranscript>> {
             let _native = NativeCallGuard::enter();
+            SHERPA_PUSH_BLOCKING_HOPS.fetch_add(1, Ordering::SeqCst);
             let mut ready = Vec::new();
             let mut guard = state.blocking_lock();
             if !guard.running {

@@ -53,3 +53,7 @@ napi-derive = "2"
 [profile.dev]
 # line tables only: backtraces keep file:line, test binaries shrink (disk budget).
 debug = "line-tables-only"
+
+[profile.release]
+# Cross-crate inlining for the published .node and the speech-service build; build-only change.
+lto = "thin"

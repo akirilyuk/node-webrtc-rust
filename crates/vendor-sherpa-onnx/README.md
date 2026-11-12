@@ -151,7 +151,7 @@ CI runs the cancel-not-cached and TTS stream-chunks suites after model download 
 
 ## Threading
 
-Sherpa C API calls run inside `tokio::task::spawn_blocking`. Do not invoke `OnlineRecognizer` directly from async tasks.
+Sherpa C API calls run inside `tokio::task::spawn_blocking`. Do not invoke `OnlineRecognizer` directly from async tasks. The exception: `accept_waveform` and a non-waiting `is_ready` run inline on the caller's task (`push_audio`, `push_and_poll`); every decode and result read stays on the blocking pool. `SHERPA_STT_INLINE_PUSH=0` restores a blocking hop per message.
 
 ## Tests
 

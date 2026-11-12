@@ -38,6 +38,13 @@ on:
       runner:
         description: runs-on label; default self-hosted (EU runners). nwr-large only for an explicit ARC A/B run while no CI is queued
         default: self-hosted
+      native_profile:
+        description: 'Cargo profile of the .node the loop runs: debug = what PR CI runs; release = CPU measurements (the cpu-seconds column)'
+        type: choice
+        default: debug
+        options:
+          - debug
+          - release
       voice_debug:
         description: 'true = VOICE_DEBUG=1 already on the first pass, so a failing pass has [voice-debug] internals'
         type: choice
@@ -106,7 +113,7 @@ jobs:
         if: inputs.mode != 'cargo'
         run: |
           bash scripts/ci/npm-ci-workspace.sh
-          bash scripts/ci/build-native-addon.sh --target x86_64-unknown-linux-gnu --profile debug
+          bash scripts/ci/build-native-addon.sh --target x86_64-unknown-linux-gnu --profile "${{ inputs.native_profile || 'debug' }}"
           bash scripts/ci/sync-workspace-bindings.sh
           bash scripts/ci/ensure-ts-dist.sh
           if [[ "${{ inputs.mode }}" == "roundtrips" ]]; then
@@ -159,11 +166,15 @@ jobs:
           {
             echo "## Sherpa e2e stress (${ITERATIONS} iterations, mode=${MODE}, cargo_args=${CARGO_ARGS:-n/a}, only=${ONLY:-all}, parallel=${PARALLEL:-default}, cpu_burn=${CPU_BURN:-0})"
             echo
-            echo "| iteration | seconds |"
-            echo "|---|---|"
+            echo "| iteration | seconds | cpu-seconds |"
+            echo "|---|---|---|"
           } >>"$GITHUB_STEP_SUMMARY"
           # Each iteration's output is also kept in a file: the job log can be missing (run 39933589322
           # had no log blob), and a failure must stay explainable. Uploaded as an artifact on failure.
+          # CPU time of everything in the job container (cgroup v2 `usage_usec`), so two runs of the
+          # same loop can be compared by CPU spent, not only by wall time. Empty when unreadable.
+          cpu_usec() { awk '$1 == "usage_usec" { print $2 }' /sys/fs/cgroup/cpu.stat 2>/dev/null || true; }
+          total_cpu_s=0
           stress_dir="$PWD/.test-logs/stress"
           mkdir -p "$stress_dir"
           for ((i = 1; i <= ITERATIONS; i++)); do
@@ -173,6 +184,7 @@ jobs:
             echo "[stress] leftover processes before iteration $i: $(printf '%s' "$leftovers" | grep -c . || true)"
             [[ -n "$leftovers" ]] && printf '%s\n' "$leftovers" | sed 's/^/[stress]   /'
             start=$SECONDS
+            cpu_start="$(cpu_usec)"
             if [[ "$NATIVE_TRACE" == "true" ]]; then
               # Same targets as the helpers integration trace (run-pr-integration.sh); one file per process.
               rm -rf "$stress_dir/native-trace" && mkdir -p "$stress_dir/native-trace"
@@ -204,12 +216,20 @@ jobs:
             rm -f "$stress_dir/iteration-$i.log"
             rm -rf "$stress_dir/native-trace"
             rm -rf .test-logs/sherpa-e2e/audio-tap
-            echo "| $i | $((SECONDS - start)) |" >>"$GITHUB_STEP_SUMMARY"
+            cpu_end="$(cpu_usec)"
+            if [[ -n "$cpu_start" && -n "$cpu_end" ]]; then
+              cpu_s=$(((cpu_end - cpu_start) / 1000000))
+              total_cpu_s=$((total_cpu_s + cpu_s))
+            else
+              cpu_s="n/a"
+            fi
+            echo "[stress] iteration $i: $((SECONDS - start)) s wall, ${cpu_s} cpu-seconds"
+            echo "| $i | $((SECONDS - start)) | ${cpu_s} |" >>"$GITHUB_STEP_SUMMARY"
           done
-          echo "stress OK: ${ITERATIONS}/${ITERATIONS} green"
+          echo "stress OK: ${ITERATIONS}/${ITERATIONS} green, ${total_cpu_s} cpu-seconds in total"
           {
             echo
-            echo "stress OK: ${ITERATIONS}/${ITERATIONS} green"
+            echo "stress OK: ${ITERATIONS}/${ITERATIONS} green, ${total_cpu_s} cpu-seconds in total"
           } >>"$GITHUB_STEP_SUMMARY"
 
       - name: Upload stress logs (failure)

@@ -158,13 +158,13 @@ Opt-in batched decode: with `SHERPA_STT_BATCH_DECODE=1` (or `set_stt_batch_decod
 When to turn it on: it helps a process that serves several STT streams of the same model at once (a speech server), and does nothing for a single session. Measured with one ONNX thread and the kroko English model, CPU per second of audio:
 
 | Concurrent streams | Per-stream decode | Batched decode |
-|---|---|---|
-| 1 | 0.0532 | 0.0509 |
-| 4 | 0.0441 | 0.0419 |
-| 8 | 0.0411 | 0.0394 |
-| 16 | 0.0386 | 0.0372 |
+| ------------------ | ----------------- | -------------- |
+| 1                  | 0.0532            | 0.0509         |
+| 4                  | 0.0441            | 0.0419         |
+| 8                  | 0.0411            | 0.0394         |
+| 16                 | 0.0386            | 0.0372         |
 
-That is 4 to 5 % less CPU from 4 streams up; the number of streams that stay real-time did not change. Costs: peak memory was higher in every batched run (measure it on your own pod size before enabling), and batched results are not bit-identical to per-stream results, so a transcript can differ by a near-tie word depending on which other streams were decoded in the same call. One stream decoded alone gives the same text in both modes. Leave it off unless the CPU matters more than those two points.
+That is 4 to 5 % less CPU from 4 streams up; the number of streams that stay real-time did not change. Costs: peak memory was higher in the batched runs at 16 streams (both modes ran in one process, so the exact difference is not known; measure it on your own pod size before enabling), and batched results are not bit-identical to per-stream results, so a transcript can differ by a near-tie word depending on which other streams were decoded in the same call. One stream decoded alone gives the same text in both modes. Leave it off unless the CPU matters more than those two points. Batched mode always feeds audio inline, so `SHERPA_STT_INLINE_PUSH` has no effect while it is on.
 
 ## Tests
 

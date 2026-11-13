@@ -3742,9 +3742,9 @@ impl VoiceAgent {
     async fn apply_speaker_changes(&self, gate: &SpeakerGate) -> Vec<u64> {
         let mut split = Vec::new();
         for change in gate.take_speaker_changes() {
-            // The gate reports only caller -> other (the caller stays caller). Anything else is
-            // a bug upstream: counted, logged, never applied.
-            if change.from != Outcome::Caller {
+            // The gate reports caller -> other and other -> caller. A change from or to
+            // `unknown` is a bug upstream: counted, logged, never applied.
+            if change.from == Outcome::Unknown || change.to == Outcome::Unknown {
                 self.skip_speaker_split(&change, "unexpected_direction");
                 continue;
             }
@@ -3783,7 +3783,14 @@ impl VoiceAgent {
     ///    final comes before any result of U2.
     /// 3. U2 (new id, new gate key) is seeded with `pcm[split..]` (STT, replay ring and gate) and
     ///    then continues live. It starts like a fresh VAD SpeechStart (same events and barge-in
-    ///    rules), and the gate judges it as a new utterance.
+    ///    rules), and the gate judges it as a new utterance. For other -> caller, U2 inherits the
+    ///    confirming `caller` verdict (`SpeakerGate::inherit_caller`), so its barge-in fires on
+    ///    that verdict; U1 stays `other` (ignored with `drop`, a `speaker: "other"` final with
+    ///    `flag`) and its held barge-in is dropped.
+    ///
+    /// A change for a key that already finalized (the verifier dequeued the confirming window
+    /// after U1's final read its verdict) is counted as stale and logged with its key; it is never
+    /// applied to the next utterance (`rt.stale-event-by-key`).
     ///
     /// Event order: U2's lifecycle events (`user_speaking_start`, `user_stt_start`,
     /// `vad_triggered`) are emitted at the split, so they may come before U1's final. Each one
@@ -3909,6 +3916,13 @@ impl VoiceAgent {
         };
         let (u1_key, u1_id, u2_key, u2_id, seed, speaking_end_needed, rx, u1_onset_media_ms) =
             split;
+        // other -> caller: U2 starts as the caller. The gate books the confirming `caller`
+        // window for U2's key (no re-embed of the seed) before U2's first `begin`, so U2's
+        // barge-in below is released by that confirmed verdict, never by a provisional one.
+        // U2's own watch can split it again (caller -> other).
+        if change.from == Outcome::Other && change.to == Outcome::Caller {
+            let _ = gate.inherit_caller(u2_key);
+        }
         // The gate judges U2 as a new utterance from its first post-split frame.
         let mut frames = seed.chunks(640);
         if let Some(first) = frames.next() {

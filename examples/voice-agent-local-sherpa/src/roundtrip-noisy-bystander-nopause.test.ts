@@ -8,7 +8,6 @@ import type { Seen } from './roundtrip-noisy-bystander-helpers.js'
 import {
   ENROLL_PAUSE_MS,
   EXCLUDED_BYSTANDER_VOICES,
-  GATE_FALSE_ACCEPT_LEAD_MS,
   benchVoiceLabel,
   enrollPauseAtMs,
   evaluateNoPauseScene,
@@ -159,23 +158,78 @@ describe('evaluateNoPauseScene', () => {
     expect(r.failures.some((f) => f.includes('leading glue'))).toBe(true)
   })
 
-  it('reports a leak after a gate false accept as its own class without failing', () => {
-    const at = 12_300 - GATE_FALSE_ACCEPT_LEAD_MS - 1
-    const r = evaluateNoPauseScene(
-      segments,
-      clean(at, 'flight to madrid tonight please check my order'),
-      's',
-      MEDIA0,
-    )
-    expect(r.gateFalseAcceptLeaks.map((l) => l.words)).toEqual([['flight', 'madrid', 'tonight']])
+  // s4_test_n02 (run 20261113-224730): bystander voiced to 14623, caller onset 14835, U1 utt-2
+  // starts at scene 8720, split at +3345 (12065), U1 final speakerCheckWindows 3 -> the deciding
+  // window ends at 8720 + 3 x 1500 = 13220, before the caller: bystander audio only.
+  const n02: NoPauseSegment[] = [
+    segments[0]!,
+    {
+      role: 'bystander',
+      startMs: 9800,
+      endMs: 14800,
+      voicedStartMs: 9903,
+      voicedEndMs: 14623,
+      text: 'a flock of geese flew south over the golden fields as farmers gathered the final bales',
+      kind: 'background',
+    },
+    {
+      role: 'main',
+      startMs: 14700,
+      endMs: 16500,
+      voicedStartMs: 14835,
+      text: 'please check my order',
+      kind: 'qualified',
+    },
+  ]
+  function n02Seen(u1StartScene: number, windows: number | undefined): Seen[] {
+    return [
+      start('u1', 350),
+      final('u1', 7000, 'caller', 'the enrollment sentence is read out slowly'),
+      start('u2', u1StartScene),
+      split('u2', 'u4', u1StartScene, 12_065 - u1StartScene, ['other', 'caller']),
+      barge('u4', 15_600),
+      {
+        ...final('u2', 15_600, 'other', 'a flock of geese flew south over the golden fire of'),
+        speakerRechecked: true,
+        speakerCheckWindows: windows,
+      },
+      final(
+        'u4',
+        18_000,
+        'caller',
+        'fields as farmers gathered the final bales please check my order',
+      ),
+    ]
+  }
+  const n02Leak = ['fields', 'farmers', 'gathered', 'final', 'bales']
+
+  it('n02 shape: deciding window (w3) ends before the caller onset -> gate false accept, not a failure', () => {
+    const r = evaluateNoPauseScene(n02, n02Seen(8720, 3), 's', MEDIA0)
+    expect(r.gateFalseAcceptLeaks.map((l) => l.words)).toEqual([n02Leak])
+    expect(r.cutPointLeaks).toEqual([])
     expect(r.failures).toEqual([])
   })
 
-  it('a split exactly at the false-accept bound is a cut-point leak', () => {
-    const at = 12_300 - GATE_FALSE_ACCEPT_LEAD_MS
-    const r = evaluateNoPauseScene(segments, clean(at, 'flight please check my order'), 's', MEDIA0)
+  it('deciding window ending 1 ms after the caller onset -> cut-point leak failure', () => {
+    // 10336 + 3 x 1500 = 14836 = onset + 1
+    const r = evaluateNoPauseScene(n02, n02Seen(10_336, 3), 's', MEDIA0)
+    expect(r.gateFalseAcceptLeaks).toEqual([])
+    expect(r.cutPointLeaks.map((l) => l.words)).toEqual([n02Leak])
+    expect(r.failures.some((f) => f.includes('holds bystander words'))).toBe(true)
+  })
+
+  it('deciding window ending exactly at the caller onset -> gate false accept', () => {
+    // 10335 + 3 x 1500 = 14835 = onset
+    const r = evaluateNoPauseScene(n02, n02Seen(10_335, 3), 's', MEDIA0)
+    expect(r.gateFalseAcceptLeaks).toHaveLength(1)
+    expect(r.failures).toEqual([])
+  })
+
+  it('U1 final without speakerCheckWindows -> cut-point leak failure (fail closed)', () => {
+    const r = evaluateNoPauseScene(n02, n02Seen(8720, undefined), 's', MEDIA0)
+    expect(r.gateFalseAcceptLeaks).toEqual([])
     expect(r.cutPointLeaks).toHaveLength(1)
-    expect(r.failures).toHaveLength(1)
+    expect(r.failures.some((f) => f.includes('no speakerCheckWindows'))).toBe(true)
   })
 
   it('fails the upgrade fallback: no split, the bystander utterance ends as caller', () => {
@@ -218,7 +272,8 @@ describe('evaluateNoPauseScene', () => {
       split('u3', 'u4', 8350, 1500, ['caller', 'other']),
       split('u4', 'u5', 9850, 2400, ['other', 'caller']),
       barge('u5', 14_000),
-      final('u2', 9000, 'other', 'a passenger'),
+      // u3 is a gate false accept: u2's deciding window ends at 7350 + 1 x 1500, before the caller.
+      { ...final('u2', 9000, 'other', 'a passenger'), speakerCheckWindows: 1 },
       final('u3', 10_000, 'caller', 'asked'),
       final('u4', 13_000, 'other', 'about the delayed'),
       final('u5', 15_500, 'caller', 'please check my order'),

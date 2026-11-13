@@ -45,14 +45,6 @@ export const PAIR_FAR_EXCLUDE_PCT = 5
 export const EXCLUDED_BYSTANDER_VOICES: readonly { voice: string; sid: number }[] = [
   { voice: 'en_US-libritts_r-medium', sid: 120 },
 ]
-/**
- * The product scores window w on speech [start + (w - 1) x checkSpeechMs, start + w x
- * checkSpeechMs], and the backward split search reaches back to the previous window's start. A
- * split confirmed by a window that holds caller speech therefore lies less than two windows
- * before the caller's voiced onset. A split earlier than this lead was confirmed by a window of
- * bystander audio only: a gate false accept.
- */
-export const GATE_FALSE_ACCEPT_LEAD_MS = 2 * CHECK_SPEECH_MS
 /** Leading glue: a word before the caller phrase equal to one of the bystander's last this many words. */
 export const LEADING_GLUE_TAIL_WORDS = 3
 /** Shortest word that ties a caller final to the bystander sentence (drops "the", "and", "a"). */
@@ -279,10 +271,31 @@ export function evaluateNoPauseScene(
   const callerOnsetMs = caller.voicedStartMs ?? caller.startMs
   const sceneSplitOf = (s: Seen | undefined): number | undefined =>
     s != null ? splitSceneMs(s, sceneStartMediaMs) : undefined
-  const isFalseAccept = (id: string): { yes: boolean; sceneSplitMs?: number } => {
+  // Gate false accept (decision l): the window that decided the other→caller split ended at or
+  // before the caller's voiced onset, so it scored bystander audio only. The n-th check window
+  // needs n × checkSpeechMs of speech (types.ts `speakerCheckWindows`), so the deciding window ends
+  // no earlier than U1 `fromStartMs` + k × checkSpeechMs on the media clock, where k is the cut
+  // utterance's (U1's) final `speakerCheckWindows`. That count includes the deciding window: in
+  // s4_test_n02 (.test-logs/20261113-224109-nopause-n02-debug.log, re-run with final windows logged
+  // in .test-logs/20261113-224730-nopause-n02-windows.log) the split utt-2 -> utt-4 followed the
+  // `re-check key=2 window=3` score 0.470, and utt-2's final carried speakerCheckWindows=3. A
+  // missing field or split time is a cut-point leak (fail closed).
+  const decidingWindowEndSceneMs = (s: Seen | undefined): number | undefined => {
+    if (s?.fromStartMs == null || s.fromUtteranceId == null) return undefined
+    const k = finals.get(s.fromUtteranceId)?.speakerCheckWindows
+    if (k == null) return undefined
+    return s.fromStartMs + k * CHECK_SPEECH_MS - sceneStartMediaMs
+  }
+  const isFalseAccept = (
+    id: string,
+  ): { yes: boolean; sceneSplitMs?: number; windowEndMs?: number } => {
     const s = otherToCaller.find((x) => x.toUtteranceId === id)
-    const at = sceneSplitOf(s)
-    return { yes: at != null && at < callerOnsetMs - GATE_FALSE_ACCEPT_LEAD_MS, sceneSplitMs: at }
+    const end = decidingWindowEndSceneMs(s)
+    return {
+      yes: end != null && end <= callerOnsetMs,
+      sceneSplitMs: sceneSplitOf(s),
+      windowEndMs: end,
+    }
   }
 
   // Bystander words: long words of the bystander sentence that no caller sentence has.
@@ -304,12 +317,12 @@ export function evaluateNoPauseScene(
     if (fa.yes) {
       gateFalseAcceptLeaks.push(leak)
       console.log(
-        `${label}: gate false-accept leak in ${f.utteranceId} (split at ${String(fa.sceneSplitMs)} ms, caller onset ${callerOnsetMs} ms): ${leaked.join(' ')}: "${leak.text}"`,
+        `${label}: gate false-accept leak in ${f.utteranceId} (split at ${String(fa.sceneSplitMs)} ms, deciding window ends ${String(fa.windowEndMs)} ms, caller onset ${callerOnsetMs} ms): ${leaked.join(' ')}: "${leak.text}"`,
       )
     } else {
       cutPointLeaks.push(leak)
       failures.push(
-        `${label}: caller final ${f.utteranceId} holds bystander words (${leaked.join(' ')}), split at ${String(fa.sceneSplitMs ?? 'n/a')} ms, caller onset ${callerOnsetMs} ms: "${leak.text}"`,
+        `${label}: caller final ${f.utteranceId} holds bystander words (${leaked.join(' ')}), split at ${String(fa.sceneSplitMs ?? 'n/a')} ms, deciding window ends ${String(fa.windowEndMs ?? 'n/a (no speakerCheckWindows)')} ms, caller onset ${callerOnsetMs} ms: "${leak.text}"`,
       )
     }
   }
@@ -346,6 +359,11 @@ export function evaluateNoPauseScene(
     }
   }
 
+  for (const f of finals.values()) {
+    console.log(
+      `${label}: final ${String(f.utteranceId)} speaker=${String(f.speaker)} rechecked=${String(f.speakerRechecked)} speakerCheckWindows=${String(f.speakerCheckWindows)}`,
+    )
+  }
   for (const s of splits) {
     console.log(
       `${label}: user_utterance_split ${String(s.from)}→${String(s.to)} ${String(s.fromUtteranceId)} -> ${String(s.toUtteranceId)} sceneSplitMs=${String(sceneSplitOf(s) ?? 'n/a')} callerOnsetMs=${callerOnsetMs} bystanderVoicedEndMs=${String(bystander.voicedEndMs ?? bystander.endMs)}`,

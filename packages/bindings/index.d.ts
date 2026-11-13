@@ -395,11 +395,16 @@ export interface JsSpeakerGateConfig {
    */
   recheckMaxWindows?: number
   /**
-   * Split an utterance when the voice changes from the caller to another voice (default false).
-   * Another voice followed by the caller upgrades the utterance to the caller instead. Costs one
-   * extra STT stream per split.
+   * Split an utterance when the voice changes, in both directions: caller to another voice and
+   * another voice to the caller (default false). Costs one extra STT stream per split.
    */
   splitOnSpeakerChange?: boolean
+  /**
+   * Refine the in-memory reference from confident caller speech (default false). Only with
+   * `split_on_speaker_change`. Trades bystander accepts for a lower false-reject rate under
+   * channel drift.
+   */
+  adaptReference?: boolean
   /** `flag` (default) | `drop`. */
   onMismatch?: string
   verifyTimeoutMs?: number

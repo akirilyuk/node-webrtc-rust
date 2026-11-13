@@ -3850,9 +3850,7 @@ impl VoiceAgent {
     ///
     /// No split (logged and counted) when the ring overflowed or does not cover the utterance.
     async fn split_live_utterance(&self, gate: &SpeakerGate, change: SpeakerChange) -> bool {
-        let Some(actor) = self.actor() else {
-            return self.skip_speaker_split_fallback(gate, &change, "stt_unavailable");
-        };
+        let actor = self.actor();
         let split = {
             let mut inner = self.inner.lock().await;
             let live = inner.live.as_ref().is_some_and(|r| {
@@ -3869,6 +3867,11 @@ impl VoiceAgent {
                 );
                 return false;
             }
+            // After the live check: a stale change must never reach the upgrade fallback.
+            let Some(actor) = actor else {
+                drop(inner);
+                return self.skip_speaker_split_fallback(gate, &change, "stt_unavailable");
+            };
             if !inner.stt_enabled || inner.config.stt.is_none() || inner.stt_hold.is_some() {
                 drop(inner);
                 return self.skip_speaker_split_fallback(gate, &change, "stt_unavailable");
@@ -7438,5 +7441,33 @@ mod tests {
         let reader: PcmReader = Arc::new(|| Ok(None));
         let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
         agent.attach(reader, writer).await.unwrap();
+    }
+
+    /// A stale other -> caller change with no STT actor is counted as stale only: the live check
+    /// runs before the `stt_unavailable` skip, so the gate is never upgraded for it.
+    #[tokio::test]
+    async fn stale_other_to_caller_change_without_stt_never_upgrades() {
+        let config = VoiceAgentConfig {
+            stt: None,
+            tts: None,
+            ..Default::default()
+        };
+        let agent = VoiceAgent::new(config, Arc::new(VendorRegistry::new())).unwrap();
+        let gate = SpeakerGate::new(crate::config::SpeakerGateConfig {
+            enabled: true,
+            split_on_speaker_change: true,
+            ..crate::config::SpeakerGateConfig::default()
+        });
+        assert!(agent.actor().is_none());
+        let change = SpeakerChange {
+            key: 7,
+            from: Outcome::Other,
+            to: Outcome::Caller,
+            split_at_ms: 100,
+        };
+        assert!(!agent.split_live_utterance(&gate, change).await);
+        let (splits, skipped, _, stale, _, _) = agent.speaker_split_counts();
+        assert_eq!((splits, skipped, stale), (0, 0, 1));
+        assert!(!gate.upgraded_after_skipped_split(7));
     }
 }

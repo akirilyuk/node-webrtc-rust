@@ -72,6 +72,12 @@ export const VOICE_AGENT_VAD_PRESET: VadConfig = {
 export const SPEAKER_GATE_RECHECK_MAX_WINDOWS = 12
 
 /**
+ * Default `speakerGate.adaptReference`. Mirrors `DEFAULT_ADAPT_REFERENCE` in the speech crate
+ * (`crates/speech/src/config.rs`): off, because the bench showed more bystander accepts.
+ */
+export const SPEAKER_GATE_ADAPT_REFERENCE = false
+
+/**
  * Check windows of the 0.15.0 gate: the first check plus one re-check.
  * @deprecated the 0.15.0 window count; use `speakerCheckWindows` on the final.
  */

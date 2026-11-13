@@ -4,6 +4,7 @@ import { JsSpeechEventType } from '@node-webrtc-rust/bindings'
 
 import { fromJsSpeechEvent, toJsConfig } from '../src/voice/VoiceAgent'
 import {
+  SPEAKER_GATE_ADAPT_REFERENCE,
   SPEAKER_GATE_RECHECK_MAX_WINDOWS,
   SPEAKER_GATE_RECHECK_WINDOWS,
   speakerRecheckBargeEarliestMs,
@@ -136,5 +137,37 @@ describe('splitOnSpeakerChange', () => {
     expect(ev.toUtteranceId).toBeUndefined()
     expect(ev.splitAtMs).toBeUndefined()
     expect(ev.fromStartMs).toBeUndefined()
+  })
+})
+
+describe('adaptReference', () => {
+  test('defaults to off', () => {
+    expect(SPEAKER_GATE_ADAPT_REFERENCE).toBe(false)
+  })
+
+  test('is passed to the native config when set', () => {
+    const on = toJsConfig({ speakerGate: { enabled: true, adaptReference: true } })
+    expect(on?.speakerGate?.adaptReference).toBe(true)
+    const off = toJsConfig({ speakerGate: { enabled: true, adaptReference: false } })
+    expect(off?.speakerGate?.adaptReference).toBe(false)
+  })
+
+  test('is omitted when not set, so the native default (off) applies', () => {
+    const js = toJsConfig({ speakerGate: { enabled: true } })
+    expect(js?.speakerGate?.adaptReference).toBeUndefined()
+  })
+
+  test('user_utterance_split carries from other to caller', () => {
+    const ev = fromJsSpeechEvent({
+      eventType: JsSpeechEventType.UserUtteranceSplit,
+      fromUtteranceId: 'u1',
+      toUtteranceId: 'u2',
+      splitAtMs: 800,
+      from: 'other',
+      to: 'caller',
+    })
+    const from: 'caller' | 'other' | undefined = ev.from
+    expect(from).toBe('other')
+    expect(ev.to).toBe('caller')
   })
 })

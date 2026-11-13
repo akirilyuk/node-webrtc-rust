@@ -283,6 +283,7 @@ export function toJsConfig(config?: VoiceAgentConfig): JsVoiceAgentConfig | unde
           recheckOnOther: config.speakerGate.recheckOnOther,
           recheckMaxWindows: config.speakerGate.recheckMaxWindows,
           splitOnSpeakerChange: config.speakerGate.splitOnSpeakerChange,
+          adaptReference: config.speakerGate.adaptReference,
           onMismatch: config.speakerGate.onMismatch,
           verifyTimeoutMs: config.speakerGate.verifyTimeoutMs,
           bargeIn: config.speakerGate.bargeIn,

@@ -384,13 +384,35 @@ Limit: a bystander about as loud as the caller can pass the check; the gate is t
 
 ### Split on speaker change (`splitOnSpeakerChange`)
 
-Off by default. By default one utterance gets one label, so a caller and a bystander who talk without a pause end up in one transcript labelled by whoever was heard first. With `splitOnSpeakerChange: true` the gate keeps scoring windows for the whole utterance, up to `recheckMaxWindows`. The caller stays the caller, so only one direction splits. When two consecutive windows say `other` after the utterance was labelled `caller`, the utterance is split at the quietest point near the first of them. Another voice followed by the caller does not split: the first `caller` re-check window upgrades the whole utterance to `caller` and releases the barge-in, as with the flag off (see "Re-check after other"). After such an upgrade a later run of two `other` windows still splits.
+Off by default. By default one utterance gets one label, so a caller and a bystander who talk without a pause end up in one transcript labelled by whoever was heard first. With `splitOnSpeakerChange: true` the gate keeps scoring windows for the whole utterance, up to `recheckMaxWindows`, and splits it at a confirmed change of voice. It splits both ways:
+
+- **Caller to someone else.** Two consecutive `other` windows after the utterance was labelled `caller`. The cut is at the quietest point near the first of them.
+- **Someone else to the caller.** One `caller` window after the utterance was labelled `other`. The cut goes back to the end of the longest quiet stretch before the caller's first word. When there is no quiet stretch (the two voices run together), the gate finds the change with shorter sub-windows and refines it by energy. Each of those embeddings is bounded by `verifyTimeoutMs`, and on a timeout the quiet-stretch cut is used. The first part stays `other`: it never barges in, and with `onMismatch: 'drop'` it is ignored. The second part starts as `caller`, so its barge-in fires on that verdict.
+
+Each new part is watched on its own, so other, caller, other, caller gives one split per confirmed change. `recheckMaxWindows` applies per utterance.
+
+Behaviour change in 0.19.0: before, someone else followed by the caller upgraded the whole utterance to `caller`, with the other voice's words in the final. A project that already sets `splitOnSpeakerChange: true` now gets two utterances there. With the option off nothing changes (see "Re-check after other").
+
+When an other-to-caller split is skipped, the utterance falls back to the older behaviour: it becomes `caller`, the held barge-in is released, and the other voice's words stay in the final (a few leaked words rather than a dropped caller). That upgraded utterance is not split again. The skip reasons, all logged and counted:
+
+- `not_speaking`: the VAD already ended speech when the change was confirmed.
+- `replay_overflow`: the replay buffer overflowed during the first voice.
+- `replay_not_aligned`, `no_replay_pcm`, `split_out_of_range`: the buffer does not cover the utterance or the cut point.
+- `stt_unavailable`: no STT stream, STT disabled, or STT held.
 
 - The first part is re-decoded on its own STT stream and ends with a `user_speech_final` carrying `reason: 'speaker_split'` and its own label. The live text, which mixed both voices, is discarded.
 - The rest is a new utterance with a new `utteranceId`. The gate judges it from scratch, and a bystander's new utterance never barges in.
-- A `user_utterance_split` event (`fromUtteranceId`, `toUtteranceId`, `splitAtMs`, `fromStartMs`, `from` (always `caller`), `to` (always `other`)) is emitted after the new utterance's `user_speaking_start`. The first part's final comes before any partial or final of the new one.
+- A `user_utterance_split` event (`fromUtteranceId`, `toUtteranceId`, `splitAtMs`, `fromStartMs`, `from` and `to`, each `caller` or `other`, never equal) is emitted after the new utterance's `user_speaking_start`. The first part's final comes before any partial or final of the new one.
 - `splitAtMs` counts from the speech onset of the cut utterance (the VAD speech-start frame; the pre-roll before it is not counted). `fromStartMs` is that speech onset on the agent's inbound media clock, which `VoiceAgent.inboundMediaMs()` returns: ms of inbound audio processed since `attach`, concealed frames included. `fromStartMs + splitAtMs` is the split point on that clock. To place it on your input's timeline, read `inboundMediaMs()` when your input starts and subtract it.
 - Cost: every split opens one extra STT stream at the vendor. That is why the flag is off. It needs `recheckMaxWindows` other than `1`.
+- A different voice that sounds like the caller can pass the gate, and the split follows the gate's verdict: it cannot separate voice pairs the gate cannot separate.
+
+#### Adaptive reference (`adaptReference`)
+
+Off by default, and only used with `splitOnSpeakerChange` (no effect while that is off). With `adaptReference: true` the reference voice moves slowly toward confident caller windows, so a caller whose channel drifts during a long call (EQ, codec, level) is rejected less often. A window counts only when it scores clearly above the threshold, and only an utterance that ended with no split and with every window `caller` contributes. Each update is small and is rejected if the reference would move too far from the enrolled voice. `resetSpeakerEnrollment()` clears both. Nothing is stored, logged or emitted beyond counts.
+
+It is off because of what it costs. In the bench (LibriSpeech test-clean, 40 speakers) the false-reject rate under drift fell from 13.6 % to 2.2 %, but the false-accept rate rose on every set: 0.014 % to 0.085 % clean, 0.057 % to 0.184 % with a background bed, and 1.5 % to 4.2 % on a set of bystander windows near the threshold, where two bystander windows were committed into the reference. Turn it on when callers drift and a few more bystander accepts are acceptable.
+
 - If the re-decode does not finish in its bound, an `error` event with `reason: 'speaker_split_redecode_timeout'` is emitted for the first part. No split happens when the audio buffer overflowed or does not cover the utterance (logged and counted).
 
 ### Re-check after other (`recheckOnOther`, `recheckMaxWindows`)
@@ -400,7 +422,7 @@ A TV or a colleague talking right before the caller can open the VAD, and if the
 With `recheckOnOther` on (the default), the gate scores the following windows of the same utterance, each `checkSpeechMs` of fresh speech with the same model and threshold, until one says `caller` or `recheckMaxWindows` windows have been scored (default 12, the first check included, so 18 s of speech with the defaults). `recheckMaxWindows: 2` gives the 0.15.0 behaviour of a single re-check, `0` removes the cap, and `1` is rejected (use `recheckOnOther: false`). The rules are narrow on purpose:
 
 - Re-checking runs only while the verdict is `other`. A `caller` or `unknown` verdict is never re-checked, so a bystander who joins a caller's utterance cannot relabel it.
-- It can only turn `other` into `caller`. Once a window says `caller`, the held barge-in fires for that utterance (same `utteranceId`) and the final says `speaker: 'caller'`. If every window says `other`, a check fails, or the utterance ends before the next window fills, the verdict stays `other` and there is no barge-in.
+- It can only turn `other` into `caller` (with `splitOnSpeakerChange` on, a confirmed other-to-caller change splits the utterance instead, see below). Once a window says `caller`, the held barge-in fires for that utterance (same `utteranceId`) and the final says `speaker: 'caller'`. If every window says `other`, a check fails, or the utterance ends before the next window fills, the verdict stays `other` and there is no barge-in.
 - A barge-in released by the n-th window comes no earlier than n × `checkSpeechMs` of speech (3 s for the second window and 18 s for the twelfth, with the defaults). The final reports n as `speakerCheckWindows`, and the SDK exports the bound as `speakerRecheckBargeEarliestMs(checkSpeechMs, window)`. The n × `checkSpeechMs` bound holds for re-check windows (n ≥ 2). The first check follows `minCheckSpeechMs` as in 0.15.0: when `minCheckSpeechMs` is below `checkSpeechMs`, a short utterance's first check at the end of its speech can release a barge-in before 1 × `checkSpeechMs`.
 - The final reports `speakerRechecked: true` whenever a re-check was scored before it, with `speaker` set to the combined verdict.
 - A final waits for a re-check that is still running, bounded by `verifyTimeoutMs` like the first check. A final that has read its verdict stops any later re-check of its utterance. If the final stopped waiting (`verifyTimeoutMs`), it says `other` and a later re-check result never barges in.

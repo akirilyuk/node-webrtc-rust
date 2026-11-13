@@ -457,10 +457,13 @@ pub struct JsSpeakerGateConfig {
     /// Windows scored per utterance, the first check included (default 12). `0` = no cap; `1` is
     /// rejected by the gate.
     pub recheck_max_windows: Option<u32>,
-    /// Split an utterance when the voice changes from the caller to another voice (default false).
-    /// Another voice followed by the caller upgrades the utterance to the caller instead. Costs one
-    /// extra STT stream per split.
+    /// Split an utterance when the voice changes, in both directions: caller to another voice and
+    /// another voice to the caller (default false). Costs one extra STT stream per split.
     pub split_on_speaker_change: Option<bool>,
+    /// Refine the in-memory reference from confident caller speech (default false). Only with
+    /// `split_on_speaker_change`. Trades bystander accepts for a lower false-reject rate under
+    /// channel drift.
+    pub adapt_reference: Option<bool>,
     /// `flag` (default) | `drop`.
     pub on_mismatch: Option<String>,
     pub verify_timeout_ms: Option<u32>,
@@ -539,6 +542,7 @@ impl TryFrom<JsSpeakerGateConfig> for SpeakerGateConfig {
             split_on_speaker_change: value
                 .split_on_speaker_change
                 .unwrap_or(d.split_on_speaker_change),
+            adapt_reference: value.adapt_reference.unwrap_or(d.adapt_reference),
             on_mismatch,
             verify_timeout_ms: value.verify_timeout_ms.unwrap_or(d.verify_timeout_ms),
             barge_in,
@@ -586,6 +590,19 @@ mod speaker_gate_update_from_tests {
         .try_into()
         .unwrap();
         assert!(c.split_on_speaker_change);
+    }
+
+    #[test]
+    fn adapt_reference_defaults_off_and_passes_through() {
+        let d: SpeakerGateConfig = JsSpeakerGateConfig::default().try_into().unwrap();
+        assert!(!d.adapt_reference);
+        let c: SpeakerGateConfig = JsSpeakerGateConfig {
+            adapt_reference: Some(true),
+            ..Default::default()
+        }
+        .try_into()
+        .unwrap();
+        assert!(c.adapt_reference);
     }
 
     #[test]

@@ -159,6 +159,10 @@
       "type": "boolean",
       "default": false
     },
+    "speakerGate.adaptReference": {
+      "type": "boolean",
+      "default": false
+    },
     "speakerGate.recheckOnOther": {
       "type": "boolean",
       "default": true

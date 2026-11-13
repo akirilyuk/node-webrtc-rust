@@ -32,6 +32,7 @@ export {
 } from './defaults.js'
 /** Speaker gate re-check timing (see `speakerGate.recheckOnOther`). */
 export {
+  SPEAKER_GATE_ADAPT_REFERENCE,
   SPEAKER_GATE_RECHECK_MAX_WINDOWS,
   SPEAKER_GATE_RECHECK_WINDOWS,
   speakerRecheckBargeEarliestMs,

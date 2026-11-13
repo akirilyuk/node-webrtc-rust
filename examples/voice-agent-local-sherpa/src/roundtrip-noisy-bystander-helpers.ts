@@ -77,6 +77,10 @@ export interface Seen {
    * media clock (product field `fromStartMs`). `fromStartMs + splitAtMs` is the split point.
    */
   fromStartMs?: number
+  /** `user_utterance_split`: speaker label before the split (product field `from`). */
+  from?: string
+  /** `user_utterance_split`: speaker label after the split (product field `to`). */
+  to?: string
 }
 
 /**

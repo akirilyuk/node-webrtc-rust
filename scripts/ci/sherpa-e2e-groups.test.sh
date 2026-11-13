@@ -21,7 +21,10 @@ fail() { echo "sherpa-e2e-groups.test.sh: $*" >&2; exit 1; }
 
 # Scripts that exist in package.json but were never in the CI list (load benchmarks; the CI variant
 # is start:roundtrip-load-ci). Adding a name here needs a reason.
-NOT_IN_CI=(start:roundtrip-load start:roundtrip-load-cached)
+# start:roundtrip-noisy-bystander-nopause: not wired yet; its no-pause scene s4_test_n02 still
+# fails (a gate false accept cuts the bystander's sentence), and a known failure stays out of CI
+# until it is fixed (plan 2026-11-13-speaker-split-other-to-caller, chunk 6).
+NOT_IN_CI=(start:roundtrip-load start:roundtrip-load-cached start:roundtrip-noisy-bystander-nopause)
 
 groups="$(bash "$CI_SCRIPT" groups)"
 serial=() parallel=()

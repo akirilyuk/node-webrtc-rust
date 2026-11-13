@@ -2960,7 +2960,7 @@ mod tests {
     /// Frame `f` of speech that has no quiet run (loud and soft frames alternate), so stage 1 of
     /// an `other` -> `caller` split finds no run of the minimum length.
     fn alternating(f: usize) -> [u8; FRAME] {
-        [if f % 2 == 0 { 3_u8 } else { 200_u8 }; FRAME]
+        [if f.is_multiple_of(2) { 3_u8 } else { 200_u8 }; FRAME]
     }
 
     /// [`SeqEmbedder`] over a queue the test keeps a handle on.

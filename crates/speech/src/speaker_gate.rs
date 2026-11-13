@@ -66,8 +66,6 @@ pub const SPLIT_STAGE2_SUB_MS: u32 = 1000;
 pub const SPLIT_STAGE2_HOP_MS: u32 = 125;
 /// Stage 2: the localized point is refined to the lowest-energy frame within this many ms.
 pub const SPLIT_STAGE2_REFINE_MS: u32 = 150;
-/// Stage 2 total bound, in multiples of `verify_timeout_ms` (each embed has `verify_timeout_ms`).
-const SPLIT_STAGE2_TOTAL_FACTOR: u32 = 2;
 /// Frames of power smoothing in the stage 1 quiet-run search (100 ms).
 const SPLIT_SMOOTH_FRAMES: usize = 5;
 
@@ -1666,30 +1664,36 @@ fn other_to_caller_split(
 /// Stage 2 of the `other` -> `caller` split point: embeds [`SPLIT_STAGE2_SUB_MS`] sub-windows on a
 /// [`SPLIT_STAGE2_HOP_MS`] hop from the start of the range, and refines the start of the first
 /// one that scores `caller` to the lowest-energy frame within [`SPLIT_STAGE2_REFINE_MS`]. Runs on
-/// the verifier task: each embed is bounded by `verify`, the stage by `verify` x
-/// [`SPLIT_STAGE2_TOTAL_FACTOR`]. `None` (the caller keeps stage 1's point) on a timeout, an
-/// embed failure, or when no sub-window is `caller`; `waitedMs` is logged either way.
+/// the verifier task, inside the window's own verify budget: the whole stage has `verify` minus
+/// what the window's verify (started at `window_started`) already spent, each embed
+/// `min(verify, left)`, so the window's verdict never lands later than `verify_timeout_ms` after
+/// its check started (a final awaits only that long). No budget left skips the stage. `None` (the
+/// caller keeps stage 1's point) on a budget stop, an embed failure, or when no sub-window is
+/// `caller`; `waitedMs` is logged either way.
+#[allow(clippy::too_many_arguments)]
 async fn stage2_split(
     embedder: &Arc<dyn SpeakerEmbedder>,
     reference: &[f32],
     threshold: f32,
     refine: &Refine,
     verify: Duration,
+    window_started: Instant,
     shared: &Shared,
     key: u64,
 ) -> Option<u32> {
     let started = Instant::now();
-    let total = verify * SPLIT_STAGE2_TOTAL_FACTOR;
+    let total = verify.saturating_sub(window_started.elapsed());
     let sub = i64::from(SPLIT_STAGE2_SUB_MS);
     let mut found = None;
     let mut failed = None;
     let mut embeds = 0_u32;
     let mut t = refine.lo;
     while t + sub <= refine.audio_end {
-        let Some(left) = total.checked_sub(started.elapsed()) else {
-            failed = Some("stage total bound");
+        let left = total.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            failed = Some("total bound");
             break;
-        };
+        }
         let pcm = refine.tl.slice(t, t + sub).to_vec();
         embeds += 1;
         match embed_bounded(embedder, pcm, verify.min(left)).await {
@@ -1701,7 +1705,13 @@ async fn stage2_split(
             }
             Ok(None) => {}
             Err(EmbedFail::Timeout) => {
-                failed = Some("embed timeout");
+                // The embed ran into the stage budget (always below `verify` once the window's own
+                // embed took time), or into `verify` itself.
+                failed = Some(if left < verify {
+                    "total bound"
+                } else {
+                    "embed timeout"
+                });
                 break;
             }
             Err(EmbedFail::Error) => {
@@ -1922,6 +1932,7 @@ async fn run(
                             cfg.threshold,
                             &refine,
                             verify,
+                            started,
                             &shared,
                             key,
                         )
@@ -1947,8 +1958,10 @@ async fn run(
                         book_reported_window(&mut book, key, recheck, window);
                     }
                     if recheck {
-                        // Upgrade only: `other` -> `caller`. Anything else keeps `other`. The
-                        // caller stays caller, with the speaker-change watch on too.
+                        // Upgrade only: `other` -> `caller`, and only when no change was confirmed
+                        // for it (with the watch on, a confirmed `other` -> `caller` change keeps
+                        // U1 `other`; this upgrade stays for a key with no watch, and with the
+                        // watch off). Anything else keeps `other`.
                         // Once per key: later `caller` watch windows add no duplicate entry.
                         let still_other = book
                             .verdicts
@@ -2790,6 +2803,98 @@ mod tests {
         (gate, got)
     }
 
+    /// Embedder whose every call takes its scripted time (`Ok(None)` when the script is spent).
+    struct DelayEmbedder {
+        queue: Mutex<VecDeque<(Duration, Vec<f32>)>>,
+        starts: Mutex<Vec<Instant>>,
+    }
+
+    #[async_trait::async_trait]
+    impl SpeakerEmbedder for DelayEmbedder {
+        async fn embed(
+            &self,
+            _pcm: Bytes,
+            _rate: u32,
+        ) -> crate::error::SpeechResult<Option<Vec<f32>>> {
+            lock(&self.starts).push(Instant::now());
+            let next = lock(&self.queue).pop_front();
+            let Some((delay, v)) = next else {
+                return Ok(None);
+            };
+            tokio::time::sleep(delay).await;
+            Ok(Some(v))
+        }
+    }
+
+    /// A gate over a [`DelayEmbedder`] (`check_speech_ms` 1500, `verify_timeout_ms` = `verify`),
+    /// enrolled and fed window 1 of key 1 (75 frames); returns the gate, the delivered verdicts
+    /// with their delivery instants, and the embedder.
+    async fn delay_gate(
+        verify: u32,
+        script: Vec<(u64, Vec<f32>)>,
+    ) -> (
+        Arc<SpeakerGate>,
+        Arc<Mutex<Vec<(Verdict, Instant)>>>,
+        Arc<DelayEmbedder>,
+    ) {
+        let mut cfg = split_cfg(true, 12);
+        cfg.check_speech_ms = 1500;
+        cfg.verify_timeout_ms = verify;
+        let gate = SpeakerGate::new(cfg);
+        let emb = Arc::new(DelayEmbedder {
+            queue: Mutex::new(
+                script
+                    .into_iter()
+                    .map(|(ms, v)| (Duration::from_millis(ms), v))
+                    .collect(),
+            ),
+            starts: Mutex::new(Vec::new()),
+        });
+        struct Fwd(Arc<DelayEmbedder>);
+        #[async_trait::async_trait]
+        impl SpeakerEmbedder for Fwd {
+            async fn embed(
+                &self,
+                pcm: Bytes,
+                rate: u32,
+            ) -> crate::error::SpeechResult<Option<Vec<f32>>> {
+                self.0.embed(pcm, rate).await
+            }
+        }
+        let sink: Arc<Mutex<Vec<(Verdict, Instant)>>> = Arc::new(Mutex::new(Vec::new()));
+        let s2 = Arc::clone(&sink);
+        gate.spawn(
+            Box::new(Fwd(Arc::clone(&emb))),
+            Box::new(move |v| lock(&s2).push((v, Instant::now()))),
+        );
+        gate.send(Msg::Enroll {
+            pcm: vec![0_u8; 100 * BYTES_PER_MS],
+        });
+        for _ in 0..500 {
+            if gate.is_enrolled() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        for _ in 0..15 {
+            gate.push_frame(&[1_u8; FRAME]);
+        }
+        gate.begin(1, &alternating(0));
+        for f in 1..75 {
+            gate.push_frame(&alternating(f));
+        }
+        for _ in 0..500 {
+            if lock(&sink).len() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        for f in 0..75 {
+            gate.push_frame(&alternating(f));
+        }
+        (gate, sink, emb)
+    }
+
     /// [`run_script_cfg`] with scripted steps; also returns the verdict sink and the embedder's
     /// queue (what is left of the script).
     async fn run_script_steps(
@@ -3185,9 +3290,107 @@ mod tests {
         assert!(
             warns
                 .iter()
-                .any(|w| w.contains("stage 2 embed timeout") && w.contains("waitedMs=")),
+                .any(|w| w.contains("stage 2 total bound") && w.contains("waitedMs=")),
             "{warns:?}"
         );
+    }
+
+    /// Stage 2 stays inside the window's own verify budget (`verify` 300 ms): the window embed
+    /// takes 200 ms, each sub-window 60 ms, so the stage stops at the budget with "stage 2 total
+    /// bound", the change is booked with stage 1's point and the verdict lands within
+    /// `verify_timeout_ms` of its check starting, not window embed + 2 x verify.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stage_two_stays_inside_the_window_verify_budget() {
+        let mut script = vec![(0, caller_v()), (0, other_v()), (200, caller_v())];
+        script.extend((0..20).map(|_| (60, other_v())));
+        let (gate, sink, emb) = delay_gate(300, script).await;
+        for _ in 0..400 {
+            if lock(&sink).len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let (v2, delivered) = lock(&sink)[1].clone();
+        assert_eq!((v2.window, v2.recheck), (2, true));
+        let window_started = lock(&emb.starts)[2];
+        let latency = delivered.duration_since(window_started);
+        assert!(
+            latency < Duration::from_millis(300 + 150),
+            "verdict took {latency:?}"
+        );
+        let changes = gate.take_speaker_changes();
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert!(changes[0].split_at_ms <= 1500 + SPLIT_SEARCH_MS);
+        assert!(
+            gate.warnings()
+                .iter()
+                .any(|w| w.contains("stage 2 total bound")
+                    && w.contains("waitedMs=")
+                    && !w.contains("embed timeout")),
+            "{:?}",
+            gate.warnings()
+        );
+    }
+
+    /// A U1 final awaiting its verdict during a slow stage 2 (50 ms sub-windows, the third is
+    /// `caller`) gets the booked `other` -> `caller` change, never `other` before the change
+    /// exists: the check stays in flight until the change is stored.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_final_awaiting_during_stage_two_sees_the_booked_change() {
+        let script = vec![
+            (0, caller_v()),
+            (0, other_v()),
+            (100, caller_v()),
+            (50, other_v()),
+            (50, other_v()),
+            (50, caller_v()),
+        ];
+        let (gate, sink, _emb) = delay_gate(1000, script).await;
+        let t0 = Instant::now();
+        // Window 2 is in flight (its embed takes 100 ms, stage 2 another ~150 ms).
+        gate.end_utterance();
+        let outcome = gate.await_outcome(1).await;
+        assert_eq!(outcome, Outcome::Other);
+        assert!(
+            !gate.recheck_in_flight(1),
+            "the await returned with the window still in flight"
+        );
+        let changes = gate.take_speaker_changes();
+        assert_eq!(
+            changes.len(),
+            1,
+            "change booked before the final reads Other"
+        );
+        assert_eq!(
+            (changes[0].from, changes[0].to),
+            (Outcome::Other, Outcome::Caller)
+        );
+        assert!(
+            t0.elapsed() < Duration::from_millis(1000),
+            "within verify_timeout_ms"
+        );
+        assert_eq!(lock(&sink).len(), 2);
+    }
+
+    /// With 1500 ms windows stage 2's point can land up to start(k) + 650 ms (the bench "start"
+    /// variant: the last sub-window starts at start(k) + 500, refined +-150): the first caller
+    /// sub-window is the 17th, at 2000 ms, with window 2 starting at 1500 ms.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stage_two_split_can_land_up_to_650_ms_after_the_caller_window_start() {
+        let mut cfg = split_cfg(true, 12);
+        cfg.check_speech_ms = 1500;
+        let mut steps: Vec<Step> = vec![(None, caller_v()), (None, other_v()), (None, caller_v())];
+        steps.extend((0..16).map(|_| (None, other_v())));
+        steps.push((None, caller_v()));
+        let (gate, _v, queue) = run_script_steps(cfg, steps.into(), 2, 75).await;
+        let changes = gate.take_speaker_changes();
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        let at = changes[0].split_at_ms;
+        assert!(
+            (1850..=1500 + 650).contains(&at),
+            "split {at}: beyond start(k) + 300 (old range), within start(k) + 650"
+        );
+        assert_eq!(lock(&queue).len(), 0, "all 17 sub-windows embedded");
     }
 
     /// (a) Flag on: a caller-first utterance watched for 3 more windows without a change reports

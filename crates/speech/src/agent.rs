@@ -3681,6 +3681,34 @@ impl VoiceAgent {
             .map_or_else(Vec::new, |g| g.warnings())
     }
 
+    /// Test hook: confirmed speaker changes the gate stored and the agent has not applied yet.
+    #[doc(hidden)]
+    pub fn speaker_gate_pending_changes(&self) -> usize {
+        self.speaker_gate
+            .as_ref()
+            .map_or(0, |g| g.pending_speaker_changes())
+    }
+
+    /// Test hook: hold only the verdict delivery of a window that confirmed a speaker change
+    /// (`SpeakerGate::park_change_delivery`).
+    #[doc(hidden)]
+    pub fn speaker_gate_park_change_verdicts(&self, on: bool) {
+        if let Some(g) = self.speaker_gate.as_ref() {
+            g.park_change_delivery(on);
+        }
+    }
+
+    /// Test hook: (live record open, VAD speaking).
+    #[doc(hidden)]
+    pub async fn live_open_and_vad_speaking_for_test(&self) -> (bool, bool) {
+        let inner = self.inner.lock().await;
+        let open = inner
+            .live
+            .as_ref()
+            .is_some_and(|r| !r.terminal && r.phase == UttPhase::Open);
+        (open, Self::vad_is_speaking(&inner))
+    }
+
     /// Test hook: hold back verdict delivery while the verdicts stay stored (see
     /// `SpeakerGate::park_verdict_delivery`).
     #[doc(hidden)]
@@ -3763,6 +3791,28 @@ impl VoiceAgent {
         }
     }
 
+    /// A skip inside [`Self::split_live_utterance`] is final at this point. For `other` ->
+    /// `caller` the utterance falls back to today's upgrade: the gate books `caller` for U1 right
+    /// here, synchronously, and the verdict handler then releases U1's held barge-in on the
+    /// confirming window's verdict (decision h: leak rather than drop the caller).
+    fn skip_speaker_split_fallback(
+        &self,
+        gate: &SpeakerGate,
+        change: &SpeakerChange,
+        reason: &str,
+    ) -> bool {
+        if change.from != Outcome::Other || change.to != Outcome::Caller {
+            return self.skip_speaker_split(change, reason);
+        }
+        gate.upgrade_after_skipped_split(change.key);
+        self.speaker_split_skipped.fetch_add(1, Ordering::SeqCst);
+        eprintln!(
+            "[speech] speaker split skipped key={} reason={reason} split_at_ms={} fallback=upgrade",
+            change.key, change.split_at_ms
+        );
+        false
+    }
+
     fn skip_speaker_split(&self, change: &SpeakerChange, reason: &str) -> bool {
         self.speaker_split_skipped.fetch_add(1, Ordering::SeqCst);
         eprintln!(
@@ -3801,7 +3851,7 @@ impl VoiceAgent {
     /// No split (logged and counted) when the ring overflowed or does not cover the utterance.
     async fn split_live_utterance(&self, gate: &SpeakerGate, change: SpeakerChange) -> bool {
         let Some(actor) = self.actor() else {
-            return self.skip_speaker_split(&change, "stt_unavailable");
+            return self.skip_speaker_split_fallback(gate, &change, "stt_unavailable");
         };
         let split = {
             let mut inner = self.inner.lock().await;
@@ -3821,30 +3871,30 @@ impl VoiceAgent {
             }
             if !inner.stt_enabled || inner.config.stt.is_none() || inner.stt_hold.is_some() {
                 drop(inner);
-                return self.skip_speaker_split(&change, "stt_unavailable");
+                return self.skip_speaker_split_fallback(gate, &change, "stt_unavailable");
             }
             if !Self::vad_is_speaking(&inner) || inner.stt_finalize_pending {
                 drop(inner);
-                return self.skip_speaker_split(&change, "not_speaking");
+                return self.skip_speaker_split_fallback(gate, &change, "not_speaking");
             }
             if inner.utterance_replay_buffer.overflowed() {
                 drop(inner);
                 self.speaker_split_overflow.fetch_add(1, Ordering::SeqCst);
-                return self.skip_speaker_split(&change, "replay_overflow");
+                return self.skip_speaker_split_fallback(gate, &change, "replay_overflow");
             }
             if inner.replay_onset_key != Some(change.key) {
                 drop(inner);
-                return self.skip_speaker_split(&change, "replay_not_aligned");
+                return self.skip_speaker_split_fallback(gate, &change, "replay_not_aligned");
             }
             let Some(pcm) = inner.utterance_replay_buffer.snapshot_pcm() else {
                 drop(inner);
-                return self.skip_speaker_split(&change, "no_replay_pcm");
+                return self.skip_speaker_split_fallback(gate, &change, "no_replay_pcm");
             };
             let frame = change.split_at_ms as usize / SPLIT_FRAME_MS;
             let split_byte = inner.replay_frame_offsets.get(frame).copied().unwrap_or(0) & !1;
             if split_byte == 0 || split_byte >= pcm.len() {
                 drop(inner);
-                return self.skip_speaker_split(&change, "split_out_of_range");
+                return self.skip_speaker_split_fallback(gate, &change, "split_out_of_range");
             }
             // U1's speech onset on the inbound media clock; U2's gate starts at the split frame.
             let u1_onset_media_ms = inner.gate_onset_media_ms;
@@ -4029,6 +4079,16 @@ impl VoiceAgent {
             .contains(&verdict.key)
         {
             return;
+        }
+        // An `other` -> `caller` split that was skipped falls back to the upgrade: the confirming
+        // window's verdict is delivered as `other` (the split was still pending then) and now
+        // counts as `caller`, so the held barge-in is released only after the skip is final.
+        let mut verdict = verdict;
+        if verdict.recheck
+            && verdict.outcome == Outcome::Other
+            && gate.upgraded_after_skipped_split(verdict.key)
+        {
+            verdict.outcome = Outcome::Caller;
         }
         // One route per state for a held barge-in (`contract.event-order`,
         // `one-send-path-per-unit`): once this key's final has started reading its verdict

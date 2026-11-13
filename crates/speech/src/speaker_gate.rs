@@ -362,6 +362,9 @@ struct Book {
     changes: VecDeque<SpeakerChange>,
     /// Keys whose speaker change was confirmed: no further window is cut for them.
     split_keys: VecDeque<u64>,
+    /// Keys whose `other` -> `caller` split the agent skipped and that were upgraded to `caller`
+    /// instead ([`SpeakerGate::upgrade_after_skipped_split`]).
+    skip_upgraded: VecDeque<u64>,
 }
 
 struct Shared {
@@ -387,6 +390,8 @@ struct Shared {
     adapt_cos: std::sync::atomic::AtomicU32,
     /// Test hook: `Msg::Settle` messages the verifier task has handled.
     settles: std::sync::atomic::AtomicU64,
+    /// Test hook: with `parked`, hold only deliveries whose window confirmed a speaker change.
+    park_changes_only: AtomicBool,
     /// Adaptive-reference log lines (counts and cosine only), also printed under `VOICE_DEBUG`.
     /// Test-visible via [`SpeakerGate::adapt_log`].
     adapt_log: Mutex<Vec<String>>,
@@ -534,6 +539,7 @@ impl SpeakerGate {
                 adapt_cos: std::sync::atomic::AtomicU32::new(f32::NAN.to_bits()),
                 adapt_log: Mutex::new(Vec::new()),
                 settles: std::sync::atomic::AtomicU64::new(0),
+                park_changes_only: AtomicBool::new(false),
             }),
             feed: Mutex::new(Feed::default()),
         })
@@ -802,6 +808,18 @@ impl SpeakerGate {
     /// turning it off releases the held delivery.
     #[doc(hidden)]
     pub fn park_verdict_delivery(&self, on: bool) {
+        self.shared.park_changes_only.store(false, Ordering::SeqCst);
+        self.shared.parked.store(on, Ordering::SeqCst);
+        if !on {
+            self.shared.park_release.notify_waiters();
+        }
+    }
+
+    /// Test hook: like [`Self::park_verdict_delivery`], but only the delivery of a window that
+    /// confirmed a speaker change is held (stored first, so the change is pending while held).
+    #[doc(hidden)]
+    pub fn park_change_delivery(&self, on: bool) {
+        self.shared.park_changes_only.store(on, Ordering::SeqCst);
         self.shared.parked.store(on, Ordering::SeqCst);
         if !on {
             self.shared.park_release.notify_waiters();
@@ -1156,10 +1174,13 @@ impl SpeakerGate {
         } else if self.cfg.recheck_on_other
             && self.outcome_for(cur.key) == Some(Outcome::Other)
             && !self.recheck_in_flight(cur.key)
+            && !self.change_pending(cur.key)
         {
             // Ended with no re-check window in flight: the `other` verdict stands and the barge-in
             // held for a further window is dropped. A window in flight keeps it (the final awaits
-            // that result).
+            // that result). So does a confirmed speaker change the agent has not applied yet: the
+            // split drops it, a skipped `other` -> `caller` split releases it
+            // (`upgrade_after_skipped_split`), and a final that comes first settles it.
             feed.pending_barge.remove(&cur.key);
         }
         if !self.is_enrolled() {
@@ -1459,6 +1480,48 @@ impl SpeakerGate {
             recheck: false,
             window: 1,
         }
+    }
+
+    /// The agent skipped the `other` -> `caller` split of `key` (`not_speaking`, `replay_*`,
+    /// `stt_unavailable`) while the utterance is still live: the skip is final, so the utterance
+    /// falls back to the upgrade of the gate with the split off. Books `caller` for `key`
+    /// synchronously (the final then reads `caller` with the other speaker's words in it, decision
+    /// h: leak rather than drop the caller); the verdict handler releases the held barge-in on the
+    /// confirming window's verdict ([`Self::upgraded_after_skipped_split`]). The key stays a split
+    /// key: no further window is cut and the adaptive reference commits nothing from it.
+    pub fn upgrade_after_skipped_split(&self, key: u64) {
+        {
+            let mut book = lock(&self.shared.book);
+            let still_other = book
+                .verdicts
+                .iter()
+                .rev()
+                .find(|(k, _)| *k == key)
+                .is_some_and(|(_, o)| *o == Outcome::Other);
+            if still_other {
+                push_capped(&mut book.verdicts, (key, Outcome::Caller));
+            }
+            if !book.skip_upgraded.contains(&key) {
+                push_capped(&mut book.skip_upgraded, key);
+            }
+        }
+        self.shared.notify.notify_waiters();
+    }
+
+    /// Whether `key` was upgraded by [`Self::upgrade_after_skipped_split`].
+    pub fn upgraded_after_skipped_split(&self, key: u64) -> bool {
+        lock(&self.shared.book).skip_upgraded.contains(&key)
+    }
+
+    /// A confirmed speaker change for `key` is stored and not yet taken by the agent.
+    fn change_pending(&self, key: u64) -> bool {
+        lock(&self.shared.book).changes.iter().any(|c| c.key == key)
+    }
+
+    /// Test hook: confirmed speaker changes not yet taken.
+    #[doc(hidden)]
+    pub fn pending_speaker_changes(&self) -> usize {
+        lock(&self.shared.book).changes.len()
     }
 
     /// The verdict a final of `key` can carry right now: the stored verdict, or `Unknown` when no
@@ -2205,6 +2268,7 @@ async fn run(
                 // U1 of an `other` -> `caller` change stays `other`: nothing upgrades or barges on
                 // it (the caller's speech is U2, which inherits the verdict).
                 let outcome = if o2c { Outcome::Other } else { outcome };
+                let has_change = change.is_some();
                 {
                     let mut book = lock(&shared.book);
                     if let Some(change) = change {
@@ -2255,7 +2319,9 @@ async fn run(
                     let released = shared.park_release.notified();
                     tokio::pin!(released);
                     released.as_mut().enable();
-                    if !shared.parked.load(Ordering::SeqCst) {
+                    if !shared.parked.load(Ordering::SeqCst)
+                        || (shared.park_changes_only.load(Ordering::SeqCst) && !has_change)
+                    {
                         break;
                     }
                     released.await;

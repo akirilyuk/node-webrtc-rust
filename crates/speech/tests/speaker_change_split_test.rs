@@ -1719,3 +1719,152 @@ async fn runtime_enabled_gate_with_split_off_keeps_one_utterance() {
     assert_eq!(rig.agent.speaker_split_counts(), (0, 0, 0, 0, 0, 0));
     rig.agent.stop().await.unwrap();
 }
+
+// ---- skipped other -> caller split falls back to the upgrade (decision h) --------------------
+
+/// Other (`B`) then caller (`A`) while the agent speaks, with verdict delivery parked until the
+/// gate stored the one-window `other` -> `caller` change: the split is still pending on return.
+async fn park_with_pending_other_to_caller(rig: &mut Rig) {
+    rig.enroll().await;
+    rig.start_speaking().await;
+    rig.feed_paced(B, 20).await;
+    rig.drain();
+    assert!(rig.barge_ids().is_empty(), "other speaker barged in");
+    // Hold only the confirming `caller` window's delivery: the change is stored and pending.
+    rig.agent.speaker_gate_park_change_verdicts(true);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while rig.agent.speaker_gate_pending_changes() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "no other -> caller change stored"
+        );
+        rig.feed(A, 1).await;
+        sleep(Duration::from_millis(2)).await;
+    }
+}
+
+/// The skipped split's single utterance: one final, `caller`, holding both speakers' words, and
+/// its barge-in released once. No `user_utterance_split`, no `user_speech_ignored`.
+fn assert_skip_upgraded(rig: &Rig) {
+    let ids = rig.speaking_start_ids();
+    assert_eq!(ids.len(), 3, "one utterance after enrollment: {ids:?}");
+    let u1 = ids[2].clone();
+    let (_, f) = rig.final_of(&u1);
+    assert_eq!(f.speaker.as_deref(), Some("caller"), "{f:?}");
+    assert_eq!(f.reason, None);
+    let (a, b) = ab(&f);
+    assert!(
+        b >= 19 && a >= 1,
+        "the upgraded final keeps both speakers: a{a} b{b}"
+    );
+    assert_eq!(
+        rig.barge_ids(),
+        vec![Some(u1.clone())],
+        "barge-in released once"
+    );
+    assert!(!rig
+        .log
+        .iter()
+        .any(|e| e.kind == SpeechEventKind::UserUtteranceSplit));
+    assert!(!rig
+        .log
+        .iter()
+        .any(|e| e.kind == SpeechEventKind::UserSpeechIgnored
+            && e.utterance_id.as_deref() == Some(u1.as_str())));
+}
+
+/// `not_speaking`: the change is applied after VAD ended speech while the record is still open
+/// (STT gate hold). The barge-in stays held while the split is pending; the skip falls back to
+/// the upgrade.
+async fn assert_not_speaking_skip_upgrades(mut rig: Rig) {
+    park_with_pending_other_to_caller(&mut rig).await;
+    let mut n = 0;
+    loop {
+        let (open, speaking) = rig.agent.live_open_and_vad_speaking_for_test().await;
+        assert!(open, "the record closed before VAD ended speech");
+        if !speaking {
+            break;
+        }
+        rig.feed(0, 1).await;
+        n += 1;
+        assert!(n < 200, "VAD never ended speech");
+    }
+    rig.drain();
+    assert!(
+        rig.barge_ids().is_empty(),
+        "barge-in released while the split was pending"
+    );
+    rig.agent.speaker_gate_park_change_verdicts(false);
+    // The skip is final once applied; the barge-in is released after it, by the verdict handler.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while rig.barge_ids().is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "no barge-in after the skipped split"
+        );
+        sleep(Duration::from_millis(2)).await;
+        rig.drain();
+    }
+    assert_eq!(
+        rig.agent.speaker_split_counts().1,
+        1,
+        "the not_speaking skip"
+    );
+    rig.agent.flush_tts().await.unwrap();
+    rig.feed(0, 30).await;
+    rig.idle().await;
+    rig.drain();
+    let (splits, skipped, overflow, stale, _, _) = rig.agent.speaker_split_counts();
+    assert_eq!((splits, skipped, overflow, stale), (0, 1, 0, 0));
+    assert_skip_upgraded(&rig);
+    rig.agent.stop().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skipped_other_to_caller_split_not_speaking_upgrades_inline() {
+    assert_not_speaking_skip_upgrades(rig(true).await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skipped_other_to_caller_split_not_speaking_upgrades_deferred() {
+    assert_not_speaking_skip_upgrades(rig_deferred(true).await).await;
+}
+
+/// `onMismatch: drop`: the skipped split gives a `caller` final, never `user_speech_ignored`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skipped_other_to_caller_split_with_drop_gives_a_caller_final() {
+    assert_not_speaking_skip_upgrades(rig_with(drop_config()).await).await;
+}
+
+/// `replay_overflow`: the replay ring (test cap 600 ms) overflowed during the other speaker, so
+/// the split cannot be cut; the utterance falls back to the upgrade.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skipped_other_to_caller_split_replay_overflow_upgrades() {
+    let mut rig = rig(true).await;
+    rig.enroll().await;
+    rig.agent.set_utterance_replay_max_ms_for_test(600).await;
+    rig.start_speaking().await;
+    rig.feed_paced(B, 40).await;
+    rig.drain();
+    assert!(rig.barge_ids().is_empty(), "other speaker barged in");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while rig.agent.speaker_split_counts().2 == 0 {
+        assert!(Instant::now() < deadline, "no overflow skip counted");
+        rig.feed(A, 1).await;
+        sleep(Duration::from_millis(2)).await;
+    }
+    rig.feed_paced(A, 10).await;
+    rig.agent.flush_tts().await.unwrap();
+    rig.feed(0, 30).await;
+    rig.idle().await;
+    rig.drain();
+    let (splits, skipped, overflow, stale, _, _) = rig.agent.speaker_split_counts();
+    assert_eq!((splits, skipped, overflow, stale), (0, 1, 1, 0));
+    let ids = rig.speaking_start_ids();
+    let (_, f) = rig.final_of(&ids[2]);
+    assert_eq!(f.speaker.as_deref(), Some("caller"), "{f:?}");
+    let (a, b) = ab(&f);
+    assert!(b >= 39 && a >= 1, "a{a} b{b}");
+    assert_eq!(rig.barge_ids(), vec![Some(ids[2].clone())]);
+    rig.agent.stop().await.unwrap();
+}

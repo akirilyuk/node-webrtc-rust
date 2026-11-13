@@ -94,6 +94,25 @@
 //! `--only` (repeatable): generate only scenes whose id starts with one of the prefixes; the
 //! manifest lists only those. Without it every scene is generated (the bench default).
 //!
+//! `--other-to-caller N` (default 0): generates **only** S4 scenes (`other_to_caller`, test set),
+//! N with a pause and N without, for the speaker-change split-point bench (`split_point_bench`):
+//! - `s4_test_pNN` (paused): 300 ms lead, a main-voice enrollment sentence (`enroll`, long
+//!   sentence 0 or 1), 1500 ms, one test-set bystander reading a long background sentence (0 or
+//!   -6 dB re the main voice), a 2500-4000 ms pause, then the caller (a long sentence other than
+//!   the enrollment ones, or an S3 phrase), 1500 ms tail.
+//! - `s4_test_nNN` (no pause): the same, with a 0-250 ms gap between the bystander and the caller.
+//! - A bed of test-set babble (never the bystander's voice) at [`S4_BED_DB`] re the main voice runs
+//!   through the whole scene, so the adaptive VAD stays open across the pause (the airport demo
+//!   shape).
+//!
+//! `--s4-bed <file>` (raw 48 kHz mono f32le, e.g. a recorded airport bed) replaces the babble bed
+//! with that recording at `--s4-bed-db` (default -12) dB re the main voice (voiced RMS), read from
+//! a seeded offset and looped when shorter than the scene; the scene's `babble_db` is that level.
+//!
+//! Their manifest segments also carry `voiced_start_ms` / `voiced_end_ms`: the first and last
+//! 20 ms frame of the clip above -45 dBFS (the onsets the bench measures against). Other scenes
+//! never carry them, so manifests without the flag are unchanged.
+//!
 //! `--quick`: S1 for 3 qualified phrases and 2 long sentences at -10 dB, S2 with 4 utterances per
 //! set, one S3 at -10 dB (tune set) of 6 turns.
 
@@ -133,6 +152,17 @@ const LONG_BACKGROUND: &str = include_str!("support/long_background_sentences.tx
 const S2_PER_SET: usize = 60;
 /// `level_db` of a `main_clean` scene: no babble at all (stands in for minus infinity).
 const CLEAN_LEVEL_DB: i32 = -99;
+/// S4 bed (babble) level re the main voice.
+const S4_BED_DB: i32 = -15;
+/// S4 pause between the bystander and the caller (paused scenes).
+const S4_PAUSE_MIN_MS: usize = 2500;
+const S4_PAUSE_MAX_MS: usize = 4000;
+/// S4 gap between the bystander and the caller (no-pause scenes).
+const S4_NOPAUSE_MAX_MS: usize = 250;
+/// S4 gap between the enrollment sentence and the bystander.
+const S4_ENROLL_GAP_MS: usize = 1500;
+/// Frame RMS (dBFS) above which a frame of a clip counts as voiced (`voiced_start_ms`).
+const VOICED_FRAME_DB: f32 = -45.0;
 
 fn lines_of(text: &str) -> Vec<String> {
     text.lines()
@@ -396,6 +426,30 @@ struct Segment {
     sid: i32,
     text: String,
     enroll: bool,
+    /// First and last voiced ms of the clip (scene clock); S4 only, see [`voiced_span`].
+    voiced: Option<(usize, usize)>,
+}
+
+/// First and last 20 ms frame (scene clock, ms, `[start, end)`) of `clip` placed at `start`
+/// whose RMS is above [`VOICED_FRAME_DB`]; the whole clip when no frame is.
+fn voiced_span(clip: &[f32], start: usize) -> (usize, usize) {
+    let frame = SR as usize / 50;
+    let voiced: Vec<usize> = clip
+        .chunks(frame)
+        .enumerate()
+        .filter(|(_, f)| {
+            let ms = f.iter().map(|v| v * v).sum::<f32>() / f.len().max(1) as f32;
+            10.0 * ms.max(1e-12).log10() > VOICED_FRAME_DB
+        })
+        .map(|(n, _)| n)
+        .collect();
+    match (voiced.first(), voiced.last()) {
+        (Some(&a), Some(&b)) => (
+            to_ms(start + a * frame),
+            to_ms(start + ((b + 1) * frame).min(clip.len())),
+        ),
+        _ => (to_ms(start), to_ms(start + clip.len())),
+    }
 }
 
 fn to_ms(samples: usize) -> usize {
@@ -418,6 +472,7 @@ fn segment(
         sid: voice.sid,
         text: text.to_string(),
         enroll,
+        voiced: None,
     }
 }
 
@@ -581,6 +636,10 @@ struct Ctx {
     /// `--long-bystander-db`: level of the long-pool bystander turns re the main voice.
     long_bystander_db: i32,
     long_background: Vec<String>,
+    /// `--s4-bed`: 16 kHz bed for S4 scenes instead of babble; `None` keeps babble.
+    s4_bed: Option<Vec<f32>>,
+    /// `--s4-bed-db`: level of `s4_bed` re the main voice.
+    s4_bed_db: i32,
 }
 
 /// Level (dB re the main voice) of the `index`-th S3 bystander turn: `long_db` for the turns that
@@ -764,6 +823,112 @@ impl Ctx {
             CLEAN_LEVEL_DB,
             MAIN_REF_DB as i32,
             CLEAN_LEVEL_DB,
+            seed,
+            segments,
+            mix,
+            Some(main_track),
+        )
+    }
+
+    /// S4 (`other_to_caller`, test set): enrollment, then a bystander, a pause (`paused`) or
+    /// almost none, then the caller, over a babble bed. See the module docs.
+    fn other_to_caller(&mut self, index: usize, paused: bool) -> Result<(), String> {
+        let set = Set::Test;
+        let id = format!("s4_test_{}{:02}", if paused { "p" } else { "n" }, index);
+        if !self.wants(&id) {
+            return Ok(());
+        }
+        let seed = scene_seed(&id);
+        let mut rng = Rng::new(seed);
+        let enroll_text = self.longs[index % 2].clone();
+        let voice = set.voices()[rng.below(5)];
+        let by_text = self.long_background[rng.below(self.long_background.len())].clone();
+        let by_db = if rng.below(2) == 0 { 0 } else { -6 };
+        let gap = if paused {
+            rng.range(S4_PAUSE_MIN_MS, S4_PAUSE_MAX_MS)
+        } else {
+            rng.range(0, S4_NOPAUSE_MAX_MS)
+        };
+        let caller_text = if index.is_multiple_of(2) && self.longs.len() > 2 {
+            self.longs[2 + rng.below(self.longs.len() - 2)].clone()
+        } else {
+            self.s3_phrases[rng.below(self.s3_phrases.len())].clone()
+        };
+        let enroll = self.main_clip(&enroll_text)?;
+        let by = normalize_to(
+            &self.synth.clip(&voice, &by_text)?,
+            MAIN_REF_DB + by_db as f32,
+        );
+        let caller = self.main_clip(&caller_text)?;
+        let enroll_at = ms(LEAD_MS);
+        let by_at = enroll_at + enroll.len() + ms(S4_ENROLL_GAP_MS);
+        // The gap runs from the bystander's last voiced frame to the caller's first one.
+        let (_, by_voiced_end) = voiced_span(&by, by_at);
+        let (caller_lead, _) = voiced_span(&caller, 0);
+        let caller_at = (ms(by_voiced_end) + ms(gap)).saturating_sub(ms(caller_lead));
+        let caller_at = caller_at.max(by_at);
+        let total = caller_at + caller.len() + ms(TAIL_MS);
+        let (mix, mut segments, bed_db) = match &self.s4_bed {
+            Some(bed) if !bed.is_empty() => {
+                let offset = rng.below(bed.len());
+                let mut mix: Vec<f32> = (0..total).map(|i| bed[(offset + i) % bed.len()]).collect();
+                scale_babble(&mut mix, MAIN_REF_DB + self.s4_bed_db as f32);
+                (mix, Vec::new(), self.s4_bed_db)
+            }
+            _ => {
+                let (mut bab, segments) = babble(
+                    &mut self.synth,
+                    &mut rng,
+                    &self.sentences,
+                    set.voices(),
+                    Some(&voice),
+                    total,
+                    &[],
+                    0,
+                    false,
+                )?;
+                scale_babble(&mut bab, MAIN_REF_DB + S4_BED_DB as f32);
+                (bab, segments, S4_BED_DB)
+            }
+        };
+        let mut mix = mix;
+        let mut main_track = vec![0f32; mix.len()];
+        add_at(&mut mix, &enroll, enroll_at);
+        add_at(&mut main_track, &enroll, enroll_at);
+        add_at(&mut mix, &by, by_at);
+        add_at(&mut mix, &caller, caller_at);
+        add_at(&mut main_track, &caller, caller_at);
+        let mut seg = segment(
+            "main",
+            &MAIN_VOICE,
+            &enroll_text,
+            enroll_at,
+            enroll.len(),
+            true,
+        );
+        seg.voiced = Some(voiced_span(&enroll, enroll_at));
+        segments.push(seg);
+        let mut seg = segment("bystander", &voice, &by_text, by_at, by.len(), false);
+        seg.voiced = Some(voiced_span(&by, by_at));
+        segments.push(seg);
+        let mut seg = segment(
+            "main",
+            &MAIN_VOICE,
+            &caller_text,
+            caller_at,
+            caller.len(),
+            false,
+        );
+        seg.voiced = Some(voiced_span(&caller, caller_at));
+        segments.push(seg);
+        segments.sort_by_key(|s| s.start_ms);
+        self.finish(
+            id,
+            "other_to_caller",
+            set,
+            by_db,
+            MAIN_REF_DB as i32,
+            bed_db,
             seed,
             segments,
             mix,
@@ -1139,6 +1304,12 @@ fn manifest_json(scenes: &[Scene]) -> String {
         out.push_str("      \"segments\": [\n");
         for (j, seg) in scene.segments.iter().enumerate() {
             let enroll = if seg.enroll { ", \"enroll\": true" } else { "" };
+            let enroll = match seg.voiced {
+                Some((a, b)) => {
+                    format!("{enroll}, \"voiced_start_ms\": {a}, \"voiced_end_ms\": {b}")
+                }
+                None => enroll.to_string(),
+            };
             // Babble is not a turn: nothing in it is expected to be transcribed.
             let expected_transcript = if seg.role == "babble" {
                 "null".to_string()
@@ -1193,6 +1364,11 @@ struct Args {
     long_bystanders: usize,
     /// `--long-bystander-db`; `None` uses `bystander_db`.
     long_bystander_db: Option<i32>,
+    /// `--other-to-caller`: S4 scenes per variant (paused, no pause); > 0 generates only S4.
+    other_to_caller: usize,
+    /// `--s4-bed` / `--s4-bed-db`.
+    s4_bed: Option<PathBuf>,
+    s4_bed_db: i32,
 }
 
 /// Parses a bystander level flag value: an integer dB between -40 and 0.
@@ -1237,6 +1413,9 @@ fn parse_args() -> Result<Args, String> {
     let mut babble_clear_pull = false;
     let mut long_bystanders = 0usize;
     let mut long_bystander_db = None;
+    let mut other_to_caller = 0usize;
+    let mut s4_bed = None;
+    let mut s4_bed_db = -12i32;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = |name: &str| -> Result<PathBuf, String> {
@@ -1282,6 +1461,17 @@ fn parse_args() -> Result<Args, String> {
                     .parse()
                     .map_err(|e| format!("--long-bystanders {text:?}: {e}"))?;
             }
+            "--other-to-caller" => {
+                let text = value("--other-to-caller")?.to_string_lossy().into_owned();
+                other_to_caller = text
+                    .parse()
+                    .map_err(|e| format!("--other-to-caller {text:?}: {e}"))?;
+            }
+            "--s4-bed" => s4_bed = Some(value("--s4-bed")?),
+            "--s4-bed-db" => {
+                let text = value("--s4-bed-db")?.to_string_lossy().into_owned();
+                s4_bed_db = parse_bystander_db("--s4-bed-db", &text)?;
+            }
             "--only" => only.push(value("--only")?.to_string_lossy().into_owned()),
             other => return Err(format!("unknown argument {other}")),
         }
@@ -1302,6 +1492,9 @@ fn parse_args() -> Result<Args, String> {
         babble_clear_pull,
         long_bystanders,
         long_bystander_db,
+        other_to_caller,
+        s4_bed,
+        s4_bed_db,
     })
 }
 
@@ -1357,10 +1550,29 @@ fn run() -> Result<(), String> {
         long_bystanders: args.long_bystanders,
         long_bystander_db: args.long_bystander_db.unwrap_or(args.bystander_db),
         long_background: lines_of(LONG_BACKGROUND),
+        s4_bed: match &args.s4_bed {
+            Some(path) => {
+                let bytes = fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+                let raw: Vec<f32> = bytes
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|b| f32::from_le_bytes(*b))
+                    .collect();
+                Some(resample_linear(&raw, 48_000, SR))
+            }
+            None => None,
+        },
+        s4_bed_db: args.s4_bed_db,
     };
 
     let sets = [Set::Tune, Set::Test];
-    if args.quick {
+    if args.other_to_caller > 0 {
+        for index in 0..args.other_to_caller {
+            ctx.other_to_caller(index, true)?;
+            ctx.other_to_caller(index, false)?;
+        }
+    } else if args.quick {
         for set in sets {
             for phrase_idx in 0..3.min(ctx.phrases.len()) {
                 let phrase = ctx.phrases[phrase_idx].clone();
@@ -1906,6 +2118,7 @@ mod tests {
             sid: 0,
             text: text.into(),
             enroll,
+            voiced: None,
         };
         let scene = Scene {
             id: "s3_test_m10".into(),

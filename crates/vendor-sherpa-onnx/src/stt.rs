@@ -257,6 +257,11 @@ pub struct SherpaStt {
     inline_push: bool,
     /// Decode on the shared decode thread (`decode_multiple_streams`) instead of per stream.
     batch_decode: bool,
+    /// Batched mode: samples handed in by `push_audio` / `push_and_poll` but not yet fed to the
+    /// stream. Appended synchronously before the first await, so a call that is dropped while it
+    /// waits for the session lock still delivers its audio (the next call drains it, in order).
+    /// Held only for the append / take, never across an await or a native call.
+    inbox: Arc<std::sync::Mutex<Vec<f32>>>,
 }
 
 impl SherpaStt {
@@ -272,6 +277,7 @@ impl SherpaStt {
             accepted_ms: Arc::new(AtomicU32::new(0)),
             inline_push: inline_push_default(),
             batch_decode: batch_decode_flag().load(Ordering::SeqCst),
+            inbox: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -333,38 +339,63 @@ impl SherpaStt {
             .map_err(|_| SpeechError::Internal("sherpa decode thread stopped".into()))?
     }
 
-    async fn decode_via_batcher(&self, after: AfterDecode) -> SpeechResult<Vec<SttTranscript>> {
-        let guard = Arc::clone(&self.state).lock_owned().await;
-        Self::submit_to_batcher(guard, after).await
+    fn take_inbox(&self) -> Vec<f32> {
+        std::mem::take(&mut *self.inbox.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
-    /// Batched `push_audio` / `push_and_poll`: accept the samples (unless already accepted
-    /// inline) under the owned session lock, then hand the same guard to the decode thread.
+    fn clear_inbox(&self) {
+        self.inbox.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
+    /// Feed the inbox to the stream (one `accept_waveform` call). Caller holds the session lock.
+    fn drain_inbox_into(&self, session: &mut SttSessionState) {
+        let drained = self.take_inbox();
+        if drained.is_empty() {
+            return;
+        }
+        let _native = NativeCallGuard::enter();
+        session.stream.accept_waveform(SAMPLE_RATE, &drained);
+        let push = SHERPA_PUSH_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        if push == 1 || push.is_multiple_of(50) {
+            voice_debug(format!("sherpa push_audio samples={}", drained.len()));
+        }
+    }
+
+    /// Batched `push_audio` / `push_and_poll`. The samples go to the inbox and into
+    /// `accepted_ms` before the first await; then the session lock is taken, the whole inbox is
+    /// fed to the stream, and the same guard goes to the decode thread when a decode or a read is
+    /// due (the rules of the inline path: pending or unread results, or a ready chunk).
     async fn push_batched(
         &self,
         samples: &[f32],
         sample_ms: u32,
-        already_accepted: bool,
         after: AfterDecode,
     ) -> SpeechResult<Vec<SttTranscript>> {
-        if already_accepted {
-            return self.decode_via_batcher(after).await;
+        if !samples.is_empty() {
+            self.inbox
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .extend_from_slice(samples);
+            self.accepted_ms.fetch_add(sample_ms, Ordering::Relaxed);
         }
-        let mut guard = Arc::clone(&self.state).lock_owned().await;
+        let mut guard = match Arc::clone(&self.state).try_lock_owned() {
+            Ok(guard) => guard,
+            Err(_) => Arc::clone(&self.state).lock_owned().await,
+        };
         if !guard.running {
+            self.clear_inbox();
             return Ok(Vec::new());
         }
         let Some(session) = guard.session.as_mut() else {
+            self.clear_inbox();
             return Ok(Vec::new());
         };
-        if !samples.is_empty() {
-            let _native = NativeCallGuard::enter();
-            self.accepted_ms.fetch_add(sample_ms, Ordering::Relaxed);
-            session.stream.accept_waveform(SAMPLE_RATE, samples);
-            let push = SHERPA_PUSH_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-            if push == 1 || push.is_multiple_of(50) {
-                voice_debug(format!("sherpa push_audio samples={}", samples.len()));
-            }
+        self.drain_inbox_into(session);
+        let due = !session.pending.is_empty()
+            || session.decoded_since_result
+            || session.shared.try_is_ready(&session.stream) != Some(false);
+        if !due {
+            return Ok(Vec::new());
         }
         Self::submit_to_batcher(guard, after).await
     }
@@ -421,6 +452,7 @@ impl SttProvider for SherpaStt {
         let state = Arc::clone(&self.state);
         let unread = Arc::clone(&self.unread);
         self.accepted_ms.store(0, Ordering::Relaxed);
+        self.clear_inbox();
 
         tokio::task::spawn_blocking(move || {
             let _native = NativeCallGuard::enter();
@@ -470,17 +502,16 @@ impl SttProvider for SherpaStt {
         }
 
         let sample_ms = (samples.len() as u32 * 1000) / SAMPLE_RATE as u32;
+        if self.batch_decode {
+            self.push_batched(&samples, sample_ms, AfterDecode::MarkOnly)
+                .await?;
+            return Ok(());
+        }
         let already_accepted = match self.try_push_inline(&samples, sample_ms) {
             InlinePush::Done => return Ok(()),
             InlinePush::AcceptedNeedsDecode => true,
             InlinePush::NotTaken => false,
         };
-
-        if self.batch_decode {
-            self.push_batched(&samples, sample_ms, already_accepted, AfterDecode::MarkOnly)
-                .await?;
-            return Ok(());
-        }
 
         let state = Arc::clone(&self.state);
         let accepted_ms = Arc::clone(&self.accepted_ms);
@@ -570,6 +601,7 @@ impl SttProvider for SherpaStt {
     async fn abandon_utterance(&mut self) -> SpeechResult<bool> {
         let state = Arc::clone(&self.state);
         self.accepted_ms.store(0, Ordering::Relaxed);
+        self.clear_inbox();
         tokio::task::spawn_blocking(move || -> SpeechResult<bool> {
             let _native = NativeCallGuard::enter();
             let mut guard = state.blocking_lock();
@@ -597,11 +629,14 @@ impl SttProvider for SherpaStt {
         if self.batch_decode {
             let mut guard = Arc::clone(&self.state).lock_owned().await;
             if !guard.running {
+                self.clear_inbox();
                 return Ok(());
             }
             let Some(session) = guard.session.as_mut() else {
+                self.clear_inbox();
                 return Ok(());
             };
+            self.drain_inbox_into(session);
             {
                 let _native = NativeCallGuard::enter();
                 let tail_padding =
@@ -660,6 +695,14 @@ impl SttProvider for SherpaStt {
     ) -> SpeechResult<()> {
         let mut samples = mono_s16le_bytes_to_f32(pcm.as_ref());
         let mut sample_ms = (samples.len() as u32 * 1000) / SAMPLE_RATE as u32;
+        if self.batch_decode {
+            let ready = self
+                .push_batched(&samples, sample_ms, AfterDecode::ReadTranscripts)
+                .await?;
+            self.accepted_ms.store(0, Ordering::Relaxed);
+            out.extend(ready);
+            return Ok(());
+        }
         match self.try_push_inline(&samples, sample_ms) {
             InlinePush::Done => {
                 self.accepted_ms.store(0, Ordering::Relaxed);
@@ -670,21 +713,6 @@ impl SttProvider for SherpaStt {
                 sample_ms = 0;
             }
             InlinePush::NotTaken => {}
-        }
-
-        if self.batch_decode {
-            let already_accepted = samples.is_empty() && sample_ms == 0;
-            let ready = self
-                .push_batched(
-                    &samples,
-                    sample_ms,
-                    already_accepted,
-                    AfterDecode::ReadTranscripts,
-                )
-                .await?;
-            self.accepted_ms.store(0, Ordering::Relaxed);
-            out.extend(ready);
-            return Ok(());
         }
 
         let state = Arc::clone(&self.state);

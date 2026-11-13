@@ -55,18 +55,20 @@ async fn synthesize_speech_pcm_16k(text: &str) -> Bytes {
     i16_samples_to_bytes(&mono)
 }
 
-/// Final texts of one session. With `disturb`, every 5th message is wrapped in a zero timeout so
-/// the call may be dropped; the message is not resent. Transcripts of a dropped call are lost by
+/// Final texts of one session. A message for which `drop_it(index, total)` is true is wrapped in a
+/// zero timeout so the call is dropped (possibly while it waits for the session lock, which a
+/// previous dropped call's decode request still holds); the message is not resent. Transcripts of a dropped call are lost by
 /// design (they are returned only to the dropped future), so only the finals after the
 /// `finalize_utterance` drain are compared by the caller.
-async fn run(cfg: &SttConfig, pcm: &[u8], disturb: bool) -> String {
+async fn run(cfg: &SttConfig, pcm: &[u8], drop_it: fn(usize, usize) -> bool) -> String {
     let factory = SherpaFactory;
     let mut stt = factory.create_stt(cfg).expect("create_stt");
     stt.start().await.expect("stt start");
+    let total = pcm.chunks(CHUNK_BYTES).count();
     for (idx, chunk) in pcm.chunks(CHUNK_BYTES).enumerate() {
         let mut out = Vec::new();
         let call = stt.push_and_poll(Bytes::copy_from_slice(chunk), &mut out);
-        if disturb && idx % 5 == 4 {
+        if drop_it(idx, total) {
             let _ = tokio::time::timeout(Duration::ZERO, call).await;
         } else {
             call.await.expect("push_and_poll");
@@ -93,8 +95,22 @@ async fn dropped_call_does_not_lose_or_duplicate_audio() {
     let pcm = synthesize_speech_pcm_16k(PHRASE).await;
     assert!(pcm.len() >= 3200, "too little PCM");
 
-    let reference = run(&cfg, pcm.as_ref(), false).await;
+    let total = pcm.len().div_ceil(CHUNK_BYTES);
+    assert!(total >= 60, "too few messages: {total}");
+
+    let reference = run(&cfg, pcm.as_ref(), |_, _| false).await;
     assert!(!reference.is_empty(), "undisturbed run has no final");
-    let disturbed = run(&cfg, pcm.as_ref(), true).await;
-    assert_eq!(disturbed, reference);
+    // Scenario 1: every 5th call dropped.
+    let every_fifth = run(&cfg, pcm.as_ref(), |idx, _| idx % 5 == 4).await;
+    assert_eq!(every_fifth, reference, "every 5th call dropped");
+    // Scenario 2: 10 consecutive calls dropped in the middle of the phrase. The second and later
+    // ones wait for a session lock that the previous dropped call's decode request still holds.
+    let middle_block = run(&cfg, pcm.as_ref(), |idx, total| {
+        (total / 2..total / 2 + 10).contains(&idx)
+    })
+    .await;
+    assert_eq!(middle_block, reference, "10 consecutive calls dropped");
+    // Scenario 3: drop, drop, normal over the whole phrase.
+    let drop_drop_normal = run(&cfg, pcm.as_ref(), |idx, _| idx % 3 != 2).await;
+    assert_eq!(drop_drop_normal, reference, "drop, drop, normal");
 }

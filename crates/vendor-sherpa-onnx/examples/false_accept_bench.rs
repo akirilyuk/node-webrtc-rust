@@ -13,7 +13,8 @@
 //! - Voices: callers and others are the test set (`en_US-amy-low` sid 0 plus `TEST_VOICES`); the
 //!   tune set (`TUNE_VOICES`) only picks thresholds. The impostor cohort for score normalization
 //!   is 30 `en_US-libritts_r-medium` speakers that are in neither set ([`COHORT_SIDS`]).
-//! - Per voice: an enrollment clip (300 ms pre-roll + 3000 ms, the gate's `enroll_speech_ms`) from
+//! - Per voice: an enrollment clip (3000 ms from the voiced onset, the gate's `enroll_speech_ms`;
+//!   no pre-roll, as the gate's `enrollment_pcm_excludes_the_pre_roll`) from
 //!   two long sentences, and a talk stream of 20 other sentences (200 ms gaps). Voices are
 //!   normalized to -20 dBFS voiced RMS. Condition `bed`: the Tocumen airport bed (48 kHz mono f32le,
 //!   resampled) at `--bed-db` re the voice under both enrollment and stream; condition `clean`: none.
@@ -24,13 +25,21 @@
 //!   own windows rejected. Same condition for enrollment and windows.
 //! - Scores: `raw` cosine; `s-norm` = mean of the z-scores of the raw score against the cohort
 //!   scores of the enrollment and of the window; `as-norm` the same over the top 10 cohort scores.
+//!   `raw AND s-norm` / `raw AND as-norm`: accepted only when the raw cosine is >= 0.459 and the
+//!   normalized score is >= its threshold (encoded as the normalized score, or [`REJECT`] when the
+//!   raw cosine is below 0.459, so one threshold applies).
 //! - Thresholds: today's gate is TitaNet-small raw at 0.459, also kept for longer TitaNet windows.
 //!   Every other candidate's threshold is picked on the tune set: the highest threshold whose tune
 //!   FRR is at most max(today's tune FRR, 1 %).
 //! - Airport demo check: the gate's enrollment (scene 1.7-5.0 s) and its window grid for the two
 //!   leaking utterances. The utterance start is fitted to the logged TitaNet 1.5 s scores
 //!   ([`AIRPORT`]); each candidate then scores the clip of `W` s (+ pre-roll) that ends where the
-//!   logged caller window ends, i.e. the window that would confirm at the same moment.
+//!   logged caller window ends, i.e. the window that would confirm at the same moment. The offline
+//!   raw scores run higher than the logged ones, so 1.5 s candidates are also scored with the
+//!   logged raw cosine in place of the reproduced one (cohort stats from the reproduced
+//!   embeddings); a candidate passes the airport check only when both pass.
+//! - Cohort statistics per other voice (TitaNet 1.5 s): mean window-side cohort mean / std, to show
+//!   how much of the normalization comes from the cohort being the same TTS family as a voice.
 //! - Embed time: p50 / p99 per window per model and window length (one thread).
 
 use std::collections::HashMap;
@@ -57,6 +66,8 @@ const MAIN_DB: f32 = -20.0;
 const WINDOWS_S: [f32; 4] = [1.5, 2.0, 2.5, 3.0];
 const TOP_K: usize = 10;
 const GAP_MS: usize = 200;
+/// Score of a `raw AND …` window whose raw cosine is below the gate threshold.
+const REJECT: f32 = -1.0e6;
 
 const LONG: &str = include_str!("support/long_sentences.txt");
 const LONG_BACKGROUND: &str = include_str!("support/long_background_sentences.txt");
@@ -99,6 +110,8 @@ enum Norm {
     Raw,
     Snorm,
     Asnorm,
+    RawAndSnorm,
+    RawAndAsnorm,
 }
 
 impl Norm {
@@ -107,6 +120,8 @@ impl Norm {
             Norm::Raw => "raw",
             Norm::Snorm => "s-norm",
             Norm::Asnorm => "as-norm",
+            Norm::RawAndSnorm => "raw AND s-norm",
+            Norm::RawAndAsnorm => "raw AND as-norm",
         }
     }
 }
@@ -315,14 +330,14 @@ fn embed_voice(
         } else {
             (enroll_clean.clone(), stream_clean.clone())
         };
-        // The gate's enrollment: speech from the onset (first voiced frame) minus the pre-roll.
+        // The gate's enrollment: speech from the onset (first voiced frame), no pre-roll.
         let onset = enroll_clean
             .chunks(20 * MS)
             .position(|f| voiced_share(f) > 0.0)
             .unwrap_or(0)
             * 20
             * MS;
-        let e0 = onset.saturating_sub(PRE_ROLL_MS * MS);
+        let e0 = onset;
         let e1 = (onset + ENROLL_MS * MS).min(enroll.len());
         let mut ve = VoiceEmb {
             enroll: Vec::new(),
@@ -364,12 +379,25 @@ fn cohort_stats(e: &[f32], cohort: &[Vec<f32>], top: Option<usize>) -> (f32, f32
 }
 
 fn score(norm: Norm, enroll: &[f32], window: &[f32], cohort: &[Vec<f32>]) -> f32 {
-    let raw = cosine(enroll, window);
+    score_from_raw(norm, cosine(enroll, window), enroll, window, cohort)
+}
+
+/// [`score`] with the raw cosine given (the airport check feeds the logged one).
+fn score_from_raw(
+    norm: Norm,
+    raw: f32,
+    enroll: &[f32],
+    window: &[f32],
+    cohort: &[Vec<f32>],
+) -> f32 {
     let top = match norm {
         Norm::Raw => return raw,
-        Norm::Snorm => None,
-        Norm::Asnorm => Some(TOP_K),
+        Norm::Snorm | Norm::RawAndSnorm => None,
+        Norm::Asnorm | Norm::RawAndAsnorm => Some(TOP_K),
     };
+    if matches!(norm, Norm::RawAndSnorm | Norm::RawAndAsnorm) && raw < GATE_THRESHOLD {
+        return REJECT;
+    }
     let (me, se) = cohort_stats(enroll, cohort, top);
     let (mt, st) = cohort_stats(window, cohort, top);
     0.5 * ((raw - me) / se + (raw - mt) / st)
@@ -448,6 +476,8 @@ struct AirportFit {
     reproduced: Vec<f32>,
     /// [candidate] -> scores of the caller windows
     scores: Vec<Vec<f32>>,
+    /// [candidate] -> scores with the logged raw cosine (1.5 s candidates only)
+    logged_scores: Vec<Option<Vec<f32>>>,
 }
 
 fn run() -> Result<(), String> {
@@ -555,7 +585,12 @@ fn run() -> Result<(), String> {
         });
     }
     for w in [0, 1] {
-        for norm in [Norm::Snorm, Norm::Asnorm] {
+        for norm in [
+            Norm::Snorm,
+            Norm::Asnorm,
+            Norm::RawAndSnorm,
+            Norm::RawAndAsnorm,
+        ] {
             cands.push(Candidate {
                 model: 0,
                 window: w,
@@ -622,7 +657,7 @@ fn run() -> Result<(), String> {
     let mut airport = Vec::new();
     for (ai, ap) in AIRPORT.iter().enumerate() {
         let audio = read_wav(&args.airport[ai])?;
-        let enroll_clip = clip(&audio, 2000 - PRE_ROLL_MS, 2000 + ENROLL_MS);
+        let enroll_clip = clip(&audio, 2000, 2000 + ENROLL_MS);
         let refs: Vec<Vec<f32>> = models
             .iter_mut()
             .map(|m| m.embed(enroll_clip, None))
@@ -649,15 +684,26 @@ fn run() -> Result<(), String> {
         }
         let (rmse, u_ms, reproduced) = best;
         let mut scores = Vec::new();
+        let mut logged_scores = Vec::new();
         for c in &cands {
             let mut row = Vec::new();
+            let mut logged_row = Vec::new();
             for &k in ap.caller {
                 let end = u_ms + k * 1500;
                 let w = (WINDOWS_S[c.window] * 1000.0) as usize;
                 let e = models[c.model].embed(clip(&audio, end - w - PRE_ROLL_MS, end), None)?;
-                row.push(score(c.norm, &refs[c.model], &e, &cohort[0][c.model]));
+                let cohort_m = &cohort[0][c.model];
+                row.push(score(c.norm, &refs[c.model], &e, cohort_m));
+                logged_row.push(score_from_raw(
+                    c.norm,
+                    ap.logged[k - 1],
+                    &refs[c.model],
+                    &e,
+                    cohort_m,
+                ));
             }
             scores.push(row);
+            logged_scores.push((c.model == 0 && c.window == 0).then_some(logged_row));
         }
         airport.push(AirportFit {
             label: ap.label,
@@ -665,6 +711,7 @@ fn run() -> Result<(), String> {
             rmse,
             reproduced,
             scores,
+            logged_scores,
         });
     }
 
@@ -682,7 +729,7 @@ fn run() -> Result<(), String> {
 
     let mut pair_rows: Vec<Vec<String>> = Vec::new();
     let mut frr_rows: Vec<Vec<String>> = Vec::new();
-    md.push_str("### Summary per candidate\n\n| candidate | threshold | test FAR bed / clean % | worst pair FAR bed % | FAR, other = libritts_r bed / clean % | test FRR bed / clean % | tune FAR / FRR % (pooled) | airport A w9, w10 | airport B w5, w6, w7 | airport pass | embed ms p50 / p99 | extra confirm delay s |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+    md.push_str("### Summary per candidate\n\n| candidate | threshold | test FAR bed / clean % | worst pair FAR bed % | FAR, other = libritts_r bed / clean % | test FRR bed / clean % | tune FAR / FRR % (pooled) | airport A w9, w10 | airport B w5, w6, w7 | airport A / B at logged raw | pass reproduced / at logged raw | airport pass | embed ms p50 / p99 | extra confirm delay s |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
     for (ci, c) in cands.iter().enumerate() {
         let (tg, ti) = set_scores(&tune, c);
         let thr = match c.fixed {
@@ -760,9 +807,25 @@ fn run() -> Result<(), String> {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        let pass = airport
+        let pass_rep = airport
             .iter()
             .all(|a| a.scores[ci].iter().all(|s| *s >= thr));
+        let pass_logged = airport.iter().all(|a| {
+            a.logged_scores[ci]
+                .as_ref()
+                .is_none_or(|v| v.iter().all(|s| *s >= thr))
+        });
+        let pass = pass_rep && pass_logged;
+        let yes_no = |b: bool| if b { "yes" } else { "**no**" };
+        let logged_cell = match (&airport[0].logged_scores[ci], &airport[1].logged_scores[ci]) {
+            (Some(a), Some(b)) => format!("{} / {}", fmt_air(a), fmt_air(b)),
+            _ => "-".to_string(),
+        };
+        let pass_cell = if airport[0].logged_scores[ci].is_some() {
+            format!("{} / {}", yes_no(pass_rep), yes_no(pass_logged))
+        } else {
+            format!("{} / -", yes_no(pass_rep))
+        };
         let mut times = models[c.model]
             .times
             .get(&c.window)
@@ -771,7 +834,7 @@ fn run() -> Result<(), String> {
         let p50 = percentile(&mut times, 0.5);
         let p99 = percentile(&mut times, 0.99);
         md.push_str(&format!(
-            "| {} | {:.3} | {} / {} | {:.1} ({}) | {} / {} | {} / {} | {} / {} | {} | {} | {} | {:.1} / {:.1} | {:.1} |\n",
+            "| {} | {:.3} | {} / {} | {:.1} ({}) | {} / {} | {} / {} | {} / {} | {} | {} | {} | {} | {} | {:.1} / {:.1} | {:.1} |\n",
             cand_name(c, &models),
             thr,
             pct(far_tot[0].0, far_tot[0].1),
@@ -786,7 +849,9 @@ fn run() -> Result<(), String> {
             pct(count(&tune_gen, false), tune_gen.len()),
             fmt_air(&airport[0].scores[ci]),
             fmt_air(&airport[1].scores[ci]),
-            if pass { "yes" } else { "**no**" },
+            logged_cell,
+            pass_cell,
+            yes_no(pass),
             p50,
             p99,
             WINDOWS_S[c.window] - 1.5
@@ -810,6 +875,26 @@ fn run() -> Result<(), String> {
         &pair_rows,
     ));
     md.push_str(&table("FRR per caller, bed / clean %", "caller", &frr_rows));
+    md.push_str("\n### Cohort statistics per voice (TitaNet 1.5 s, libritts_r cohort)\n\nMean over the voice's windows of the window-side cohort mean / std (`μt` / `σt`), and the enrollment-side cohort mean / std (`μe` / `σe`).\n\n| voice | μt / σt bed | μt / σt clean | μe / σe bed | μe / σe clean |\n|---|---|---|---|---|\n");
+    for (vi, v) in test_voices.iter().enumerate() {
+        let mut cells = Vec::new();
+        for ci in 0..2 {
+            let ws = &test[vi][ci].windows[0][0];
+            let (mut sm, mut ss) = (0.0f32, 0.0f32);
+            for w in ws {
+                let (m, sd) = cohort_stats(w, &cohort[ci][0], None);
+                sm += m;
+                ss += sd;
+            }
+            let n = ws.len().max(1) as f32;
+            cells.push(format!("{:.3} / {:.3}", sm / n, ss / n));
+        }
+        for ci in 0..2 {
+            let (m, sd) = cohort_stats(&test[vi][ci].enroll[0], &cohort[ci][0], None);
+            cells.push(format!("{m:.3} / {sd:.3}"));
+        }
+        md.push_str(&format!("| {} | {} |\n", vname(v), cells.join(" | ")));
+    }
     md.push_str("\n### Airport fit (today's gate reproduced offline)\n\n| utterance | fitted start ms | RMSE vs log | reproduced 1.5 s scores |\n|---|---|---|---|\n");
     for a in &airport {
         md.push_str(&format!(

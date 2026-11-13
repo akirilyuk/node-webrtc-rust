@@ -3297,8 +3297,8 @@ mod tests {
 
     /// Stage 2 stays inside the window's own verify budget (`verify` 300 ms): the window embed
     /// takes 200 ms, each sub-window 60 ms, so the stage stops at the budget with "stage 2 total
-    /// bound", the change is booked with stage 1's point and the verdict lands within
-    /// `verify_timeout_ms` of its check starting, not window embed + 2 x verify.
+    /// bound" after at most 2 sub-window embeds (a count load can only lower, not a wall-clock
+    /// margin), and the change is booked with stage 1's point.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stage_two_stays_inside_the_window_verify_budget() {
         let mut script = vec![(0, caller_v()), (0, other_v()), (200, caller_v())];
@@ -3310,14 +3310,12 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        let (v2, delivered) = lock(&sink)[1].clone();
+        let (v2, _) = lock(&sink)[1];
         assert_eq!((v2.window, v2.recheck), (2, true));
-        let window_started = lock(&emb.starts)[2];
-        let latency = delivered.duration_since(window_started);
-        assert!(
-            latency < Duration::from_millis(300 + 150),
-            "verdict took {latency:?}"
-        );
+        // 3 = enrollment, window 1, window 2; with 100 ms of budget left and 60 ms embeds at most
+        // 2 sub-window embeds start. Load can only lower the count, never raise it.
+        let stage2_embeds = lock(&emb.starts).len() - 3;
+        assert!(stage2_embeds <= 2, "{stage2_embeds} stage-2 embeds");
         let changes = gate.take_speaker_changes();
         assert_eq!(changes.len(), 1, "{changes:?}");
         assert!(changes[0].split_at_ms <= 1500 + SPLIT_SEARCH_MS);
@@ -3329,6 +3327,54 @@ mod tests {
                     && !w.contains("embed timeout")),
             "{:?}",
             gate.warnings()
+        );
+    }
+
+    /// With the window's verify budget already spent, stage 2 embeds nothing and reports
+    /// "stage 2 total bound" with `waitedMs`; the caller keeps stage 1's point.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stage_two_with_the_budget_spent_embeds_nothing() {
+        struct Counting(Mutex<u32>);
+        #[async_trait::async_trait]
+        impl SpeakerEmbedder for Counting {
+            async fn embed(
+                &self,
+                _pcm: Bytes,
+                _rate: u32,
+            ) -> crate::error::SpeechResult<Option<Vec<f32>>> {
+                *lock(&self.0) += 1;
+                Ok(Some(caller_v()))
+            }
+        }
+        // Window 1 loud with a 200 ms quiet tail: a run under the minimum, so stage 1 keeps the
+        // audio for stage 2.
+        let mut first = tone(1500, 10_000);
+        first[1300 * BYTES_PER_MS..].fill(0);
+        let clip = tone(1500, 10_000);
+        let (_point, refine) = other_to_caller_split(Some((0, 1500, first)), (1500, 3000), &clip);
+        let refine = refine.expect("stage 2 audio");
+        let counting = Arc::new(Counting(Mutex::new(0)));
+        let embedder: Arc<dyn SpeakerEmbedder> = counting.clone();
+        let gate = SpeakerGate::new(split_cfg(true, 12));
+        let got = stage2_split(
+            &embedder,
+            &caller_v(),
+            0.5,
+            &refine,
+            Duration::from_millis(300),
+            Instant::now() - Duration::from_millis(300),
+            &gate.shared,
+            1,
+        )
+        .await;
+        assert_eq!(got, None);
+        assert_eq!(*lock(&counting.0), 0, "no embed with the budget spent");
+        let warns = gate.warnings();
+        assert!(
+            warns
+                .iter()
+                .any(|w| w.contains("stage 2 total bound") && w.contains("waitedMs=")),
+            "{warns:?}"
         );
     }
 

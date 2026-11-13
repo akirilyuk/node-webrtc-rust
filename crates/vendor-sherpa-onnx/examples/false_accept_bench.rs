@@ -7,8 +7,12 @@
 //! cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example false_accept_bench -- \
 //!   --voices-root <.models> --speaker-dir <.models/speaker> --bed <tocumen48.f32> \
 //!   --cache <dir> --airport-a <scene A 16 kHz mono wav> --airport-b <scene B 16 kHz mono wav> \
-//!   [--bed-db -12] [--out <file.md>]
+//!   [--bed-db -12] [--out <file.md>] [--librispeech <LibriSpeech dir>]
 //! ```
+//!
+//! With `--librispeech` (chunk 1c, decision j) the bench runs on real speech instead: see
+//! [`librispeech`]. The LibriSpeech flac files must be decoded to wav next to them first
+//! (`flac -d`); audio and embeddings stay outside the repo.
 //!
 //! - Voices: callers and others are the test set (`en_US-amy-low` sid 0 plus `TEST_VOICES`); the
 //!   tune set (`TUNE_VOICES`) only picks thresholds. The impostor cohort for score normalization
@@ -313,22 +317,46 @@ fn embed_voice(
     index: usize,
     bed: &[f32],
     bed_db: f32,
+    wins: fn(usize) -> &'static [usize],
 ) -> Result<[VoiceEmb; 2], String> {
     let long = lines(LONG);
     let enroll_clean = synth.concat(v, &long[0..2])?;
     let mut texts: Vec<&str> = lines(LONG_BACKGROUND);
     texts.extend_from_slice(&long[8..16]);
     let stream_clean = synth.concat(v, &texts)?;
+    embed_audio(
+        models,
+        &enroll_clean,
+        &stream_clean,
+        index,
+        bed,
+        bed_db,
+        wins,
+    )
+}
+
+/// Enrollment and window embeddings of one speaker from its clean enrollment and talk audio,
+/// with and without the bed. `wins(model)` lists the window lengths ([`WINDOWS_S`] indices).
+#[allow(clippy::too_many_arguments)]
+fn embed_audio(
+    models: &mut [Embedder],
+    enroll_clean: &[f32],
+    stream_clean: &[f32],
+    index: usize,
+    bed: &[f32],
+    bed_db: f32,
+    wins: fn(usize) -> &'static [usize],
+) -> Result<[VoiceEmb; 2], String> {
     let mut out = Vec::new();
     for cond in &CONDS {
         let offset = index * 7 * SR as usize;
         let (enroll, stream) = if cond.bed {
             (
-                with_bed(&enroll_clean, bed, offset, bed_db),
-                with_bed(&stream_clean, bed, offset + 3 * SR as usize, bed_db),
+                with_bed(enroll_clean, bed, offset, bed_db),
+                with_bed(stream_clean, bed, offset + 3 * SR as usize, bed_db),
             )
         } else {
-            (enroll_clean.clone(), stream_clean.clone())
+            (enroll_clean.to_vec(), stream_clean.to_vec())
         };
         // The gate's enrollment: speech from the onset (first voiced frame), no pre-roll.
         let onset = enroll_clean
@@ -346,7 +374,7 @@ fn embed_voice(
         for (m, emb) in models.iter_mut().enumerate() {
             ve.enroll.push(emb.embed(&enroll[e0..e1], None)?);
             let mut per_w = vec![Vec::new(); WINDOWS_S.len()];
-            for &wi in model_windows(m) {
+            for &wi in wins(m) {
                 let w = (WINDOWS_S[wi] * 1000.0) as usize * MS;
                 let pre = PRE_ROLL_MS * MS;
                 let mut start = pre;
@@ -364,6 +392,79 @@ fn embed_voice(
     let clean = out.pop().ok_or("no clean")?;
     let bedv = out.pop().ok_or("no bed")?;
     Ok([bedv, clean])
+}
+
+/// Cohort: [cond][model] -> embeddings of a 3.3 s clip per cohort speaker.
+type Cohort = Vec<Vec<Vec<Vec<f32>>>>;
+
+/// The Piper cohort ([`COHORT_SIDS`] of `en_US-libritts_r-medium`).
+fn piper_cohort(
+    synth: &mut Synth,
+    models: &mut [Embedder],
+    bed: &[f32],
+    bed_db: f32,
+) -> Result<Cohort, String> {
+    let bg = lines(BACKGROUND);
+    let clips = COHORT_SIDS
+        .iter()
+        .enumerate()
+        .map(|(i, sid)| {
+            let v = voice(
+                "en_US-libritts_r-medium",
+                "vits-piper-en_US-libritts_r-medium",
+                *sid,
+            );
+            let texts = [bg[(2 * i) % bg.len()], bg[(2 * i + 1) % bg.len()]];
+            synth.concat(&v, &texts)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    cohort_from_clips(models, &clips, bed, bed_db)
+}
+
+/// Cohort embeddings: the first pre-roll + enrollment span of each clean clip, with and without
+/// the bed.
+fn cohort_from_clips(
+    models: &mut [Embedder],
+    clips: &[Vec<f32>],
+    bed: &[f32],
+    bed_db: f32,
+) -> Result<Cohort, String> {
+    let mut cohort: Cohort = vec![vec![Vec::new(); models.len()]; 2];
+    for (i, clean) in clips.iter().enumerate() {
+        let end = ((PRE_ROLL_MS + ENROLL_MS) * MS).min(clean.len());
+        for (ci, cond) in CONDS.iter().enumerate() {
+            let a = if cond.bed {
+                with_bed(clean, bed, (40 + i) * 5 * SR as usize, bed_db)
+            } else {
+                clean.clone()
+            };
+            for (m, emb) in models.iter_mut().enumerate() {
+                cohort[ci][m].push(emb.embed(&a[..end], None)?);
+            }
+        }
+    }
+    Ok(cohort)
+}
+
+/// The highest threshold whose FRR on `gen` is at most `target`: the score at index
+/// `floor(target * n)` of the sorted genuine scores. When that index lands on a [`REJECT`] score
+/// (a `raw AND …` window whose raw cosine is below the gate), no threshold reaches `target`; the
+/// lowest real score is used instead, so the threshold never accepts a raw-rejected window.
+fn tuned_threshold(gen: &[Vec<Vec<f32>>], target: f64) -> f32 {
+    let mut all: Vec<f32> = gen.iter().flatten().flatten().copied().collect();
+    if all.is_empty() {
+        return f32::MAX;
+    }
+    all.sort_by(f32::total_cmp);
+    let t = all[((target * all.len() as f64).floor() as usize).min(all.len() - 1)];
+    if t > REJECT {
+        t
+    } else {
+        all.iter()
+            .copied()
+            .find(|s| *s > REJECT)
+            .unwrap_or(f32::MAX)
+    }
 }
 
 fn cohort_stats(e: &[f32], cohort: &[Vec<f32>], top: Option<usize>) -> (f32, f32) {
@@ -427,6 +528,8 @@ struct Args {
     airport: [PathBuf; 2],
     bed_db: f32,
     out: Option<PathBuf>,
+    /// `LibriSpeech/` root holding `SPEAKERS.TXT`, `test-clean/` and `dev-clean/` (decoded wav).
+    librispeech: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -449,6 +552,7 @@ fn parse_args() -> Result<Args, String> {
             .transpose()?
             .unwrap_or(-12.0),
         out: map.get("--out").map(PathBuf::from),
+        librispeech: map.get("--librispeech").map(PathBuf::from),
     })
 }
 
@@ -480,9 +584,60 @@ struct AirportFit {
     logged_scores: Vec<Option<Vec<f32>>>,
 }
 
+/// Today's gate reproduced offline on one airport utterance: the scene audio, the enrollment
+/// embedding per model, and the utterance start fitted to the logged TitaNet 1.5 s scores
+/// (model 0 must be TitaNet).
+struct AirportBase {
+    audio: Vec<f32>,
+    refs: Vec<Vec<f32>>,
+    u_ms: usize,
+    rmse: f32,
+    reproduced: Vec<f32>,
+}
+
+fn fit_airport(models: &mut [Embedder], ap: &Airport, path: &Path) -> Result<AirportBase, String> {
+    let audio = read_wav(path)?;
+    let enroll_clip = clip(&audio, 2000, 2000 + ENROLL_MS);
+    let refs: Vec<Vec<f32>> = models
+        .iter_mut()
+        .map(|m| m.embed(enroll_clip, None))
+        .collect::<Result<_, _>>()?;
+    let mut best = (f32::MAX, 0usize, Vec::new());
+    let mut u = ap.approx_u_ms - 1000;
+    while u <= ap.approx_u_ms + 1000 {
+        let mut rep = Vec::new();
+        for k in 1..=ap.logged.len() {
+            let s = u + (k - 1) * 1500;
+            let e = models[0].embed(clip(&audio, s - PRE_ROLL_MS, s + 1500), None)?;
+            rep.push(cosine(&refs[0], &e));
+        }
+        let sse: f32 = rep
+            .iter()
+            .zip(ap.logged)
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum();
+        let rmse = (sse / rep.len() as f32).sqrt();
+        if rmse < best.0 {
+            best = (rmse, u, rep);
+        }
+        u += 50;
+    }
+    let (rmse, u_ms, reproduced) = best;
+    Ok(AirportBase {
+        audio,
+        refs,
+        u_ms,
+        rmse,
+        reproduced,
+    })
+}
+
 fn run() -> Result<(), String> {
     let args = parse_args()?;
     fs::create_dir_all(&args.cache).map_err(|e| e.to_string())?;
+    if let Some(root) = &args.librispeech {
+        return librispeech::run(&args, root);
+    }
     let bed = resample_linear(&read_f32le(&args.bed)?, 48_000, SR);
     let model_files = [
         "nemo_en_titanet_small.onnx",
@@ -524,6 +679,7 @@ fn run() -> Result<(), String> {
             i,
             &bed,
             args.bed_db,
+            model_windows,
         )?);
     }
     let mut tune = Vec::new();
@@ -536,31 +692,10 @@ fn run() -> Result<(), String> {
             10 + i,
             &bed,
             args.bed_db,
+            model_windows,
         )?);
     }
-    // Cohort: [cond][model] -> embeddings of a 3.3 s clip per cohort speaker.
-    let bg = lines(BACKGROUND);
-    let mut cohort: Vec<Vec<Vec<Vec<f32>>>> = vec![vec![Vec::new(); models.len()]; 2];
-    for (i, sid) in COHORT_SIDS.iter().enumerate() {
-        let v = voice(
-            "en_US-libritts_r-medium",
-            "vits-piper-en_US-libritts_r-medium",
-            *sid,
-        );
-        let texts = [bg[(2 * i) % bg.len()], bg[(2 * i + 1) % bg.len()]];
-        let clean = synth.concat(&v, &texts)?;
-        let end = ((PRE_ROLL_MS + ENROLL_MS) * MS).min(clean.len());
-        for (ci, cond) in CONDS.iter().enumerate() {
-            let a = if cond.bed {
-                with_bed(&clean, &bed, (40 + i) * 5 * SR as usize, args.bed_db)
-            } else {
-                clean.clone()
-            };
-            for (m, emb) in models.iter_mut().enumerate() {
-                cohort[ci][m].push(emb.embed(&a[..end], None)?);
-            }
-        }
-    }
+    let cohort = piper_cohort(&mut synth, &mut models, &bed, args.bed_db)?;
 
     let mut cands = vec![Candidate {
         model: 0,
@@ -656,33 +791,13 @@ fn run() -> Result<(), String> {
     // Airport: fit the utterance start on today's gate, then score each candidate.
     let mut airport = Vec::new();
     for (ai, ap) in AIRPORT.iter().enumerate() {
-        let audio = read_wav(&args.airport[ai])?;
-        let enroll_clip = clip(&audio, 2000, 2000 + ENROLL_MS);
-        let refs: Vec<Vec<f32>> = models
-            .iter_mut()
-            .map(|m| m.embed(enroll_clip, None))
-            .collect::<Result<_, _>>()?;
-        let mut best = (f32::MAX, 0usize, Vec::new());
-        let mut u = ap.approx_u_ms - 1000;
-        while u <= ap.approx_u_ms + 1000 {
-            let mut rep = Vec::new();
-            for k in 1..=ap.logged.len() {
-                let s = u + (k - 1) * 1500;
-                let e = models[0].embed(clip(&audio, s - PRE_ROLL_MS, s + 1500), None)?;
-                rep.push(cosine(&refs[0], &e));
-            }
-            let sse: f32 = rep
-                .iter()
-                .zip(ap.logged)
-                .map(|(a, b)| (a - b) * (a - b))
-                .sum();
-            let rmse = (sse / rep.len() as f32).sqrt();
-            if rmse < best.0 {
-                best = (rmse, u, rep);
-            }
-            u += 50;
-        }
-        let (rmse, u_ms, reproduced) = best;
+        let AirportBase {
+            audio,
+            refs,
+            u_ms,
+            rmse,
+            reproduced,
+        } = fit_airport(&mut models, ap, &args.airport[ai])?;
         let mut scores = Vec::new();
         let mut logged_scores = Vec::new();
         for c in &cands {
@@ -734,11 +849,7 @@ fn run() -> Result<(), String> {
         let (tg, ti) = set_scores(&tune, c);
         let thr = match c.fixed {
             Some(t) => t,
-            None => {
-                let mut all: Vec<f32> = tg.iter().flatten().flatten().copied().collect();
-                all.sort_by(f32::total_cmp);
-                all[((target * all.len() as f64).floor() as usize).min(all.len() - 1)]
-            }
+            None => tuned_threshold(&tg, target),
         };
         let (gen, imp) = set_scores(&test, c);
         let count = |v: &[f32], acc: bool| {
@@ -920,5 +1031,689 @@ fn main() {
     if let Err(e) = run() {
         eprintln!("false_accept_bench: {e}");
         std::process::exit(1);
+    }
+}
+
+/// Chunk 1c (decision j): the same measurement on real speech. LibriSpeech (openslr SLR12,
+/// CC BY 4.0) `test-clean` speakers are the callers and others, half-split `dev-clean` speakers
+/// are the tune set and the impostor cohort (disjoint, sex-balanced). TitaNet-small only, 1.5 s
+/// and 2.0 s windows. The Piper test voices and the airport demo are re-scored as cross-checks,
+/// and the normalized candidates are also run with the Piper cohort to answer whether the
+/// cohort asset can be synthetic.
+mod librispeech {
+    use super::*;
+
+    /// Speech per speaker: enrollment from the first chapter (at least this long before the
+    /// 3000 ms clip is cut from its voiced onset), talk stream from the other chapters.
+    const ENROLL_SRC_S: usize = 5;
+    const STREAM_S: usize = 120;
+    /// `dev-clean` split per sex (it has 20 + 20 speakers): tune, then cohort.
+    const TUNE_PER_SEX: usize = 5;
+    const COHORT_PER_SEX: usize = 15;
+
+    struct Speaker {
+        id: String,
+        female: bool,
+        /// chapter -> utterance wav files, sorted
+        chapters: Vec<Vec<PathBuf>>,
+    }
+
+    impl Speaker {
+        fn label(&self) -> String {
+            format!("{} {}", self.id, if self.female { "F" } else { "M" })
+        }
+    }
+
+    fn sorted_dirs(dir: &Path) -> Result<Vec<PathBuf>, String> {
+        let mut out: Vec<PathBuf> = fs::read_dir(dir)
+            .map_err(|e| format!("read {}: {e}", dir.display()))?
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .collect();
+        out.sort_by_key(|p| {
+            let name = p
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            (name.parse::<u64>().unwrap_or(u64::MAX), name)
+        });
+        Ok(out)
+    }
+
+    fn speakers(root: &Path, subset: &str) -> Result<Vec<Speaker>, String> {
+        let sexes: HashMap<String, bool> = fs::read_to_string(root.join("SPEAKERS.TXT"))
+            .map_err(|e| format!("SPEAKERS.TXT: {e}"))?
+            .lines()
+            .filter(|l| !l.starts_with(';'))
+            .filter_map(|l| {
+                let mut f = l.split('|').map(str::trim);
+                Some((f.next()?.to_string(), f.next()? == "F"))
+            })
+            .collect();
+        let mut out = Vec::new();
+        for spk in sorted_dirs(&root.join(subset))? {
+            if !spk.is_dir() {
+                continue;
+            }
+            let id = spk
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let female = *sexes
+                .get(&id)
+                .ok_or(format!("speaker {id} not in SPEAKERS.TXT"))?;
+            let mut chapters = Vec::new();
+            for ch in sorted_dirs(&spk)? {
+                if !ch.is_dir() {
+                    continue;
+                }
+                let mut files: Vec<PathBuf> = fs::read_dir(&ch)
+                    .map_err(|e| e.to_string())?
+                    .filter_map(Result::ok)
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().is_some_and(|x| x == "wav"))
+                    .collect();
+                files.sort();
+                if !files.is_empty() {
+                    chapters.push(files);
+                }
+            }
+            if chapters.is_empty() {
+                return Err(format!("{subset}/{id}: no decoded wav files"));
+            }
+            out.push(Speaker {
+                id,
+                female,
+                chapters,
+            });
+        }
+        Ok(out)
+    }
+
+    /// (enrollment source, talk stream), each utterances joined with 200 ms gaps at -20 dBFS.
+    fn audio(sp: &Speaker) -> Result<(Vec<f32>, Vec<f32>), String> {
+        let gap = vec![0.0f32; GAP_MS * MS];
+        let mut enroll = Vec::new();
+        let mut used = 0;
+        for f in &sp.chapters[0] {
+            if enroll.len() >= ENROLL_SRC_S * SR as usize {
+                break;
+            }
+            enroll.extend(read_wav(f)?);
+            enroll.extend_from_slice(&gap);
+            used += 1;
+        }
+        let mut rest: Vec<&PathBuf> = sp.chapters[1..].iter().flatten().collect();
+        rest.extend(sp.chapters[0][used..].iter());
+        let mut stream = Vec::new();
+        for f in rest {
+            if stream.len() >= STREAM_S * SR as usize {
+                break;
+            }
+            stream.extend(read_wav(f)?);
+            stream.extend_from_slice(&gap);
+        }
+        Ok((
+            normalize_to(&enroll, MAIN_DB),
+            normalize_to(&stream, MAIN_DB),
+        ))
+    }
+
+    fn windows_15_20(_model: usize) -> &'static [usize] {
+        &[0, 1]
+    }
+
+    struct Cand {
+        window: usize,
+        norm: Norm,
+        fixed: Option<f32>,
+        piper_cohort: bool,
+    }
+
+    impl Cand {
+        fn name(&self) -> String {
+            format!(
+                "{}s {}{}{}",
+                WINDOWS_S[self.window],
+                self.norm.name(),
+                if self.fixed.is_some() { " @0.459" } else { "" },
+                if self.piper_cohort {
+                    " (Piper cohort)"
+                } else {
+                    ""
+                }
+            )
+        }
+    }
+
+    type Scores = (Vec<Vec<Vec<f32>>>, Vec<Vec<Vec<Vec<f32>>>>);
+
+    /// genuine[cond][caller], impostor[cond][caller][other] for TitaNet (model 0).
+    fn set_scores(set: &[[VoiceEmb; 2]], c: &Cand, cohort: &Cohort) -> Scores {
+        let mut gen = vec![vec![Vec::new(); set.len()]; 2];
+        let mut imp = vec![vec![vec![Vec::new(); set.len()]; set.len()]; 2];
+        for ci in 0..2 {
+            for (a, va) in set.iter().enumerate() {
+                let e = &va[ci].enroll[0];
+                for (b, vb) in set.iter().enumerate() {
+                    for w in &vb[ci].windows[0][c.window] {
+                        let s = score(c.norm, e, w, &cohort[ci][0]);
+                        if a == b {
+                            gen[ci][a].push(s);
+                        } else {
+                            imp[ci][a][b].push(s);
+                        }
+                    }
+                }
+            }
+        }
+        (gen, imp)
+    }
+
+    fn rate(v: &[f32], thr: f32, accept: bool) -> (usize, usize) {
+        let n = v
+            .iter()
+            .filter(|s| if accept { **s >= thr } else { **s < thr })
+            .count();
+        (n, v.len())
+    }
+
+    fn q(sorted: &[f64], p: f64) -> f64 {
+        if sorted.is_empty() {
+            return 0.0;
+        }
+        sorted[((sorted.len() - 1) as f64 * p).round() as usize]
+    }
+
+    fn fmt_list(s: &[f32]) -> String {
+        s.iter()
+            .map(|x| format!("{x:.3}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    pub(super) fn run(args: &Args, root: &Path) -> Result<(), String> {
+        let bed = resample_linear(&read_f32le(&args.bed)?, 48_000, SR);
+        let mut models = vec![Embedder::open(
+            &args.speaker_dir.join("nemo_en_titanet_small.onnx"),
+        )?];
+        let test_sp = speakers(root, "test-clean")?;
+        let dev = speakers(root, "dev-clean")?;
+        let mut tune_sp = Vec::new();
+        let mut cohort_sp = Vec::new();
+        for female in [true, false] {
+            let g: Vec<&Speaker> = dev.iter().filter(|s| s.female == female).collect();
+            if g.len() < TUNE_PER_SEX + COHORT_PER_SEX {
+                return Err(format!(
+                    "dev-clean has {} speakers of sex {}, need {}",
+                    g.len(),
+                    if female { "F" } else { "M" },
+                    TUNE_PER_SEX + COHORT_PER_SEX
+                ));
+            }
+            tune_sp.extend_from_slice(&g[..TUNE_PER_SEX]);
+            cohort_sp.extend_from_slice(&g[TUNE_PER_SEX..TUNE_PER_SEX + COHORT_PER_SEX]);
+        }
+
+        let mut test = Vec::new();
+        let mut stream_s = Vec::new();
+        for (i, sp) in test_sp.iter().enumerate() {
+            eprintln!("test speaker {}", sp.label());
+            let (e, s) = audio(sp)?;
+            stream_s.push(s.len() as f64 / f64::from(SR));
+            test.push(embed_audio(
+                &mut models,
+                &e,
+                &s,
+                i,
+                &bed,
+                args.bed_db,
+                windows_15_20,
+            )?);
+        }
+        let mut tune = Vec::new();
+        for (i, sp) in tune_sp.iter().enumerate() {
+            eprintln!("tune speaker {}", sp.label());
+            let (e, s) = audio(sp)?;
+            tune.push(embed_audio(
+                &mut models,
+                &e,
+                &s,
+                60 + i,
+                &bed,
+                args.bed_db,
+                windows_15_20,
+            )?);
+        }
+        let ls_clips = cohort_sp
+            .iter()
+            .map(|sp| audio(sp).map(|(e, _)| e))
+            .collect::<Result<Vec<_>, _>>()?;
+        let ls_cohort = cohort_from_clips(&mut models, &ls_clips, &bed, args.bed_db)?;
+        let mut synth = Synth {
+            root: args.voices_root.clone(),
+            cache: args.cache.clone(),
+            engines: HashMap::new(),
+        };
+        let p_cohort = piper_cohort(&mut synth, &mut models, &bed, args.bed_db)?;
+        let mut piper_voices = vec![AMY];
+        piper_voices.extend_from_slice(&TEST_VOICES);
+        let mut piper = Vec::new();
+        for (i, v) in piper_voices.iter().enumerate() {
+            eprintln!("piper voice {}", v.name);
+            piper.push(embed_voice(
+                &mut synth,
+                &mut models,
+                v,
+                i,
+                &bed,
+                args.bed_db,
+                windows_15_20,
+            )?);
+        }
+        let pname = |v: &Voice| {
+            let short = v
+                .name
+                .trim_start_matches("en_US-")
+                .trim_end_matches("-medium");
+            if v.bundle.contains("libritts") {
+                format!("{short} {}", v.sid)
+            } else {
+                short.to_string()
+            }
+        };
+        let mut airport = Vec::new();
+        for (ai, ap) in AIRPORT.iter().enumerate() {
+            airport.push(fit_airport(&mut models, ap, &args.airport[ai])?);
+        }
+
+        let mut cands = vec![
+            Cand {
+                window: 0,
+                norm: Norm::Raw,
+                fixed: Some(GATE_THRESHOLD),
+                piper_cohort: false,
+            },
+            Cand {
+                window: 1,
+                norm: Norm::Raw,
+                fixed: Some(GATE_THRESHOLD),
+                piper_cohort: false,
+            },
+        ];
+        for w in [0, 1] {
+            cands.push(Cand {
+                window: w,
+                norm: Norm::Raw,
+                fixed: None,
+                piper_cohort: false,
+            });
+        }
+        for w in [0, 1] {
+            for norm in [
+                Norm::Snorm,
+                Norm::Asnorm,
+                Norm::RawAndSnorm,
+                Norm::RawAndAsnorm,
+            ] {
+                cands.push(Cand {
+                    window: w,
+                    norm,
+                    fixed: None,
+                    piper_cohort: false,
+                });
+            }
+        }
+        for norm in [
+            Norm::Snorm,
+            Norm::Asnorm,
+            Norm::RawAndSnorm,
+            Norm::RawAndAsnorm,
+        ] {
+            cands.push(Cand {
+                window: 0,
+                norm,
+                fixed: None,
+                piper_cohort: true,
+            });
+        }
+
+        let today_tune = set_scores(&tune, &cands[0], &ls_cohort);
+        let tune_all: Vec<f32> = today_tune.0.iter().flatten().flatten().copied().collect();
+        let today_tune_frr = rate(&tune_all, GATE_THRESHOLD, false);
+        let target = (today_tune_frr.0 as f64 / today_tune_frr.1.max(1) as f64).max(0.01);
+        let n_test = test.len();
+        let n_pairs = n_test * (n_test - 1);
+        let win_counts = |wi: usize| {
+            let v: Vec<usize> = test.iter().map(|t| t[0].windows[0][wi].len()).collect();
+            (
+                v.iter().sum::<usize>() as f64 / v.len() as f64,
+                *v.iter().min().unwrap_or(&0),
+            )
+        };
+        let (w15, w15min) = win_counts(0);
+        let (w20, w20min) = win_counts(1);
+        let mut times0 = models[0].times.get(&0).cloned().unwrap_or_default();
+        let mut times1 = models[0].times.get(&1).cloned().unwrap_or_default();
+
+        let mut md = String::new();
+        md.push_str(&format!(
+            "Test: LibriSpeech `test-clean`, {} speakers ({} F / {} M), each caller and other. Tune: \
+             `dev-clean` {} speakers ({}). Cohort: `dev-clean` {} other speakers ({}), disjoint from \
+             tune and test. Per speaker: enrollment = 3000 ms from the voiced onset of the first \
+             chapter's utterances, talk stream = {STREAM_S} s from the other chapters (mean {:.0} s). \
+             Windows per speaker and condition: mean {w15:.0} (min {w15min}) at 1.5 s, {w20:.0} (min \
+             {w20min}) at 2.0 s; {n_pairs} (caller, other) pairs. Bed: Tocumen airport at {} dB \
+             (`bed`) or none (`clean`). Thresholds: `@0.459` fixed, else tune-matched: highest \
+             threshold with tune FRR <= {:.1} % (today's gate's tune FRR {}, floor 1 %). TitaNet \
+             embed p50 / p99: {:.1} / {:.1} ms (1.5 s), {:.1} / {:.1} ms (2.0 s).\n\n",
+            n_test,
+            test_sp.iter().filter(|s| s.female).count(),
+            test_sp.iter().filter(|s| !s.female).count(),
+            tune_sp.len(),
+            tune_sp.iter().map(|s| s.label()).collect::<Vec<_>>().join(", "),
+            cohort_sp.len(),
+            cohort_sp
+                .iter()
+                .map(|s| s.label())
+                .collect::<Vec<_>>()
+                .join(", "),
+            stream_s.iter().sum::<f64>() / stream_s.len() as f64,
+            args.bed_db,
+            target * 100.0,
+            pct(today_tune_frr.0, today_tune_frr.1),
+            percentile(&mut times0, 0.5),
+            percentile(&mut times0, 0.99),
+            percentile(&mut times1, 0.5),
+            percentile(&mut times1, 0.99),
+        ));
+
+        md.push_str("### Real speech: summary per candidate\n\nPer-pair FAR distribution over the pairs (bed); FRR distribution over the 40 callers.\n\n| candidate | threshold | test FAR bed / clean % | same-sex FAR bed % | pairs with FAR > 0, bed | pair FAR p50 / p90 / p99 / max bed % | pairs >= 5 % / >= 20 % bed | pair FAR max clean % | test FRR bed / clean % | caller FRR p90 / max bed % | callers FRR > 5 % bed / clean | tune FAR / FRR % | airport min margin reproduced / logged raw | airport pass | extra confirm delay s |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+        let mut worst_md = String::from("\n### Real speech: worst 10 pairs per candidate (caller ← other, bed / clean %)\n\n| candidate | worst pairs |\n|---|---|\n");
+        let mut piper_md = String::from("\n### Cross-check: Piper test voices scored with the real-speech thresholds and cohort\n\nSame windows as chunk 1b (bed / clean %).\n\n| candidate | threshold | Piper FAR bed / clean | amy-low ← libritts_r 120 | libritts_r 120 ← amy-low | libritts_r 300 ← lessac | lessac ← hfc_female | worst pair bed | FRR libritts_r 120 | FRR libritts_r 300 | max FRR other callers bed / clean |\n|---|---|---|---|---|---|---|---|---|---|---|\n");
+        let mut air_md = String::from("\n### Cross-check: airport demo caller windows\n\nReproduced offline (enrollment and window embeddings) and at the logged raw cosine (1.5 s only; cohort statistics from the reproduced embeddings). Cohort as in the candidate; bed condition cohort.\n\n| candidate | threshold | A w9, w10 reproduced | B w5, w6, w7 reproduced | A / B at logged raw | min margin reproduced / logged |\n|---|---|---|---|---|---|\n");
+
+        for c in &cands {
+            let cohort = if c.piper_cohort {
+                &p_cohort
+            } else {
+                &ls_cohort
+            };
+            let (tg, ti) = set_scores(&tune, c, cohort);
+            let thr = c.fixed.unwrap_or_else(|| tuned_threshold(&tg, target));
+            let (gen, imp) = set_scores(&test, c, cohort);
+            let mut far_tot = [(0usize, 0usize); 2];
+            let mut same_tot = (0usize, 0usize);
+            let mut pair_far: Vec<Vec<(f64, usize, usize)>> = vec![Vec::new(); 2];
+            for k in 0..2 {
+                for a in 0..n_test {
+                    for b in 0..n_test {
+                        if a == b {
+                            continue;
+                        }
+                        let (n, d) = rate(&imp[k][a][b], thr, true);
+                        far_tot[k].0 += n;
+                        far_tot[k].1 += d;
+                        if k == 0 && test_sp[a].female == test_sp[b].female {
+                            same_tot.0 += n;
+                            same_tot.1 += d;
+                        }
+                        pair_far[k].push((n as f64 / d.max(1) as f64, a, b));
+                    }
+                }
+            }
+            let mut bed_sorted: Vec<f64> = pair_far[0].iter().map(|p| p.0 * 100.0).collect();
+            bed_sorted.sort_by(f64::total_cmp);
+            let clean_max = pair_far[1].iter().map(|p| p.0 * 100.0).fold(0.0, f64::max);
+            let nz = bed_sorted.iter().filter(|x| **x > 0.0).count();
+            let ge5 = bed_sorted.iter().filter(|x| **x >= 5.0).count();
+            let ge20 = bed_sorted.iter().filter(|x| **x >= 20.0).count();
+            let mut frr_tot = [(0usize, 0usize); 2];
+            let mut caller_frr: Vec<Vec<f64>> = vec![Vec::new(); 2];
+            for k in 0..2 {
+                for g in &gen[k] {
+                    let (n, d) = rate(g, thr, false);
+                    frr_tot[k].0 += n;
+                    frr_tot[k].1 += d;
+                    caller_frr[k].push(100.0 * n as f64 / d.max(1) as f64);
+                }
+                caller_frr[k].sort_by(f64::total_cmp);
+            }
+            let over5 = |k: usize| caller_frr[k].iter().filter(|x| **x > 5.0).count();
+            let tune_far: Vec<f32> = ti.iter().flatten().flatten().flatten().copied().collect();
+            let tune_gen: Vec<f32> = tg.iter().flatten().flatten().copied().collect();
+            let (tfa, tfd) = rate(&tune_far, thr, true);
+            let (tra, trd) = rate(&tune_gen, thr, false);
+
+            // Airport.
+            let mut rep_scores = Vec::new();
+            let mut log_scores = Vec::new();
+            for (ai, ap) in AIRPORT.iter().enumerate() {
+                let base = &airport[ai];
+                let mut row = Vec::new();
+                let mut lrow = Vec::new();
+                for &k in ap.caller {
+                    let end = base.u_ms + k * 1500;
+                    let w = (WINDOWS_S[c.window] * 1000.0) as usize;
+                    let e = models[0].embed(clip(&base.audio, end - w - PRE_ROLL_MS, end), None)?;
+                    row.push(score(c.norm, &base.refs[0], &e, &cohort[0][0]));
+                    lrow.push(score_from_raw(
+                        c.norm,
+                        ap.logged[k - 1],
+                        &base.refs[0],
+                        &e,
+                        &cohort[0][0],
+                    ));
+                }
+                rep_scores.push(row);
+                log_scores.push(lrow);
+            }
+            let min_margin = |v: &[Vec<f32>]| {
+                v.iter()
+                    .flatten()
+                    .map(|s| s - thr)
+                    .fold(f32::INFINITY, f32::min)
+            };
+            let m_rep = min_margin(&rep_scores);
+            let has_logged = c.window == 0;
+            let m_log = min_margin(&log_scores);
+            let pass = m_rep >= 0.0 && (!has_logged || m_log >= 0.0);
+            let fmt_margin = |m: f32| {
+                if m <= REJECT / 2.0 {
+                    "REJECT".to_string()
+                } else {
+                    format!("{m:+.3}")
+                }
+            };
+            let log_margin_cell = if has_logged {
+                fmt_margin(m_log)
+            } else {
+                "-".into()
+            };
+            md.push_str(&format!(
+                "| {} | {:.3} | {} / {} | {} | {nz} / {n_pairs} | {:.1} / {:.1} / {:.1} / {:.1} | {ge5} / {ge20} | {:.1} | {} / {} | {:.1} / {:.1} | {} / {} | {} / {} | {} / {} | {} | {:.1} |\n",
+                c.name(),
+                thr,
+                pct(far_tot[0].0, far_tot[0].1),
+                pct(far_tot[1].0, far_tot[1].1),
+                pct(same_tot.0, same_tot.1),
+                q(&bed_sorted, 0.5),
+                q(&bed_sorted, 0.9),
+                q(&bed_sorted, 0.99),
+                q(&bed_sorted, 1.0),
+                clean_max,
+                pct(frr_tot[0].0, frr_tot[0].1),
+                pct(frr_tot[1].0, frr_tot[1].1),
+                q(&caller_frr[0], 0.9),
+                q(&caller_frr[0], 1.0),
+                over5(0),
+                over5(1),
+                pct(tfa, tfd),
+                pct(tra, trd),
+                fmt_margin(m_rep),
+                log_margin_cell,
+                if pass { "yes" } else { "**no**" },
+                WINDOWS_S[c.window] - 1.5
+            ));
+
+            let mut worst = pair_far[0].clone();
+            worst.sort_by(|x, y| y.0.total_cmp(&x.0));
+            let clean_of = |a: usize, b: usize| {
+                pair_far[1]
+                    .iter()
+                    .find(|p| p.1 == a && p.2 == b)
+                    .map_or(0.0, |p| p.0)
+            };
+            let cells: Vec<String> = worst
+                .iter()
+                .take(10)
+                .filter(|p| p.0 > 0.0)
+                .map(|p| {
+                    format!(
+                        "{} ← {} {:.1} / {:.1}",
+                        test_sp[p.1].label(),
+                        test_sp[p.2].label(),
+                        p.0 * 100.0,
+                        clean_of(p.1, p.2) * 100.0
+                    )
+                })
+                .collect();
+            worst_md.push_str(&format!(
+                "| {} | {} |\n",
+                c.name(),
+                if cells.is_empty() {
+                    "none".to_string()
+                } else {
+                    cells.join("; ")
+                }
+            ));
+
+            // Piper cross-check.
+            let (pg, pi) = set_scores(&piper, c, cohort);
+            let idx = |name: &str| piper_voices.iter().position(|v| pname(v) == name);
+            let pair_cell = |a: &str, b: &str| match (idx(a), idx(b)) {
+                (Some(a), Some(b)) => {
+                    let bed = rate(&pi[0][a][b], thr, true);
+                    let clean = rate(&pi[1][a][b], thr, true);
+                    format!("{} / {}", pct(bed.0, bed.1), pct(clean.0, clean.1))
+                }
+                _ => "-".into(),
+            };
+            let mut ptot = [(0usize, 0usize); 2];
+            let mut pworst = (0.0f64, String::new());
+            for k in 0..2 {
+                for a in 0..piper.len() {
+                    for b in 0..piper.len() {
+                        if a == b {
+                            continue;
+                        }
+                        let (n, d) = rate(&pi[k][a][b], thr, true);
+                        ptot[k].0 += n;
+                        ptot[k].1 += d;
+                        let f = n as f64 / d.max(1) as f64;
+                        if k == 0 && f > pworst.0 {
+                            pworst = (
+                                f,
+                                format!(
+                                    "{} ← {}",
+                                    pname(&piper_voices[a]),
+                                    pname(&piper_voices[b])
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+            let frr_cell = |name: &str| match idx(name) {
+                Some(a) => {
+                    let bed = rate(&pg[0][a], thr, false);
+                    let clean = rate(&pg[1][a], thr, false);
+                    format!("{} / {}", pct(bed.0, bed.1), pct(clean.0, clean.1))
+                }
+                None => "-".into(),
+            };
+            let mut other_max = [0.0f64; 2];
+            for (a, v) in piper_voices.iter().enumerate() {
+                if v.bundle.contains("libritts") {
+                    continue;
+                }
+                for (k, m) in other_max.iter_mut().enumerate() {
+                    let (n, d) = rate(&pg[k][a], thr, false);
+                    *m = m.max(100.0 * n as f64 / d.max(1) as f64);
+                }
+            }
+            piper_md.push_str(&format!(
+                "| {} | {:.3} | {} / {} | {} | {} | {} | {} | {:.1} ({}) | {} | {} | {:.1} / {:.1} |\n",
+                c.name(),
+                thr,
+                pct(ptot[0].0, ptot[0].1),
+                pct(ptot[1].0, ptot[1].1),
+                pair_cell("amy-low", "libritts_r 120"),
+                pair_cell("libritts_r 120", "amy-low"),
+                pair_cell("libritts_r 300", "lessac"),
+                pair_cell("lessac", "hfc_female"),
+                pworst.0 * 100.0,
+                pworst.1,
+                frr_cell("libritts_r 120"),
+                frr_cell("libritts_r 300"),
+                other_max[0],
+                other_max[1],
+            ));
+
+            air_md.push_str(&format!(
+                "| {} | {:.3} | {} | {} | {} | {} / {} |\n",
+                c.name(),
+                thr,
+                fmt_list(&rep_scores[0]),
+                fmt_list(&rep_scores[1]),
+                if has_logged {
+                    format!(
+                        "{} / {}",
+                        fmt_list(&log_scores[0]),
+                        fmt_list(&log_scores[1])
+                    )
+                } else {
+                    "-".into()
+                },
+                fmt_margin(m_rep),
+                log_margin_cell,
+            ));
+        }
+        md.push_str(&worst_md);
+        md.push_str(&piper_md);
+        md.push_str(&air_md);
+
+        // Cohort statistics: how close each set sits to each cohort (TitaNet 1.5 s, bed).
+        md.push_str("\n### Cohort statistics (TitaNet 1.5 s windows, bed / clean)\n\nMean over all windows of the set of the window-side cohort mean / std (`μt` / `σt`), full cohort.\n\n| set | real-speech cohort μt / σt | Piper cohort μt / σt |\n|---|---|---|\n");
+        let stats = |set: &[[VoiceEmb; 2]], cohort: &Cohort, ci: usize| {
+            let (mut sm, mut ss, mut n) = (0.0f32, 0.0f32, 0usize);
+            for v in set {
+                for w in &v[ci].windows[0][0] {
+                    let (m, sd) = cohort_stats(w, &cohort[ci][0], None);
+                    sm += m;
+                    ss += sd;
+                    n += 1;
+                }
+            }
+            let n = n.max(1) as f32;
+            format!("{:.3} / {:.3}", sm / n, ss / n)
+        };
+        for (label, set) in [
+            ("LibriSpeech test-clean", &test),
+            ("Piper test voices", &piper),
+        ] {
+            md.push_str(&format!(
+                "| {label} | {} ; {} | {} ; {} |\n",
+                stats(set, &ls_cohort, 0),
+                stats(set, &ls_cohort, 1),
+                stats(set, &p_cohort, 0),
+                stats(set, &p_cohort, 1),
+            ));
+        }
+        print!("{md}");
+        if let Some(out) = &args.out {
+            fs::write(out, &md).map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 }

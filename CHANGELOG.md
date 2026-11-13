@@ -8,8 +8,6 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.19.0] - Unreleased
-
 ### Changed
 
 - **speech, sdk:** behaviour change for projects that already set `speakerGate.splitOnSpeakerChange: true`. The option now splits in both directions. Before, someone else followed by the caller upgraded the whole utterance to `caller` and released the barge-in, so the other voice's words ended up in the caller's final. Now that change splits the utterance: the first part stays `other` (never barges in, ignored with `onMismatch: 'drop'`), the second part is `caller` and its barge-in fires on the confirming window. The cut goes back to the end of the longest quiet stretch before the caller's first word; when the voices run together, shorter sub-windows locate the change, bounded by `verifyTimeoutMs`. Other-to-caller confirms on one `caller` window, caller-to-other still on two. With the option off nothing changes.
@@ -18,7 +16,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **speech, sdk:** `speakerGate.adaptReference` (default `false`, only with `splitOnSpeakerChange`): the in-memory reference voice moves slowly toward confident caller windows of utterances that ended with no split and with every window `caller`. The update is small, is rejected when it would drift too far from the enrolled voice, and nothing is stored or emitted. It defaults to off because of the bench in `crates/vendor-sherpa-onnx/examples/ADAPT_REFERENCE_BENCH.md` (LibriSpeech test-clean, 40 speakers): it trades bystander accepts for a lower false-reject rate under drift. The false-reject rate under drift fell from 13.6 % to 2.2 %, but the false-accept rate rose on every set (0.014 % to 0.085 % clean, 0.057 % to 0.184 % with a bed, 1.5 % to 4.2 % on the bystander-near-threshold set). Also in the voice catalog (`VOICE_AGENT_SETTINGS`) and as `SPEAKER_GATE_ADAPT_REFERENCE` in the SDK.
+- **speech, sdk:** `speakerGate.adaptReference` (default `false`, only with `splitOnSpeakerChange`): the in-memory reference voice moves slowly toward confident caller windows of utterances that ended with no split and with every window `caller`. The update is small, is rejected when it would drift too far from the enrolled voice, and nothing is stored or emitted. It defaults to off because of the bench in `crates/vendor-sherpa-onnx/examples/ADAPT_REFERENCE_BENCH.md` (LibriSpeech test-clean, 40 speakers): it trades bystander accepts for a lower false-reject rate under drift. The false-reject rate under drift fell from 13.6 % to 2.2 %, but the false-accept rate rose on every set (0.014 % to 0.085 % clean, 0.057 % to 0.184 % with a bed, 1.5 % to 4.2 % with the 3 bystanders whose voices are closest to each caller). Also in the voice catalog (`VOICE_AGENT_SETTINGS`) and as `SPEAKER_GATE_ADAPT_REFERENCE` in the SDK.
 
 ### Fixed
 

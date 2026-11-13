@@ -401,19 +401,19 @@ When an other-to-caller split is skipped, the utterance falls back to the older 
 - `stt_unavailable`: no STT stream, STT disabled, or STT held.
 
 - The first part is re-decoded on its own STT stream and ends with a `user_speech_final` carrying `reason: 'speaker_split'` and its own label. The live text, which mixed both voices, is discarded.
-- The rest is a new utterance with a new `utteranceId`. The gate judges it from scratch, and a bystander's new utterance never barges in.
+- The rest is a new utterance with a new `utteranceId`. After a caller-to-other split the gate judges it from scratch, and a bystander's new utterance never barges in. After an other-to-caller split it inherits the confirming `caller` verdict as its first window (no second embedding), so its barge-in fires on that verdict.
 - A `user_utterance_split` event (`fromUtteranceId`, `toUtteranceId`, `splitAtMs`, `fromStartMs`, `from` and `to`, each `caller` or `other`, never equal) is emitted after the new utterance's `user_speaking_start`. The first part's final comes before any partial or final of the new one.
 - `splitAtMs` counts from the speech onset of the cut utterance (the VAD speech-start frame; the pre-roll before it is not counted). `fromStartMs` is that speech onset on the agent's inbound media clock, which `VoiceAgent.inboundMediaMs()` returns: ms of inbound audio processed since `attach`, concealed frames included. `fromStartMs + splitAtMs` is the split point on that clock. To place it on your input's timeline, read `inboundMediaMs()` when your input starts and subtract it.
 - Cost: every split opens one extra STT stream at the vendor. That is why the flag is off. It needs `recheckMaxWindows` other than `1`.
 - A different voice that sounds like the caller can pass the gate, and the split follows the gate's verdict: it cannot separate voice pairs the gate cannot separate.
 
+- If the re-decode does not finish in its bound, an `error` event with `reason: 'speaker_split_redecode_timeout'` is emitted for the first part. No split happens when the audio buffer overflowed or does not cover the utterance (logged and counted).
+
 #### Adaptive reference (`adaptReference`)
 
-Off by default, and only used with `splitOnSpeakerChange` (no effect while that is off). With `adaptReference: true` the reference voice moves slowly toward confident caller windows, so a caller whose channel drifts during a long call (EQ, codec, level) is rejected less often. A window counts only when it scores clearly above the threshold, and only an utterance that ended with no split and with every window `caller` contributes. Each update is small and is rejected if the reference would move too far from the enrolled voice. `resetSpeakerEnrollment()` clears both. Nothing is stored, logged or emitted beyond counts.
+Off by default, and only used with `splitOnSpeakerChange` (no effect while that is off). With `adaptReference: true` the reference voice moves slowly toward confident caller windows, so a caller whose channel drifts during a long call (EQ, codec, level) is rejected less often. A window counts only when it scores clearly above the threshold, and only an utterance that ended with no split and with every window `caller` contributes. Each update is small and is rejected if the reference would move too far from the enrolled voice. `resetSpeakerEnrollment()` clears both. Nothing is stored, logged or emitted beyond counts and the cosine to the enrolled voice.
 
-It is off because of what it costs. In the bench (LibriSpeech test-clean, 40 speakers) the false-reject rate under drift fell from 13.6 % to 2.2 %, but the false-accept rate rose on every set: 0.014 % to 0.085 % clean, 0.057 % to 0.184 % with a background bed, and 1.5 % to 4.2 % on a set of bystander windows near the threshold, where two bystander windows were committed into the reference. Turn it on when callers drift and a few more bystander accepts are acceptable.
-
-- If the re-decode does not finish in its bound, an `error` event with `reason: 'speaker_split_redecode_timeout'` is emitted for the first part. No split happens when the audio buffer overflowed or does not cover the utterance (logged and counted).
+It is off because of what it costs. In the bench (LibriSpeech test-clean, 40 speakers) the false-reject rate under drift fell from 13.6 % to 2.2 %, but the false-accept rate rose on every set: 0.014 % to 0.085 % clean, 0.057 % to 0.184 % with a background bed, and 1.5 % to 4.2 % with the 3 bystanders whose voices are closest to each caller, where bystander speech was committed into the reference twice. Turn it on when callers drift and a few more bystander accepts are acceptable.
 
 ### Re-check after other (`recheckOnOther`, `recheckMaxWindows`)
 

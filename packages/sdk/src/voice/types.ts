@@ -362,7 +362,7 @@ export interface VoiceAgentConfig {
      * drifts (EQ, codec, level) is rejected less often. Only an utterance that ended with no split
      * and with every window `caller` contributes; the update is small, and is rejected when it
      * would move the reference too far from the enrolled voice. Nothing is stored or emitted.
-     * Trade-off: in the project's bench the false-reject rate under drift fell (13.6% to 2.2%),
+     * Trade-off: in a LibriSpeech bench (40 speakers) the false-reject rate under drift fell (13.6% to 2.2%),
      * but bystander accepts rose on every set, which is why it is off by default.
      */
     adaptReference?: boolean

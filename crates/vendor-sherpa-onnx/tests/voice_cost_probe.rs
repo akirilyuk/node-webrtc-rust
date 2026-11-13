@@ -363,6 +363,7 @@ async fn run_stream(
             .await
             .expect("push_and_poll");
         push_finals(&mut finals, &out);
+        out.clear();
         max_lag = max_lag.max(Instant::now().saturating_duration_since(due));
         last_due = due;
     }

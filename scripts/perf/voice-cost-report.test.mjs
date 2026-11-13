@@ -115,3 +115,44 @@ test('markdown has a TTS row per voice and the STT capacity line', () => {
   assert.match(markdown, /\| 8 \| 900 \| 1000 \| no \|/)
   assert.match(markdown, /Capacity: 4 streams real-time\./)
 })
+
+function sttBatch(streams, batch, differing) {
+  return `perf_probe ${JSON.stringify({
+    name: 'stt_stream_capacity_probe',
+    params: {
+      model: 'zipformer-en',
+      streams,
+      stt_num_threads: 1,
+      ...(batch ? { batch } : {}),
+    },
+    metrics: {
+      stt_lag_ms_p95: 50,
+      stt_final_ms_p95: 150,
+      stt_realtime_ok: true,
+      stt_finals_differing: differing,
+      cpu_s_per_audio_s: 0.1,
+      rss_mb_peak: 300,
+    },
+  })}`
+}
+
+test('STT groups split by batch mode', () => {
+  const log = [
+    sttBatch(1, 'off', 0),
+    sttBatch(4, 'off', 0),
+    sttBatch(1, 'on', 0),
+    sttBatch(4, 'on', 3),
+  ].join('\n')
+  const report = buildReport(aggregateRuns(parseProbeLines(log)))
+  assert.equal(report.stt.length, 2)
+  assert.deepEqual(report.stt.map((group) => group.batch).sort(), ['off', 'on'])
+  const markdown = renderMarkdown(report)
+  assert.match(markdown, /threads, batch off\)/)
+  assert.match(markdown, /threads, batch on\)/)
+  assert.match(markdown, /\| 4 \| 50 \| 150 \| yes \| 3 \|/)
+  assert.match(markdown, /\| 1 \| 50 \| 150 \| yes \| 0 \|/)
+
+  const plain = buildReport(aggregateRuns(parseProbeLines(sttBatch(1, undefined, 0))))
+  assert.equal(plain.stt.length, 1)
+  assert.doesNotMatch(renderMarkdown(plain), /, batch /)
+})

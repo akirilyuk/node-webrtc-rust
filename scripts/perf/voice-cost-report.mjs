@@ -169,14 +169,14 @@ export function renderMarkdown(report) {
     lines.push(
       `### STT streams (${group.model}, ${group.threads} threads${group.batch ? `, batch ${group.batch}` : ''})`,
       '',
-      '| Streams | Lag p95 (ms) | Final p95 (ms) | Real-time ok |',
-      '| ---: | ---: | ---: | :---: |',
+      '| Streams | Lag p95 (ms) | Final p95 (ms) | Real-time ok | Finals differing |',
+      '| ---: | ---: | ---: | :---: | ---: |',
     )
     for (const point of group.points) {
       lines.push(
         `| ${point.streams} | ${fixed(point.lag_ms_p95, 0)} | ${fixed(point.final_ms_p95, 0)} | ${
           point.realtime_ok ? 'yes' : 'no'
-        } |`,
+        } | ${point.finals_differing ?? '–'} |`,
       )
     }
     lines.push(

@@ -1035,21 +1035,42 @@ fn main() {
 }
 
 /// Chunk 1c (decision j): the same measurement on real speech. LibriSpeech (openslr SLR12,
-/// CC BY 4.0) `test-clean` speakers are the callers and others, half-split `dev-clean` speakers
-/// are the tune set and the impostor cohort (disjoint, sex-balanced). TitaNet-small only, 1.5 s
-/// and 2.0 s windows. The Piper test voices and the airport demo are re-scored as cross-checks,
-/// and the normalized candidates are also run with the Piper cohort to answer whether the
-/// cohort asset can be synthetic.
+/// CC BY 4.0) `test-clean` speakers are the callers and others; `dev-clean` speakers are split
+/// per sex into the tune set and the impostor cohort (disjoint). TitaNet-small only, 1.5 s and
+/// 2.0 s windows. Two modes: `cross-session` (enrollment from the first chapter, windows from the
+/// other chapters) and `same-session` (enrollment = the first 3 s from the voiced onset of one
+/// chapter, windows = the rest of that chapter, as a call enrolls from its own audio). The Piper
+/// test voices and the airport demo are re-scored as cross-checks, the normalized candidates are
+/// also run with the Piper cohort (can the cohort asset be synthetic?), and the `raw AND …` rules
+/// are swept over thresholds above the tuned one.
 mod librispeech {
     use super::*;
 
-    /// Speech per speaker: enrollment from the first chapter (at least this long before the
-    /// 3000 ms clip is cut from its voiced onset), talk stream from the other chapters.
+    /// Cross-session: enrollment source length (the 3000 ms clip is cut from its voiced onset).
     const ENROLL_SRC_S: usize = 5;
     const STREAM_S: usize = 120;
     /// `dev-clean` split per sex (it has 20 + 20 speakers): tune, then cohort.
     const TUNE_PER_SEX: usize = 5;
     const COHORT_PER_SEX: usize = 15;
+    /// Tune-FRR steps above today's gate for the `raw AND …` sweep (percentage points).
+    const SWEEP_PT: [f64; 4] = [1.0, 2.0, 3.0, 5.0];
+    /// Margin the airport-limited sweep row keeps below the lowest logged-raw caller window.
+    const AIRPORT_MARGIN: f32 = 0.02;
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Mode {
+        CrossSession,
+        SameSession,
+    }
+
+    impl Mode {
+        fn name(self) -> &'static str {
+            match self {
+                Mode::CrossSession => "cross-session",
+                Mode::SameSession => "same-session",
+            }
+        }
+    }
 
     struct Speaker {
         id: String,
@@ -1062,6 +1083,12 @@ mod librispeech {
         fn label(&self) -> String {
             format!("{} {}", self.id, if self.female { "F" } else { "M" })
         }
+    }
+
+    /// Where a speaker's enrollment and windows come from.
+    struct Source {
+        enroll: String,
+        windows: String,
     }
 
     fn sorted_dirs(dir: &Path) -> Result<Vec<PathBuf>, String> {
@@ -1130,33 +1157,95 @@ mod librispeech {
         Ok(out)
     }
 
-    /// (enrollment source, talk stream), each utterances joined with 200 ms gaps at -20 dBFS.
-    fn audio(sp: &Speaker) -> Result<(Vec<f32>, Vec<f32>), String> {
-        let gap = vec![0.0f32; GAP_MS * MS];
-        let mut enroll = Vec::new();
-        let mut used = 0;
-        for f in &sp.chapters[0] {
-            if enroll.len() >= ENROLL_SRC_S * SR as usize {
+    fn stem(p: &Path) -> String {
+        p.file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+
+    fn chapter(p: &Path) -> String {
+        p.parent().map(stem).unwrap_or_default()
+    }
+
+    /// Utterances joined with 200 ms gaps until at least `max_s` seconds; (audio, files used).
+    fn join<'a>(
+        files: impl IntoIterator<Item = &'a PathBuf>,
+        max_s: usize,
+    ) -> Result<(Vec<f32>, Vec<&'a PathBuf>), String> {
+        let mut out = Vec::new();
+        let mut used = Vec::new();
+        for f in files {
+            if out.len() >= max_s * SR as usize {
                 break;
             }
-            enroll.extend(read_wav(f)?);
-            enroll.extend_from_slice(&gap);
-            used += 1;
+            out.extend(read_wav(f)?);
+            out.extend(std::iter::repeat_n(0.0f32, GAP_MS * MS));
+            used.push(f);
         }
-        let mut rest: Vec<&PathBuf> = sp.chapters[1..].iter().flatten().collect();
-        rest.extend(sp.chapters[0][used..].iter());
-        let mut stream = Vec::new();
-        for f in rest {
-            if stream.len() >= STREAM_S * SR as usize {
-                break;
+        Ok((out, used))
+    }
+
+    fn span(files: &[&PathBuf]) -> String {
+        match (files.first(), files.last()) {
+            (Some(a), Some(b)) => format!("{} .. {}", stem(a), stem(b)),
+            _ => "-".into(),
+        }
+    }
+
+    /// (clean enrollment source, clean talk stream, source), both at -20 dBFS.
+    fn audio(sp: &Speaker, mode: Mode) -> Result<(Vec<f32>, Vec<f32>, Source), String> {
+        match mode {
+            Mode::CrossSession => {
+                let (enroll, used) = join(&sp.chapters[0], ENROLL_SRC_S)?;
+                let rest: Vec<&PathBuf> = sp.chapters[1..]
+                    .iter()
+                    .flatten()
+                    .chain(sp.chapters[0][used.len()..].iter())
+                    .collect();
+                let (stream, sused) = join(rest, STREAM_S)?;
+                let mut chs: Vec<String> = sused.iter().map(|p| chapter(p)).collect();
+                chs.dedup();
+                Ok((
+                    normalize_to(&enroll, MAIN_DB),
+                    normalize_to(&stream, MAIN_DB),
+                    Source {
+                        enroll: format!("{} ({})", chapter(&sp.chapters[0][0]), span(&used)),
+                        windows: chs.join(", "),
+                    },
+                ))
             }
-            stream.extend(read_wav(f)?);
-            stream.extend_from_slice(&gap);
+            Mode::SameSession => {
+                // The chapter with the most audio is the "call".
+                let size = |ch: &Vec<PathBuf>| {
+                    ch.iter()
+                        .filter_map(|p| fs::metadata(p).ok())
+                        .map(|m| m.len())
+                        .sum::<u64>()
+                };
+                let ch = sp
+                    .chapters
+                    .iter()
+                    .max_by_key(|c| size(c))
+                    .ok_or("no chapter")?;
+                let (raw, used) = join(ch, ENROLL_SRC_S + STREAM_S)?;
+                let all = normalize_to(&raw, MAIN_DB);
+                let onset = all
+                    .chunks(20 * MS)
+                    .position(|f| voiced_share(f) > 0.0)
+                    .unwrap_or(0)
+                    * 20
+                    * MS;
+                let cut = (onset + ENROLL_MS * MS).min(all.len());
+                Ok((
+                    all[..cut].to_vec(),
+                    all[cut..].to_vec(),
+                    Source {
+                        enroll: format!("{} ({}, first 3 s)", chapter(&ch[0]), stem(&ch[0])),
+                        windows: format!("{} (rest, {} files)", chapter(&ch[0]), used.len()),
+                    },
+                ))
+            }
         }
-        Ok((
-            normalize_to(&enroll, MAIN_DB),
-            normalize_to(&stream, MAIN_DB),
-        ))
     }
 
     fn windows_15_20(_model: usize) -> &'static [usize] {
@@ -1186,18 +1275,63 @@ mod librispeech {
         }
     }
 
+    fn candidates() -> Vec<Cand> {
+        let mut cands = Vec::new();
+        for w in [0, 1] {
+            cands.push(Cand {
+                window: w,
+                norm: Norm::Raw,
+                fixed: Some(GATE_THRESHOLD),
+                piper_cohort: false,
+            });
+        }
+        for w in [0, 1] {
+            cands.push(Cand {
+                window: w,
+                norm: Norm::Raw,
+                fixed: None,
+                piper_cohort: false,
+            });
+        }
+        let norms = [
+            Norm::Snorm,
+            Norm::Asnorm,
+            Norm::RawAndSnorm,
+            Norm::RawAndAsnorm,
+        ];
+        for w in [0, 1] {
+            for norm in norms {
+                cands.push(Cand {
+                    window: w,
+                    norm,
+                    fixed: None,
+                    piper_cohort: false,
+                });
+            }
+        }
+        for norm in norms {
+            cands.push(Cand {
+                window: 0,
+                norm,
+                fixed: None,
+                piper_cohort: true,
+            });
+        }
+        cands
+    }
+
     type Scores = (Vec<Vec<Vec<f32>>>, Vec<Vec<Vec<Vec<f32>>>>);
 
     /// genuine[cond][caller], impostor[cond][caller][other] for TitaNet (model 0).
-    fn set_scores(set: &[[VoiceEmb; 2]], c: &Cand, cohort: &Cohort) -> Scores {
+    fn set_scores(set: &[[VoiceEmb; 2]], window: usize, norm: Norm, cohort: &Cohort) -> Scores {
         let mut gen = vec![vec![Vec::new(); set.len()]; 2];
         let mut imp = vec![vec![vec![Vec::new(); set.len()]; set.len()]; 2];
         for ci in 0..2 {
             for (a, va) in set.iter().enumerate() {
                 let e = &va[ci].enroll[0];
                 for (b, vb) in set.iter().enumerate() {
-                    for w in &vb[ci].windows[0][c.window] {
-                        let s = score(c.norm, e, w, &cohort[ci][0]);
+                    for w in &vb[ci].windows[0][window] {
+                        let s = score(norm, e, w, &cohort[ci][0]);
                         if a == b {
                             gen[ci][a].push(s);
                         } else {
@@ -1232,6 +1366,541 @@ mod librispeech {
             .join(", ")
     }
 
+    fn fmt_margin(m: f32) -> String {
+        if m <= REJECT / 2.0 {
+            "REJECT".to_string()
+        } else {
+            format!("{m:+.3}")
+        }
+    }
+
+    /// One threshold on the test set: pooled rates, per-pair FAR and per-caller FRR.
+    struct Eval {
+        far: [(usize, usize); 2],
+        same_sex: (usize, usize),
+        /// [cond] -> (FAR, caller, other), same pair order in both conditions
+        pairs: [Vec<(f64, usize, usize)>; 2],
+        frr: [(usize, usize); 2],
+        /// [cond] -> FRR % per caller
+        caller_frr: [Vec<f64>; 2],
+    }
+
+    impl Eval {
+        fn new(
+            gen: &[Vec<Vec<f32>>],
+            imp: &[Vec<Vec<Vec<f32>>>],
+            thr: f32,
+            sp: &[Speaker],
+        ) -> Self {
+            let n = sp.len();
+            let mut e = Eval {
+                far: [(0, 0); 2],
+                same_sex: (0, 0),
+                pairs: [Vec::new(), Vec::new()],
+                frr: [(0, 0); 2],
+                caller_frr: [Vec::new(), Vec::new()],
+            };
+            for k in 0..2 {
+                for a in 0..n {
+                    for b in 0..n {
+                        if a == b {
+                            continue;
+                        }
+                        let (x, d) = rate(&imp[k][a][b], thr, true);
+                        e.far[k].0 += x;
+                        e.far[k].1 += d;
+                        if k == 0 && sp[a].female == sp[b].female {
+                            e.same_sex.0 += x;
+                            e.same_sex.1 += d;
+                        }
+                        e.pairs[k].push((x as f64 / d.max(1) as f64, a, b));
+                    }
+                    let (x, d) = rate(&gen[k][a], thr, false);
+                    e.frr[k].0 += x;
+                    e.frr[k].1 += d;
+                    e.caller_frr[k].push(100.0 * x as f64 / d.max(1) as f64);
+                }
+            }
+            e
+        }
+
+        fn bed_sorted(&self) -> Vec<f64> {
+            let mut v: Vec<f64> = self.pairs[0].iter().map(|p| p.0 * 100.0).collect();
+            v.sort_by(f64::total_cmp);
+            v
+        }
+
+        fn pairs_ge(&self, p: f64) -> usize {
+            self.pairs[0].iter().filter(|x| x.0 * 100.0 >= p).count()
+        }
+
+        /// The `n` worst pairs (bed) as "caller ← other bed / clean".
+        fn worst(&self, n: usize, sp: &[Speaker]) -> Vec<String> {
+            let mut idx: Vec<usize> = (0..self.pairs[0].len()).collect();
+            idx.sort_by(|x, y| self.pairs[0][*y].0.total_cmp(&self.pairs[0][*x].0));
+            idx.into_iter()
+                .take(n)
+                .filter(|i| self.pairs[0][*i].0 > 0.0)
+                .map(|i| {
+                    let (f, a, b) = self.pairs[0][i];
+                    format!(
+                        "{} ← {} {:.1} / {:.1}",
+                        sp[a].label(),
+                        sp[b].label(),
+                        f * 100.0,
+                        self.pairs[1][i].0 * 100.0
+                    )
+                })
+                .collect()
+        }
+
+        fn sorted_frr(&self, k: usize) -> Vec<f64> {
+            let mut v = self.caller_frr[k].clone();
+            v.sort_by(f64::total_cmp);
+            v
+        }
+    }
+
+    /// Airport caller windows scored by one rule: reproduced and at the logged raw cosine.
+    struct AirScores {
+        rep: Vec<Vec<f32>>,
+        logged: Vec<Vec<f32>>,
+        has_logged: bool,
+    }
+
+    impl AirScores {
+        fn new(
+            models: &mut [Embedder],
+            airport: &[AirportBase],
+            window: usize,
+            norm: Norm,
+            cohort: &Cohort,
+        ) -> Result<Self, String> {
+            let mut rep = Vec::new();
+            let mut logged = Vec::new();
+            for (ap, base) in AIRPORT.iter().zip(airport) {
+                let mut row = Vec::new();
+                let mut lrow = Vec::new();
+                for &k in ap.caller {
+                    let end = base.u_ms + k * 1500;
+                    let w = (WINDOWS_S[window] * 1000.0) as usize;
+                    let e = models[0].embed(clip(&base.audio, end - w - PRE_ROLL_MS, end), None)?;
+                    row.push(score(norm, &base.refs[0], &e, &cohort[0][0]));
+                    lrow.push(score_from_raw(
+                        norm,
+                        ap.logged[k - 1],
+                        &base.refs[0],
+                        &e,
+                        &cohort[0][0],
+                    ));
+                }
+                rep.push(row);
+                logged.push(lrow);
+            }
+            Ok(Self {
+                rep,
+                logged,
+                has_logged: window == 0,
+            })
+        }
+
+        fn margin(v: &[Vec<f32>], thr: f32) -> f32 {
+            v.iter()
+                .flatten()
+                .map(|s| s - thr)
+                .fold(f32::INFINITY, f32::min)
+        }
+
+        fn pass(&self, thr: f32) -> bool {
+            Self::margin(&self.rep, thr) >= 0.0
+                && (!self.has_logged || Self::margin(&self.logged, thr) >= 0.0)
+        }
+
+        fn margins(&self, thr: f32) -> String {
+            format!(
+                "{} / {}",
+                fmt_margin(Self::margin(&self.rep, thr)),
+                if self.has_logged {
+                    fmt_margin(Self::margin(&self.logged, thr))
+                } else {
+                    "-".into()
+                }
+            )
+        }
+
+        fn min_logged(&self) -> f32 {
+            self.logged
+                .iter()
+                .flatten()
+                .copied()
+                .fold(f32::INFINITY, f32::min)
+        }
+    }
+
+    /// Everything both modes share.
+    struct Shared {
+        ls_cohort: Cohort,
+        p_cohort: Cohort,
+        piper: Vec<[VoiceEmb; 2]>,
+        piper_voices: Vec<Voice>,
+        airport: Vec<AirportBase>,
+    }
+
+    fn pname(v: &Voice) -> String {
+        let short = v
+            .name
+            .trim_start_matches("en_US-")
+            .trim_end_matches("-medium");
+        if v.bundle.contains("libritts") {
+            format!("{short} {}", v.sid)
+        } else {
+            short.to_string()
+        }
+    }
+
+    /// Smallest threshold above `x` (so `x` itself is rejected).
+    fn above(x: f32) -> f32 {
+        x + x.abs() * 1e-6 + 1e-6
+    }
+
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+    fn report(
+        mode: Mode,
+        models: &mut [Embedder],
+        sh: &Shared,
+        test: &[[VoiceEmb; 2]],
+        tune: &[[VoiceEmb; 2]],
+        test_sp: &[Speaker],
+        src: &[Source],
+        stream_s: f64,
+    ) -> Result<String, String> {
+        let m = mode.name();
+        let today_tune = set_scores(tune, 0, Norm::Raw, &sh.ls_cohort);
+        let tune_all: Vec<f32> = today_tune.0.iter().flatten().flatten().copied().collect();
+        let today_tune_frr = rate(&tune_all, GATE_THRESHOLD, false);
+        let target = (today_tune_frr.0 as f64 / today_tune_frr.1.max(1) as f64).max(0.01);
+        let n_test = test.len();
+        let n_pairs = n_test * (n_test - 1);
+        let win_counts = |wi: usize| {
+            let v: Vec<usize> = test.iter().map(|t| t[0].windows[0][wi].len()).collect();
+            (
+                v.iter().sum::<usize>() as f64 / v.len() as f64,
+                *v.iter().min().unwrap_or(&0),
+            )
+        };
+        let (w15, w15min) = win_counts(0);
+        let (w20, w20min) = win_counts(1);
+        let mut md = format!(
+            "\n### Mode: {m}\n\n{}Talk stream mean {stream_s:.0} s per speaker. Windows per speaker \
+             and condition: mean {w15:.0} (min {w15min}) at 1.5 s, {w20:.0} (min {w20min}) at 2.0 s; \
+             {n_pairs} pairs. **Tune FRR target ({m}): {:.1} %** (today's gate's tune FRR {} %, \
+             floor 1 %).\n\n",
+            match mode {
+                Mode::CrossSession => {
+                    "Enrollment: 3000 ms from the voiced onset of the first chapter's utterances; \
+                     windows from the other chapters. "
+                }
+                Mode::SameSession => {
+                    "Enrollment: the first 3000 ms from the voiced onset of the speaker's longest \
+                     chapter; windows: the rest of that chapter after the enrollment span (no \
+                     overlap). "
+                }
+            },
+            target * 100.0,
+            pct(today_tune_frr.0, today_tune_frr.1),
+        );
+
+        md.push_str(&format!("#### Real speech ({m}): summary per candidate\n\nPer-pair FAR distribution over the pairs (bed); FRR distribution over the 40 callers.\n\n| candidate | threshold | test FAR bed / clean % | same-sex FAR bed % | pairs with FAR > 0, bed | pair FAR p50 / p90 / p99 / max bed % | pairs >= 5 % / >= 20 % bed | pair FAR max clean % | test FRR bed / clean % | caller FRR p90 / max bed % | callers FRR > 5 % bed / clean | tune FAR / FRR % | airport min margin reproduced / logged raw | airport pass | extra confirm delay s |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"));
+        let mut worst_md = format!("\n#### Real speech ({m}): worst 10 pairs per candidate (caller ← other, bed / clean %)\n\n| candidate | worst pairs |\n|---|---|\n");
+        let mut piper_md = String::from("\n#### Cross-check: Piper test voices scored with the real-speech thresholds and cohort (cross-session tune)\n\nSame windows as chunk 1b (bed / clean %).\n\n| candidate | threshold | Piper FAR bed / clean | amy-low ← libritts_r 120 | libritts_r 120 ← amy-low | libritts_r 300 ← lessac | lessac ← hfc_female | worst pair bed | FRR libritts_r 120 | FRR libritts_r 300 | max FRR other callers bed / clean |\n|---|---|---|---|---|---|---|---|---|---|---|\n");
+        let mut air_md = String::from("\n#### Cross-check: airport demo caller windows (cross-session tune)\n\nReproduced offline (enrollment and window embeddings) and at the logged raw cosine (1.5 s only; cohort statistics from the reproduced embeddings). Cohort as in the candidate; bed condition cohort.\n\n| candidate | threshold | A w9, w10 reproduced | B w5, w6, w7 reproduced | A / B at logged raw | min margin reproduced / logged |\n|---|---|---|---|---|---|\n");
+
+        for c in &candidates() {
+            let cohort = if c.piper_cohort {
+                &sh.p_cohort
+            } else {
+                &sh.ls_cohort
+            };
+            let (tg, ti) = set_scores(tune, c.window, c.norm, cohort);
+            let thr = c.fixed.unwrap_or_else(|| tuned_threshold(&tg, target));
+            let (gen, imp) = set_scores(test, c.window, c.norm, cohort);
+            let ev = Eval::new(&gen, &imp, thr, test_sp);
+            let bed_sorted = ev.bed_sorted();
+            let clean_max = ev.pairs[1].iter().map(|p| p.0 * 100.0).fold(0.0, f64::max);
+            let nz = bed_sorted.iter().filter(|x| **x > 0.0).count();
+            let over5 = |k: usize| ev.caller_frr[k].iter().filter(|x| **x > 5.0).count();
+            let frr_bed = ev.sorted_frr(0);
+            let tune_far: Vec<f32> = ti.iter().flatten().flatten().flatten().copied().collect();
+            let tune_gen: Vec<f32> = tg.iter().flatten().flatten().copied().collect();
+            let (tfa, tfd) = rate(&tune_far, thr, true);
+            let (tra, trd) = rate(&tune_gen, thr, false);
+            let air = AirScores::new(models, &sh.airport, c.window, c.norm, cohort)?;
+            md.push_str(&format!(
+                "| {} | {:.3} | {} / {} | {} | {nz} / {n_pairs} | {:.1} / {:.1} / {:.1} / {:.1} | {} / {} | {:.1} | {} / {} | {:.1} / {:.1} | {} / {} | {} / {} | {} | {} | {:.1} |\n",
+                c.name(),
+                thr,
+                pct(ev.far[0].0, ev.far[0].1),
+                pct(ev.far[1].0, ev.far[1].1),
+                pct(ev.same_sex.0, ev.same_sex.1),
+                q(&bed_sorted, 0.5),
+                q(&bed_sorted, 0.9),
+                q(&bed_sorted, 0.99),
+                q(&bed_sorted, 1.0),
+                ev.pairs_ge(5.0),
+                ev.pairs_ge(20.0),
+                clean_max,
+                pct(ev.frr[0].0, ev.frr[0].1),
+                pct(ev.frr[1].0, ev.frr[1].1),
+                q(&frr_bed, 0.9),
+                q(&frr_bed, 1.0),
+                over5(0),
+                over5(1),
+                pct(tfa, tfd),
+                pct(tra, trd),
+                air.margins(thr),
+                if air.pass(thr) { "yes" } else { "**no**" },
+                WINDOWS_S[c.window] - 1.5
+            ));
+            if mode != Mode::CrossSession {
+                continue;
+            }
+            let cells = ev.worst(10, test_sp);
+            worst_md.push_str(&format!(
+                "| {} | {} |\n",
+                c.name(),
+                if cells.is_empty() {
+                    "none".to_string()
+                } else {
+                    cells.join("; ")
+                }
+            ));
+
+            // Piper cross-check.
+            let (pg, pi) = set_scores(&sh.piper, c.window, c.norm, cohort);
+            let idx = |name: &str| sh.piper_voices.iter().position(|v| pname(v) == name);
+            let pair_cell = |a: &str, b: &str| match (idx(a), idx(b)) {
+                (Some(a), Some(b)) => {
+                    let bed = rate(&pi[0][a][b], thr, true);
+                    let clean = rate(&pi[1][a][b], thr, true);
+                    format!("{} / {}", pct(bed.0, bed.1), pct(clean.0, clean.1))
+                }
+                _ => "-".into(),
+            };
+            let mut ptot = [(0usize, 0usize); 2];
+            let mut pworst = (0.0f64, String::new());
+            for k in 0..2 {
+                for (a, row) in pi[k].iter().enumerate() {
+                    for (b, v) in row.iter().enumerate() {
+                        if a == b {
+                            continue;
+                        }
+                        let (n, d) = rate(v, thr, true);
+                        ptot[k].0 += n;
+                        ptot[k].1 += d;
+                        let f = n as f64 / d.max(1) as f64;
+                        if k == 0 && f > pworst.0 {
+                            pworst = (
+                                f,
+                                format!(
+                                    "{} ← {}",
+                                    pname(&sh.piper_voices[a]),
+                                    pname(&sh.piper_voices[b])
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+            let frr_cell = |name: &str| match idx(name) {
+                Some(a) => {
+                    let bed = rate(&pg[0][a], thr, false);
+                    let clean = rate(&pg[1][a], thr, false);
+                    format!("{} / {}", pct(bed.0, bed.1), pct(clean.0, clean.1))
+                }
+                None => "-".into(),
+            };
+            let mut other_max = [0.0f64; 2];
+            for (a, v) in sh.piper_voices.iter().enumerate() {
+                if v.bundle.contains("libritts") {
+                    continue;
+                }
+                for (k, mx) in other_max.iter_mut().enumerate() {
+                    let (n, d) = rate(&pg[k][a], thr, false);
+                    *mx = mx.max(100.0 * n as f64 / d.max(1) as f64);
+                }
+            }
+            piper_md.push_str(&format!(
+                "| {} | {:.3} | {} / {} | {} | {} | {} | {} | {:.1} ({}) | {} | {} | {:.1} / {:.1} |\n",
+                c.name(),
+                thr,
+                pct(ptot[0].0, ptot[0].1),
+                pct(ptot[1].0, ptot[1].1),
+                pair_cell("amy-low", "libritts_r 120"),
+                pair_cell("libritts_r 120", "amy-low"),
+                pair_cell("libritts_r 300", "lessac"),
+                pair_cell("lessac", "hfc_female"),
+                pworst.0 * 100.0,
+                pworst.1,
+                frr_cell("libritts_r 120"),
+                frr_cell("libritts_r 300"),
+                other_max[0],
+                other_max[1],
+            ));
+            air_md.push_str(&format!(
+                "| {} | {:.3} | {} | {} | {} | {} |\n",
+                c.name(),
+                thr,
+                fmt_list(&air.rep[0]),
+                fmt_list(&air.rep[1]),
+                if air.has_logged {
+                    format!(
+                        "{} / {}",
+                        fmt_list(&air.logged[0]),
+                        fmt_list(&air.logged[1])
+                    )
+                } else {
+                    "-".into()
+                },
+                air.margins(thr),
+            ));
+        }
+        if mode == Mode::CrossSession {
+            md.push_str(&worst_md);
+            md.push_str(&piper_md);
+            md.push_str(&air_md);
+        }
+
+        // Today's gate on the test set, the reference for the sweep and the equal-FAR rows.
+        let (tgen, timp) = set_scores(test, 0, Norm::Raw, &sh.ls_cohort);
+        let tev = Eval::new(&tgen, &timp, GATE_THRESHOLD, test_sp);
+        let tair = AirScores::new(models, &sh.airport, 0, Norm::Raw, &sh.ls_cohort)?;
+        let row = |rule: &str,
+                   label: &str,
+                   thr: f32,
+                   tune_frr: String,
+                   ev: &Eval,
+                   air: &AirScores| {
+            format!(
+                "| {rule} | {label} | {thr:.3} | {tune_frr} | {} / {} | {} / {} | {} | {} / {} | {} |\n",
+                pct(ev.far[0].0, ev.far[0].1),
+                pct(ev.far[1].0, ev.far[1].1),
+                ev.pairs_ge(5.0),
+                ev.pairs_ge(20.0),
+                ev.worst(1, test_sp).first().cloned().unwrap_or("none".into()),
+                pct(ev.frr[0].0, ev.frr[0].1),
+                pct(ev.frr[1].0, ev.frr[1].1),
+                air.margins(thr),
+            )
+        };
+        md.push_str(&format!("\n#### Real speech ({m}): AND threshold sweep (1.5 s, real cohort)\n\nThe tuned row uses the tune FRR target above; with that target the normalized part cannot reject a genuine window the raw part accepts, so it equals today's gate by construction. The `+N pt` rows allow N points more tune FRR; the airport row is the highest threshold that keeps every airport caller window {AIRPORT_MARGIN} above it at the logged raw scores.\n\n| rule | row | threshold | tune FRR % | test FAR bed / clean % | pairs >= 5 % / >= 20 % bed | worst pair bed / clean % | test FRR bed / clean % | airport margin reproduced / logged raw |\n|---|---|---|---|---|---|---|---|---|\n"));
+        md.push_str(&row(
+            "raw (today)",
+            "@0.459",
+            GATE_THRESHOLD,
+            pct(today_tune_frr.0, today_tune_frr.1),
+            &tev,
+            &tair,
+        ));
+        for norm in [Norm::RawAndAsnorm, Norm::RawAndSnorm] {
+            let (tg, _) = set_scores(tune, 0, norm, &sh.ls_cohort);
+            let tune_gen: Vec<f32> = tg.iter().flatten().flatten().copied().collect();
+            let (gen, imp) = set_scores(test, 0, norm, &sh.ls_cohort);
+            let air = AirScores::new(models, &sh.airport, 0, norm, &sh.ls_cohort)?;
+            let mut rows = vec![(
+                "tuned (today's tune FRR)".to_string(),
+                tuned_threshold(&tg, target),
+            )];
+            for pt in SWEEP_PT {
+                rows.push((
+                    format!("tune FRR +{pt:.0} pt"),
+                    tuned_threshold(&tg, target + pt / 100.0),
+                ));
+            }
+            rows.push((
+                format!("airport limit (logged min - {AIRPORT_MARGIN})"),
+                air.min_logged() - AIRPORT_MARGIN,
+            ));
+            for (label, thr) in rows {
+                let ev = Eval::new(&gen, &imp, thr, test_sp);
+                let (tr, td) = rate(&tune_gen, thr, false);
+                md.push_str(&row(norm.name(), &label, thr, pct(tr, td), &ev, &air));
+            }
+        }
+
+        md.push_str(&format!("\n#### Real speech ({m}): normalized scores alone at today's FAR (1.5 s, real cohort)\n\nThreshold set so the pooled test FAR (bed) is at most today's gate's ({} %).\n\n| rule | row | threshold | tune FRR % | test FAR bed / clean % | pairs >= 5 % / >= 20 % bed | worst pair bed / clean % | test FRR bed / clean % | airport margin reproduced / logged raw |\n|---|---|---|---|---|---|---|---|---|\n", pct(tev.far[0].0, tev.far[0].1)));
+        for norm in [Norm::Snorm, Norm::Asnorm] {
+            let (tg, _) = set_scores(tune, 0, norm, &sh.ls_cohort);
+            let tune_gen: Vec<f32> = tg.iter().flatten().flatten().copied().collect();
+            let (gen, imp) = set_scores(test, 0, norm, &sh.ls_cohort);
+            let mut bed_imp: Vec<f32> = imp[0].iter().flatten().flatten().copied().collect();
+            bed_imp.sort_by(|a, b| b.total_cmp(a));
+            let n0 = tev.far[0].0;
+            let thr = bed_imp.get(n0).map_or(f32::MIN, |x| above(*x));
+            let ev = Eval::new(&gen, &imp, thr, test_sp);
+            let air = AirScores::new(models, &sh.airport, 0, norm, &sh.ls_cohort)?;
+            let (tr, td) = rate(&tune_gen, thr, false);
+            md.push_str(&row(norm.name(), "equal FAR", thr, pct(tr, td), &ev, &air));
+        }
+
+        md.push_str(&format!("\n#### Real speech ({m}): callers with FRR > 5 % (today's gate, bed or clean)\n\n| caller | enrollment (chapter, files) | window chapters | windows bed | FRR bed / clean % | genuine raw p10 / p50 bed | genuine raw p10 / p50 clean |\n|---|---|---|---|---|---|---|\n"));
+        let mut any = false;
+        for (a, sp) in test_sp.iter().enumerate() {
+            if tev.caller_frr[0][a] <= 5.0 && tev.caller_frr[1][a] <= 5.0 {
+                continue;
+            }
+            any = true;
+            let pq = |k: usize| {
+                let mut v: Vec<f64> = tgen[k][a].iter().map(|x| f64::from(*x)).collect();
+                v.sort_by(f64::total_cmp);
+                format!("{:.3} / {:.3}", q(&v, 0.1), q(&v, 0.5))
+            };
+            md.push_str(&format!(
+                "| {} | {} | {} | {} | {:.1} / {:.1} | {} | {} |\n",
+                sp.label(),
+                src[a].enroll,
+                src[a].windows,
+                tgen[0][a].len(),
+                tev.caller_frr[0][a],
+                tev.caller_frr[1][a],
+                pq(0),
+                pq(1),
+            ));
+        }
+        if !any {
+            md.push_str("| none | | | | | | |\n");
+        }
+
+        if mode == Mode::CrossSession {
+            md.push_str("\n#### Cohort statistics (TitaNet 1.5 s windows, bed ; clean)\n\nMean over all windows of the set of the window-side cohort mean / std (`μt` / `σt`), full cohort.\n\n| set | real-speech cohort μt / σt | Piper cohort μt / σt |\n|---|---|---|\n");
+            let stats = |set: &[[VoiceEmb; 2]], cohort: &Cohort, ci: usize| {
+                let (mut sm, mut ss, mut n) = (0.0f32, 0.0f32, 0usize);
+                for v in set {
+                    for w in &v[ci].windows[0][0] {
+                        let (mm, sd) = cohort_stats(w, &cohort[ci][0], None);
+                        sm += mm;
+                        ss += sd;
+                        n += 1;
+                    }
+                }
+                let n = n.max(1) as f32;
+                format!("{:.3} / {:.3}", sm / n, ss / n)
+            };
+            for (label, set) in [
+                ("LibriSpeech test-clean", test),
+                ("Piper test voices", sh.piper.as_slice()),
+            ] {
+                md.push_str(&format!(
+                    "| {label} | {} ; {} | {} ; {} |\n",
+                    stats(set, &sh.ls_cohort, 0),
+                    stats(set, &sh.ls_cohort, 1),
+                    stats(set, &sh.p_cohort, 0),
+                    stats(set, &sh.p_cohort, 1),
+                ));
+            }
+        }
+        Ok(md)
+    }
+
     pub(super) fn run(args: &Args, root: &Path) -> Result<(), String> {
         let bed = resample_linear(&read_f32le(&args.bed)?, 48_000, SR);
         let mut models = vec![Embedder::open(
@@ -1255,39 +1924,9 @@ mod librispeech {
             cohort_sp.extend_from_slice(&g[TUNE_PER_SEX..TUNE_PER_SEX + COHORT_PER_SEX]);
         }
 
-        let mut test = Vec::new();
-        let mut stream_s = Vec::new();
-        for (i, sp) in test_sp.iter().enumerate() {
-            eprintln!("test speaker {}", sp.label());
-            let (e, s) = audio(sp)?;
-            stream_s.push(s.len() as f64 / f64::from(SR));
-            test.push(embed_audio(
-                &mut models,
-                &e,
-                &s,
-                i,
-                &bed,
-                args.bed_db,
-                windows_15_20,
-            )?);
-        }
-        let mut tune = Vec::new();
-        for (i, sp) in tune_sp.iter().enumerate() {
-            eprintln!("tune speaker {}", sp.label());
-            let (e, s) = audio(sp)?;
-            tune.push(embed_audio(
-                &mut models,
-                &e,
-                &s,
-                60 + i,
-                &bed,
-                args.bed_db,
-                windows_15_20,
-            )?);
-        }
         let ls_clips = cohort_sp
             .iter()
-            .map(|sp| audio(sp).map(|(e, _)| e))
+            .map(|sp| audio(sp, Mode::CrossSession).map(|(e, _, _)| e))
             .collect::<Result<Vec<_>, _>>()?;
         let ls_cohort = cohort_from_clips(&mut models, &ls_clips, &bed, args.bed_db)?;
         let mut synth = Synth {
@@ -1311,103 +1950,26 @@ mod librispeech {
                 windows_15_20,
             )?);
         }
-        let pname = |v: &Voice| {
-            let short = v
-                .name
-                .trim_start_matches("en_US-")
-                .trim_end_matches("-medium");
-            if v.bundle.contains("libritts") {
-                format!("{short} {}", v.sid)
-            } else {
-                short.to_string()
-            }
-        };
         let mut airport = Vec::new();
         for (ai, ap) in AIRPORT.iter().enumerate() {
             airport.push(fit_airport(&mut models, ap, &args.airport[ai])?);
         }
-
-        let mut cands = vec![
-            Cand {
-                window: 0,
-                norm: Norm::Raw,
-                fixed: Some(GATE_THRESHOLD),
-                piper_cohort: false,
-            },
-            Cand {
-                window: 1,
-                norm: Norm::Raw,
-                fixed: Some(GATE_THRESHOLD),
-                piper_cohort: false,
-            },
-        ];
-        for w in [0, 1] {
-            cands.push(Cand {
-                window: w,
-                norm: Norm::Raw,
-                fixed: None,
-                piper_cohort: false,
-            });
-        }
-        for w in [0, 1] {
-            for norm in [
-                Norm::Snorm,
-                Norm::Asnorm,
-                Norm::RawAndSnorm,
-                Norm::RawAndAsnorm,
-            ] {
-                cands.push(Cand {
-                    window: w,
-                    norm,
-                    fixed: None,
-                    piper_cohort: false,
-                });
-            }
-        }
-        for norm in [
-            Norm::Snorm,
-            Norm::Asnorm,
-            Norm::RawAndSnorm,
-            Norm::RawAndAsnorm,
-        ] {
-            cands.push(Cand {
-                window: 0,
-                norm,
-                fixed: None,
-                piper_cohort: true,
-            });
-        }
-
-        let today_tune = set_scores(&tune, &cands[0], &ls_cohort);
-        let tune_all: Vec<f32> = today_tune.0.iter().flatten().flatten().copied().collect();
-        let today_tune_frr = rate(&tune_all, GATE_THRESHOLD, false);
-        let target = (today_tune_frr.0 as f64 / today_tune_frr.1.max(1) as f64).max(0.01);
-        let n_test = test.len();
-        let n_pairs = n_test * (n_test - 1);
-        let win_counts = |wi: usize| {
-            let v: Vec<usize> = test.iter().map(|t| t[0].windows[0][wi].len()).collect();
-            (
-                v.iter().sum::<usize>() as f64 / v.len() as f64,
-                *v.iter().min().unwrap_or(&0),
-            )
+        let sh = Shared {
+            ls_cohort,
+            p_cohort,
+            piper,
+            piper_voices,
+            airport,
         };
-        let (w15, w15min) = win_counts(0);
-        let (w20, w20min) = win_counts(1);
-        let mut times0 = models[0].times.get(&0).cloned().unwrap_or_default();
-        let mut times1 = models[0].times.get(&1).cloned().unwrap_or_default();
 
-        let mut md = String::new();
-        md.push_str(&format!(
+        let mut md = format!(
             "Test: LibriSpeech `test-clean`, {} speakers ({} F / {} M), each caller and other. Tune: \
              `dev-clean` {} speakers ({}). Cohort: `dev-clean` {} other speakers ({}), disjoint from \
-             tune and test. Per speaker: enrollment = 3000 ms from the voiced onset of the first \
-             chapter's utterances, talk stream = {STREAM_S} s from the other chapters (mean {:.0} s). \
-             Windows per speaker and condition: mean {w15:.0} (min {w15min}) at 1.5 s, {w20:.0} (min \
-             {w20min}) at 2.0 s; {n_pairs} (caller, other) pairs. Bed: Tocumen airport at {} dB \
-             (`bed`) or none (`clean`). Thresholds: `@0.459` fixed, else tune-matched: highest \
-             threshold with tune FRR <= {:.1} % (today's gate's tune FRR {}, floor 1 %). TitaNet \
-             embed p50 / p99: {:.1} / {:.1} ms (1.5 s), {:.1} / {:.1} ms (2.0 s).\n\n",
-            n_test,
+             tune and test; cohort clips are 3.3 s from each cohort speaker's first chapter. Bed: \
+             Tocumen airport at {} dB (`bed`) or none (`clean`). Thresholds: `@0.459` fixed, else \
+             tune-matched: highest threshold with tune FRR <= the mode's target (today's gate's tune \
+             FRR, floor 1 %).\n",
+            test_sp.len(),
             test_sp.iter().filter(|s| s.female).count(),
             test_sp.iter().filter(|s| !s.female).count(),
             tune_sp.len(),
@@ -1418,298 +1980,61 @@ mod librispeech {
                 .map(|s| s.label())
                 .collect::<Vec<_>>()
                 .join(", "),
-            stream_s.iter().sum::<f64>() / stream_s.len() as f64,
             args.bed_db,
-            target * 100.0,
-            pct(today_tune_frr.0, today_tune_frr.1),
+        );
+        for mode in [Mode::CrossSession, Mode::SameSession] {
+            let mut test = Vec::new();
+            let mut src = Vec::new();
+            let mut stream_s = 0.0;
+            for (i, sp) in test_sp.iter().enumerate() {
+                eprintln!("{} test speaker {}", mode.name(), sp.label());
+                let (e, s, so) = audio(sp, mode)?;
+                stream_s += s.len() as f64 / f64::from(SR);
+                src.push(so);
+                test.push(embed_audio(
+                    &mut models,
+                    &e,
+                    &s,
+                    i,
+                    &bed,
+                    args.bed_db,
+                    windows_15_20,
+                )?);
+            }
+            let mut tune = Vec::new();
+            for (i, sp) in tune_sp.iter().enumerate() {
+                eprintln!("{} tune speaker {}", mode.name(), sp.label());
+                let (e, s, _) = audio(sp, mode)?;
+                tune.push(embed_audio(
+                    &mut models,
+                    &e,
+                    &s,
+                    60 + i,
+                    &bed,
+                    args.bed_db,
+                    windows_15_20,
+                )?);
+            }
+            md.push_str(&report(
+                mode,
+                &mut models,
+                &sh,
+                &test,
+                &tune,
+                &test_sp,
+                &src,
+                stream_s / test_sp.len() as f64,
+            )?);
+        }
+        let mut times0 = models[0].times.get(&0).cloned().unwrap_or_default();
+        let mut times1 = models[0].times.get(&1).cloned().unwrap_or_default();
+        md.push_str(&format!(
+            "\nTitaNet embed p50 / p99: {:.1} / {:.1} ms (1.5 s), {:.1} / {:.1} ms (2.0 s).\n",
             percentile(&mut times0, 0.5),
             percentile(&mut times0, 0.99),
             percentile(&mut times1, 0.5),
             percentile(&mut times1, 0.99),
         ));
-
-        md.push_str("### Real speech: summary per candidate\n\nPer-pair FAR distribution over the pairs (bed); FRR distribution over the 40 callers.\n\n| candidate | threshold | test FAR bed / clean % | same-sex FAR bed % | pairs with FAR > 0, bed | pair FAR p50 / p90 / p99 / max bed % | pairs >= 5 % / >= 20 % bed | pair FAR max clean % | test FRR bed / clean % | caller FRR p90 / max bed % | callers FRR > 5 % bed / clean | tune FAR / FRR % | airport min margin reproduced / logged raw | airport pass | extra confirm delay s |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
-        let mut worst_md = String::from("\n### Real speech: worst 10 pairs per candidate (caller ← other, bed / clean %)\n\n| candidate | worst pairs |\n|---|---|\n");
-        let mut piper_md = String::from("\n### Cross-check: Piper test voices scored with the real-speech thresholds and cohort\n\nSame windows as chunk 1b (bed / clean %).\n\n| candidate | threshold | Piper FAR bed / clean | amy-low ← libritts_r 120 | libritts_r 120 ← amy-low | libritts_r 300 ← lessac | lessac ← hfc_female | worst pair bed | FRR libritts_r 120 | FRR libritts_r 300 | max FRR other callers bed / clean |\n|---|---|---|---|---|---|---|---|---|---|---|\n");
-        let mut air_md = String::from("\n### Cross-check: airport demo caller windows\n\nReproduced offline (enrollment and window embeddings) and at the logged raw cosine (1.5 s only; cohort statistics from the reproduced embeddings). Cohort as in the candidate; bed condition cohort.\n\n| candidate | threshold | A w9, w10 reproduced | B w5, w6, w7 reproduced | A / B at logged raw | min margin reproduced / logged |\n|---|---|---|---|---|---|\n");
-
-        for c in &cands {
-            let cohort = if c.piper_cohort {
-                &p_cohort
-            } else {
-                &ls_cohort
-            };
-            let (tg, ti) = set_scores(&tune, c, cohort);
-            let thr = c.fixed.unwrap_or_else(|| tuned_threshold(&tg, target));
-            let (gen, imp) = set_scores(&test, c, cohort);
-            let mut far_tot = [(0usize, 0usize); 2];
-            let mut same_tot = (0usize, 0usize);
-            let mut pair_far: Vec<Vec<(f64, usize, usize)>> = vec![Vec::new(); 2];
-            for k in 0..2 {
-                for a in 0..n_test {
-                    for b in 0..n_test {
-                        if a == b {
-                            continue;
-                        }
-                        let (n, d) = rate(&imp[k][a][b], thr, true);
-                        far_tot[k].0 += n;
-                        far_tot[k].1 += d;
-                        if k == 0 && test_sp[a].female == test_sp[b].female {
-                            same_tot.0 += n;
-                            same_tot.1 += d;
-                        }
-                        pair_far[k].push((n as f64 / d.max(1) as f64, a, b));
-                    }
-                }
-            }
-            let mut bed_sorted: Vec<f64> = pair_far[0].iter().map(|p| p.0 * 100.0).collect();
-            bed_sorted.sort_by(f64::total_cmp);
-            let clean_max = pair_far[1].iter().map(|p| p.0 * 100.0).fold(0.0, f64::max);
-            let nz = bed_sorted.iter().filter(|x| **x > 0.0).count();
-            let ge5 = bed_sorted.iter().filter(|x| **x >= 5.0).count();
-            let ge20 = bed_sorted.iter().filter(|x| **x >= 20.0).count();
-            let mut frr_tot = [(0usize, 0usize); 2];
-            let mut caller_frr: Vec<Vec<f64>> = vec![Vec::new(); 2];
-            for k in 0..2 {
-                for g in &gen[k] {
-                    let (n, d) = rate(g, thr, false);
-                    frr_tot[k].0 += n;
-                    frr_tot[k].1 += d;
-                    caller_frr[k].push(100.0 * n as f64 / d.max(1) as f64);
-                }
-                caller_frr[k].sort_by(f64::total_cmp);
-            }
-            let over5 = |k: usize| caller_frr[k].iter().filter(|x| **x > 5.0).count();
-            let tune_far: Vec<f32> = ti.iter().flatten().flatten().flatten().copied().collect();
-            let tune_gen: Vec<f32> = tg.iter().flatten().flatten().copied().collect();
-            let (tfa, tfd) = rate(&tune_far, thr, true);
-            let (tra, trd) = rate(&tune_gen, thr, false);
-
-            // Airport.
-            let mut rep_scores = Vec::new();
-            let mut log_scores = Vec::new();
-            for (ai, ap) in AIRPORT.iter().enumerate() {
-                let base = &airport[ai];
-                let mut row = Vec::new();
-                let mut lrow = Vec::new();
-                for &k in ap.caller {
-                    let end = base.u_ms + k * 1500;
-                    let w = (WINDOWS_S[c.window] * 1000.0) as usize;
-                    let e = models[0].embed(clip(&base.audio, end - w - PRE_ROLL_MS, end), None)?;
-                    row.push(score(c.norm, &base.refs[0], &e, &cohort[0][0]));
-                    lrow.push(score_from_raw(
-                        c.norm,
-                        ap.logged[k - 1],
-                        &base.refs[0],
-                        &e,
-                        &cohort[0][0],
-                    ));
-                }
-                rep_scores.push(row);
-                log_scores.push(lrow);
-            }
-            let min_margin = |v: &[Vec<f32>]| {
-                v.iter()
-                    .flatten()
-                    .map(|s| s - thr)
-                    .fold(f32::INFINITY, f32::min)
-            };
-            let m_rep = min_margin(&rep_scores);
-            let has_logged = c.window == 0;
-            let m_log = min_margin(&log_scores);
-            let pass = m_rep >= 0.0 && (!has_logged || m_log >= 0.0);
-            let fmt_margin = |m: f32| {
-                if m <= REJECT / 2.0 {
-                    "REJECT".to_string()
-                } else {
-                    format!("{m:+.3}")
-                }
-            };
-            let log_margin_cell = if has_logged {
-                fmt_margin(m_log)
-            } else {
-                "-".into()
-            };
-            md.push_str(&format!(
-                "| {} | {:.3} | {} / {} | {} | {nz} / {n_pairs} | {:.1} / {:.1} / {:.1} / {:.1} | {ge5} / {ge20} | {:.1} | {} / {} | {:.1} / {:.1} | {} / {} | {} / {} | {} / {} | {} | {:.1} |\n",
-                c.name(),
-                thr,
-                pct(far_tot[0].0, far_tot[0].1),
-                pct(far_tot[1].0, far_tot[1].1),
-                pct(same_tot.0, same_tot.1),
-                q(&bed_sorted, 0.5),
-                q(&bed_sorted, 0.9),
-                q(&bed_sorted, 0.99),
-                q(&bed_sorted, 1.0),
-                clean_max,
-                pct(frr_tot[0].0, frr_tot[0].1),
-                pct(frr_tot[1].0, frr_tot[1].1),
-                q(&caller_frr[0], 0.9),
-                q(&caller_frr[0], 1.0),
-                over5(0),
-                over5(1),
-                pct(tfa, tfd),
-                pct(tra, trd),
-                fmt_margin(m_rep),
-                log_margin_cell,
-                if pass { "yes" } else { "**no**" },
-                WINDOWS_S[c.window] - 1.5
-            ));
-
-            let mut worst = pair_far[0].clone();
-            worst.sort_by(|x, y| y.0.total_cmp(&x.0));
-            let clean_of = |a: usize, b: usize| {
-                pair_far[1]
-                    .iter()
-                    .find(|p| p.1 == a && p.2 == b)
-                    .map_or(0.0, |p| p.0)
-            };
-            let cells: Vec<String> = worst
-                .iter()
-                .take(10)
-                .filter(|p| p.0 > 0.0)
-                .map(|p| {
-                    format!(
-                        "{} ← {} {:.1} / {:.1}",
-                        test_sp[p.1].label(),
-                        test_sp[p.2].label(),
-                        p.0 * 100.0,
-                        clean_of(p.1, p.2) * 100.0
-                    )
-                })
-                .collect();
-            worst_md.push_str(&format!(
-                "| {} | {} |\n",
-                c.name(),
-                if cells.is_empty() {
-                    "none".to_string()
-                } else {
-                    cells.join("; ")
-                }
-            ));
-
-            // Piper cross-check.
-            let (pg, pi) = set_scores(&piper, c, cohort);
-            let idx = |name: &str| piper_voices.iter().position(|v| pname(v) == name);
-            let pair_cell = |a: &str, b: &str| match (idx(a), idx(b)) {
-                (Some(a), Some(b)) => {
-                    let bed = rate(&pi[0][a][b], thr, true);
-                    let clean = rate(&pi[1][a][b], thr, true);
-                    format!("{} / {}", pct(bed.0, bed.1), pct(clean.0, clean.1))
-                }
-                _ => "-".into(),
-            };
-            let mut ptot = [(0usize, 0usize); 2];
-            let mut pworst = (0.0f64, String::new());
-            for k in 0..2 {
-                for a in 0..piper.len() {
-                    for b in 0..piper.len() {
-                        if a == b {
-                            continue;
-                        }
-                        let (n, d) = rate(&pi[k][a][b], thr, true);
-                        ptot[k].0 += n;
-                        ptot[k].1 += d;
-                        let f = n as f64 / d.max(1) as f64;
-                        if k == 0 && f > pworst.0 {
-                            pworst = (
-                                f,
-                                format!(
-                                    "{} ← {}",
-                                    pname(&piper_voices[a]),
-                                    pname(&piper_voices[b])
-                                ),
-                            );
-                        }
-                    }
-                }
-            }
-            let frr_cell = |name: &str| match idx(name) {
-                Some(a) => {
-                    let bed = rate(&pg[0][a], thr, false);
-                    let clean = rate(&pg[1][a], thr, false);
-                    format!("{} / {}", pct(bed.0, bed.1), pct(clean.0, clean.1))
-                }
-                None => "-".into(),
-            };
-            let mut other_max = [0.0f64; 2];
-            for (a, v) in piper_voices.iter().enumerate() {
-                if v.bundle.contains("libritts") {
-                    continue;
-                }
-                for (k, m) in other_max.iter_mut().enumerate() {
-                    let (n, d) = rate(&pg[k][a], thr, false);
-                    *m = m.max(100.0 * n as f64 / d.max(1) as f64);
-                }
-            }
-            piper_md.push_str(&format!(
-                "| {} | {:.3} | {} / {} | {} | {} | {} | {} | {:.1} ({}) | {} | {} | {:.1} / {:.1} |\n",
-                c.name(),
-                thr,
-                pct(ptot[0].0, ptot[0].1),
-                pct(ptot[1].0, ptot[1].1),
-                pair_cell("amy-low", "libritts_r 120"),
-                pair_cell("libritts_r 120", "amy-low"),
-                pair_cell("libritts_r 300", "lessac"),
-                pair_cell("lessac", "hfc_female"),
-                pworst.0 * 100.0,
-                pworst.1,
-                frr_cell("libritts_r 120"),
-                frr_cell("libritts_r 300"),
-                other_max[0],
-                other_max[1],
-            ));
-
-            air_md.push_str(&format!(
-                "| {} | {:.3} | {} | {} | {} | {} / {} |\n",
-                c.name(),
-                thr,
-                fmt_list(&rep_scores[0]),
-                fmt_list(&rep_scores[1]),
-                if has_logged {
-                    format!(
-                        "{} / {}",
-                        fmt_list(&log_scores[0]),
-                        fmt_list(&log_scores[1])
-                    )
-                } else {
-                    "-".into()
-                },
-                fmt_margin(m_rep),
-                log_margin_cell,
-            ));
-        }
-        md.push_str(&worst_md);
-        md.push_str(&piper_md);
-        md.push_str(&air_md);
-
-        // Cohort statistics: how close each set sits to each cohort (TitaNet 1.5 s, bed).
-        md.push_str("\n### Cohort statistics (TitaNet 1.5 s windows, bed / clean)\n\nMean over all windows of the set of the window-side cohort mean / std (`μt` / `σt`), full cohort.\n\n| set | real-speech cohort μt / σt | Piper cohort μt / σt |\n|---|---|---|\n");
-        let stats = |set: &[[VoiceEmb; 2]], cohort: &Cohort, ci: usize| {
-            let (mut sm, mut ss, mut n) = (0.0f32, 0.0f32, 0usize);
-            for v in set {
-                for w in &v[ci].windows[0][0] {
-                    let (m, sd) = cohort_stats(w, &cohort[ci][0], None);
-                    sm += m;
-                    ss += sd;
-                    n += 1;
-                }
-            }
-            let n = n.max(1) as f32;
-            format!("{:.3} / {:.3}", sm / n, ss / n)
-        };
-        for (label, set) in [
-            ("LibriSpeech test-clean", &test),
-            ("Piper test voices", &piper),
-        ] {
-            md.push_str(&format!(
-                "| {label} | {} ; {} | {} ; {} |\n",
-                stats(set, &ls_cohort, 0),
-                stats(set, &ls_cohort, 1),
-                stats(set, &p_cohort, 0),
-                stats(set, &p_cohort, 1),
-            ));
-        }
         print!("{md}");
         if let Some(out) = &args.out {
             fs::write(out, &md).map_err(|e| e.to_string())?;

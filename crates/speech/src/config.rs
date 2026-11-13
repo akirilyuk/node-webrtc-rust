@@ -287,12 +287,19 @@ pub struct SpeakerGateConfig {
     pub recheck_max_windows: u32,
     /// Opt-in, default false (byte-identical to earlier releases when off). While an utterance is
     /// live the gate keeps scoring `check_speech_ms` windows (up to `recheck_max_windows`) and
-    /// reports a speaker change after `speaker_gate::SPEAKER_CHANGE_CONFIRM_WINDOWS` consecutive
-    /// `other` windows of a `caller`-labelled utterance, with a split point in utterance media time
-    /// (`speaker_gate::SpeakerChange`, `from` always `Caller`). The caller stays caller: `other`
-    /// followed by `caller` never splits; the first `caller` re-check upgrades the verdict as with
-    /// the flag off. A split re-decodes the first part on one extra STT stream, which is why this
-    /// defaults off.
+    /// reports a speaker change in both directions, with a split point in utterance media time
+    /// (`speaker_gate::SpeakerChange`, `from` and `to` are `Caller` or `Other`):
+    /// - `caller` -> `other` after `speaker_gate::SPEAKER_CHANGE_CONFIRM_WINDOWS` consecutive
+    ///   `other` windows; the split is the lowest-energy frame near the first opposite window.
+    /// - `other` -> `caller` after one `caller` window
+    ///   (`speaker_gate::OTHER_TO_CALLER_CONFIRM_WINDOWS`); the split searches backward from the
+    ///   previous scored window's start: the end of the longest quiet run (at least
+    ///   `speaker_gate::SPLIT_QUIET_RUN_MIN_MS`), else sub-window embeddings on the verifier task
+    ///   (bounded by `verify_timeout_ms`, falling back to the quiet run on a timeout). The first
+    ///   part stays `other` (never upgraded, never barges); the second part inherits the `caller`
+    ///   verdict (`SpeakerGate::inherit_caller`) and gets its own watch.
+    ///
+    /// A split re-decodes the first part on one extra STT stream, which is why this defaults off.
     pub split_on_speaker_change: bool,
     pub on_mismatch: SpeakerMismatchAction,
     /// Bound (ms) on one embedding call and on a final waiting for its verdict.

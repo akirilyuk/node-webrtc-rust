@@ -9,7 +9,8 @@
 #      group after the parallel group. The pool is driven without real roundtrips through the hidden
 #      hooks SHERPA_E2E_DRY_COMMAND (replaces the roundtrip; $1 = npm script) and SHERPA_E2E_ONLY;
 #   4. run-sherpa-roundtrip-e2e.sh runs ensure_speaker_fixtures before start:roundtrip-noisy-bystander
-#      (every path that runs it, including the stress workflow) and not before other scripts.
+#      and `ensure_speaker_fixtures nopause` before start:roundtrip-noisy-bystander-nopause (every
+#      path that runs them, including the stress workflow) and not before other scripts.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -21,10 +22,7 @@ fail() { echo "sherpa-e2e-groups.test.sh: $*" >&2; exit 1; }
 
 # Scripts that exist in package.json but were never in the CI list (load benchmarks; the CI variant
 # is start:roundtrip-load-ci). Adding a name here needs a reason.
-# start:roundtrip-noisy-bystander-nopause: not wired yet; its no-pause scene s4_test_n02 still
-# fails (a gate false accept cuts the bystander's sentence), and a known failure stays out of CI
-# until it is fixed (plan 2026-11-13-speaker-split-other-to-caller, chunk 6).
-NOT_IN_CI=(start:roundtrip-load start:roundtrip-load-cached start:roundtrip-noisy-bystander-nopause)
+NOT_IN_CI=(start:roundtrip-load start:roundtrip-load-cached)
 
 groups="$(bash "$CI_SCRIPT" groups)"
 serial=() parallel=()
@@ -63,15 +61,16 @@ caps="$(bash "$CI_SCRIPT" step-timeouts | cut -d' ' -f1 | sort)"
 
 # 2. Timing-sensitive and CPU-heavy (10-session lid-multi) scripts stay serial.
 for name in start:roundtrip-utterance-timing start:roundtrip-c1-timeouts start:roundtrip-slow-final \
-  start:roundtrip-barge-in start:roundtrip-barge-in-buffered start:roundtrip-noisy-bystander start:roundtrip-counting-barge-recovery \
-  start:roundtrip-concurrent-multi-client start:roundtrip-load-ci start:roundtrip-barge-replay \
+  start:roundtrip-barge-in start:roundtrip-barge-in-buffered start:roundtrip-noisy-bystander start:roundtrip-noisy-bystander-nopause \
+  start:roundtrip-counting-barge-recovery start:roundtrip-concurrent-multi-client start:roundtrip-load-ci start:roundtrip-barge-replay \
   start:roundtrip-counting-echo-lid-multi; do
   printf '%s\n' "${serial[@]}" | grep -qx "$name" || fail "$name must be in the serial group"
 done
 for name in "${serial[@]}"; do
   case "$name" in
     start:roundtrip-utterance-timing | start:roundtrip-c1-timeouts | start:roundtrip-slow-final | \
-      start:roundtrip-barge-in | start:roundtrip-barge-in-buffered | start:roundtrip-noisy-bystander | start:roundtrip-counting-barge-recovery | \
+      start:roundtrip-barge-in | start:roundtrip-barge-in-buffered | start:roundtrip-noisy-bystander | start:roundtrip-noisy-bystander-nopause | \
+      start:roundtrip-counting-barge-recovery | \
       start:roundtrip-concurrent-multi-client | start:roundtrip-load-ci | start:roundtrip-barge-replay | start:roundtrip-counting-echo-lid-multi) ;;
     *) fail "$name is in the serial group but not in the reviewed timing-sensitive list" ;;
   esac
@@ -118,6 +117,11 @@ for flag in '--main-levels -26' '--min-turn-gap-ms 2500' '--bystander-db -15' '-
   # Code lines only: the helper's header comment names the flags too.
   grep -v '^[[:space:]]*#' "$FIXTURE_HELPER" | grep -qF -- "$flag" || fail "$FIXTURE_HELPER lost the scene arg: $flag"
 done
+for flag in '--other-to-caller 8' '--only s4_test_n' 'speaker-fixtures-nopause'; do
+  grep -v '^[[:space:]]*#' "$FIXTURE_HELPER" | grep -qF -- "$flag" || fail "$FIXTURE_HELPER lost the no-pause scene arg: $flag"
+done
+grep -qF 'ensure_speaker_fixtures nopause' "$CI_SCRIPT" \
+  || fail "$CI_SCRIPT must generate the no-pause scenes before its roundtrip steps"
 # Re-roll mode: the stress workflow input reaches the helper, which then ignores the stamp and
 # generates from an empty cache (fresh Piper roll per iteration, as on fresh CI containers).
 grep -v '^[[:space:]]*#' "$FIXTURE_HELPER" | grep -qF -- '"${SPEAKER_FIXTURES_REROLL:-0}"' \
@@ -133,20 +137,22 @@ mkdir -p "$fr/scripts/ci" "$fr/bin"
 cp scripts/ci/run-sherpa-roundtrip-e2e.sh "$fr/scripts/ci/"
 : >"$fr/scripts/export-sherpa-local-models.sh"
 cat >"$fr/scripts/ci/ensure-speaker-fixtures.sh" <<'STUB'
-ensure_speaker_fixtures() { echo fixtures >>"$FIXTURE_CALLS"; }
+ensure_speaker_fixtures() { echo "fixtures${1:+ $1}" >>"$FIXTURE_CALLS"; }
 STUB
 cat >"$fr/bin/npm" <<'STUB'
 #!/usr/bin/env bash
 echo "npm $2" >>"$FIXTURE_CALLS"
 STUB
 chmod +x "$fr/bin/npm"
-for s in start:roundtrip-noisy-bystander start:roundtrip-counting; do
+for s in start:roundtrip-noisy-bystander start:roundtrip-noisy-bystander-nopause start:roundtrip-counting; do
   : >"$tmp/fixture-calls"
   FIXTURE_CALLS="$tmp/fixture-calls" PATH="$fr/bin:$PATH" SHERPA_E2E_AUDIO_TAP=0 \
     bash "$fr/scripts/ci/run-sherpa-roundtrip-e2e.sh" "$s" >/dev/null 2>&1 \
     || fail "run-sherpa-roundtrip-e2e.sh $s failed with stubs"
   if [[ "$s" == start:roundtrip-noisy-bystander ]]; then
     expected="$(printf 'fixtures\nnpm %s' "$s")"
+  elif [[ "$s" == start:roundtrip-noisy-bystander-nopause ]]; then
+    expected="$(printf 'fixtures nopause\nnpm %s' "$s")"
   else
     expected="npm $s"
   fi

@@ -57,6 +57,10 @@ sherpa_roundtrip_timeout_sec() {
       # Two real-time passes of a ~90s scene (420s in-process wall); one VOICE_DEBUG re-run.
       echo "${CI_SHERPA_NOISY_BYSTANDER_ROUNDTRIP_TIMEOUT_SEC:-900}"
       ;;
+    start:roundtrip-noisy-bystander-nopause)
+      # One real-time pass over the no-pause scenes, a fresh agent each (420s in-process wall).
+      echo "${CI_SHERPA_NOISY_BYSTANDER_NOPAUSE_ROUNDTRIP_TIMEOUT_SEC:-600}"
+      ;;
     start:roundtrip-load-ci)
       # 4 concurrent legs x 2 turns; 60s setup + per-turn TTS/silence/STT budget in-process.
       echo "${CI_SHERPA_LOAD_ROUNDTRIP_TIMEOUT_SEC:-420}"
@@ -82,6 +86,7 @@ SHERPA_ROUNDTRIP_E2E_SERIAL=(
   start:roundtrip-barge-in
   start:roundtrip-barge-in-buffered
   start:roundtrip-noisy-bystander
+  start:roundtrip-noisy-bystander-nopause
   start:roundtrip-counting-barge-recovery
   start:roundtrip-concurrent-multi-client
   start:roundtrip-load-ci
@@ -148,10 +153,16 @@ ensure_sherpa_models() {
 
 # Speaker assets + noisy-bystander scenes (scripts/ci/ensure-speaker-fixtures.sh), once per job
 # before the roundtrip steps, so the generator's cargo build is not charged to a roundtrip's step cap.
-# run-sherpa-roundtrip-e2e.sh calls the same idempotent helper, which then skips.
+# run-sherpa-roundtrip-e2e.sh calls the same idempotent helper, which then skips. The no-pause
+# variant has its own scenes (mode nopause).
 ensure_speaker_fixtures_if_selected() {
-  sherpa_e2e_selected start:roundtrip-noisy-bystander || return 0
-  ensure_speaker_fixtures
+  if sherpa_e2e_selected start:roundtrip-noisy-bystander; then
+    ensure_speaker_fixtures || return 1
+  fi
+  if sherpa_e2e_selected start:roundtrip-noisy-bystander-nopause; then
+    ensure_speaker_fixtures nopause || return 1
+  fi
+  return 0
 }
 
 # Model-backed vendor tests kept #[ignore] in default cargo test (no weights in PR quality).

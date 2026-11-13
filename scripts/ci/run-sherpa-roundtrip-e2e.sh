@@ -35,6 +35,8 @@ source "$ROOT/scripts/ci/ensure-speaker-fixtures.sh"
 # local runs) gets its generated scenes here; idempotent, skips when they match the args.
 if [[ "$SCRIPT" == "start:roundtrip-noisy-bystander" ]]; then
   ensure_speaker_fixtures
+elif [[ "$SCRIPT" == "start:roundtrip-noisy-bystander-nopause" ]]; then
+  ensure_speaker_fixtures nopause
 fi
 
 run_pass() {

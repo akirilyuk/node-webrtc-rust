@@ -33,8 +33,14 @@
 # normal run regenerates.
 #
 # Requires ROOT (repo root). Optional: CI_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC (default 900).
+#
+# `ensure_speaker_fixtures nopause`: the no-pause other→caller scenes for
+# start:roundtrip-noisy-bystander-nopause instead (`speaker_fixtures --other-to-caller 8 --only
+# s4_test_n`, out .models/speaker-fixtures-nopause): enrollment sentence, 1.5 s gap, a bystander at
+# 0 or -6 dB, the caller 0-250 ms after it, over babble. Same stamp, reroll and download rules.
 
 ensure_speaker_fixtures() {
+  local mode="${1:-s3}"
   local root="${ROOT:?ROOT must be set before ensure_speaker_fixtures}"
   local ci_step="$root/scripts/ci/ci-step.sh"
   local timeout="${CI_SHERPA_MODEL_DOWNLOAD_TIMEOUT_SEC:-900}"
@@ -53,6 +59,20 @@ ensure_speaker_fixtures() {
     --main-levels -26 --min-turn-gap-ms 2500 --bystander-db -15 --babble-clear-ms 1000 --babble-clear-pull --long-bystanders 2 --long-bystander-db -6
     --only s3_test_m15
   )
+  local what="noisy-bystander scenes"
+  if [[ "$mode" == "nopause" ]]; then
+    out="$ex/.models/speaker-fixtures-nopause"
+    stamp="$out/.speaker-fixtures-args"
+    what="no-pause other-to-caller scenes"
+    args=(
+      --models "$ex/.models/speaker" --main-tts "$ex/.models/vits-piper-en_US-amy-low"
+      --phrases "$ex/stt-phrase-qualification.json" --out "$out"
+      --other-to-caller 8 --only s4_test_n
+    )
+  elif [[ "$mode" != "s3" ]]; then
+    echo "ensure_speaker_fixtures: unknown mode '$mode' (s3 | nopause)" >&2
+    return 1
+  fi
   # The stamp also carries the phrase table's hash: S3 caller phrases are the babble-clean entries
   # of stt-phrase-qualification.json, so a new babble sweep result changes the scenes.
   local phrases_sha
@@ -60,16 +80,18 @@ ensure_speaker_fixtures() {
   local want="${args[*]} phrases-sha256=${phrases_sha:-missing}"
 
   local reroll="${SPEAKER_FIXTURES_REROLL:-0}"
-  if [[ "$reroll" == "1" && "${SPEAKER_FIXTURES_REROLLED:-0}" == "1" && -s "$out/manifest.json" ]]; then
-    echo "==> noisy-bystander scenes already re-rolled in this run ($out)"
+  local rerolled_var="SPEAKER_FIXTURES_REROLLED"
+  [[ "$mode" == "nopause" ]] && rerolled_var="SPEAKER_FIXTURES_REROLLED_NOPAUSE"
+  if [[ "$reroll" == "1" && "${!rerolled_var:-0}" == "1" && -s "$out/manifest.json" ]]; then
+    echo "==> $what already re-rolled in this run ($out)"
     return 0
   fi
   if [[ "$reroll" != "1" && -s "$out/manifest.json" && -f "$stamp" && "$(cat "$stamp")" == "$want" ]]; then
-    echo "==> noisy-bystander scenes up to date ($out)"
+    echo "==> $what up to date ($out)"
     return 0
   fi
 
-  echo "==> speaker assets + noisy-bystander scenes"
+  echo "==> speaker assets + $what"
   if [[ ! -s "$ex/.models/speaker/nemo_en_titanet_small.onnx" ]]; then
     bash "$ci_step" --timeout "$timeout" \
       "sherpa download-speaker" -- npm run download-speaker --workspace="$workspace" || return 1
@@ -91,7 +113,7 @@ ensure_speaker_fixtures() {
   [[ "$rc" -eq 0 ]] || return 1
   [[ -s "$out/manifest.json" ]] || { echo "speaker_fixtures wrote no $out/manifest.json" >&2; return 1; }
   if [[ "$reroll" == "1" ]]; then
-    export SPEAKER_FIXTURES_REROLLED=1
+    export "$rerolled_var=1"
   else
     printf '%s' "$want" >"$stamp"
   fi

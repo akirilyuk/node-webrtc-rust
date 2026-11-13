@@ -28,6 +28,11 @@
 //!   - `PROBE_STT_STREAMS` (default `1,4,8,16,24,32,40,48`): concurrent streams per point.
 //!   - `PROBE_STT_LAG_SLO_MS` (default `500`): the point is real-time while the p95 over streams
 //!     of the worst per-chunk decode lag stays at or below this.
+//!   - `PROBE_STT_BATCH` (default `off,on`): comma list of `off` / `on`; the whole stream-count
+//!     loop runs once per mode (`off` first) with the batched decode thread switched accordingly,
+//!     and every `perf_probe` line carries `"batch":"off|on"`. `stt_finals_differing` counts the
+//!     streams whose final text differs from the reference final: the first stream of the first
+//!     measured point of mode `off` (the first point's first stream when `off` is not listed).
 //!
 //!   N streams each feed a 10 s clip in real time (20 ms chunks on an absolute clock). Lag is how
 //!   late a chunk's push-and-poll returns after the chunk was due; a decoder that cannot keep up
@@ -47,9 +52,9 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::{SttConfig, SttVendor, TtsConfig, TtsVendor};
 use node_webrtc_rust_speech::pipeline::{
-    SttProvider, TtsProgressiveSink, TtsProvider, VendorFactory,
+    SttProvider, SttTranscript, TtsProgressiveSink, TtsProvider, VendorFactory,
 };
-use node_webrtc_rust_vendor_sherpa_onnx::SherpaFactory;
+use node_webrtc_rust_vendor_sherpa_onnx::{set_stt_batch_decode, SherpaFactory};
 use tokio::sync::{mpsc, Barrier};
 
 const SHORT_TEXT: &str = "Hello, thanks for calling. How can I help you today?";
@@ -316,16 +321,26 @@ fn clip_chunks() -> Vec<Bytes> {
         .collect()
 }
 
-async fn drain(stt: &mut Box<dyn SttProvider>) {
-    while stt.poll_transcript().await.expect("poll").is_some() {}
+fn push_finals(text: &mut Vec<String>, transcripts: &[SttTranscript]) {
+    for transcript in transcripts {
+        if let SttTranscript::Final(value) = transcript {
+            text.push(value.trim().to_string());
+        }
+    }
 }
 
-/// Returns (max lag ms, final ms) for one stream fed in real time.
+async fn drain(stt: &mut Box<dyn SttProvider>, text: &mut Vec<String>) {
+    while let Some(transcript) = stt.poll_transcript().await.expect("poll") {
+        push_finals(text, &[transcript]);
+    }
+}
+
+/// Returns (max lag ms, final ms, final text) for one stream fed in real time.
 async fn run_stream(
     mut stt: Box<dyn SttProvider>,
     chunks: Arc<Vec<Bytes>>,
     ready: Arc<Barrier>,
-) -> (f64, f64) {
+) -> (f64, f64, String) {
     stt.start().await.expect("stt start");
     assert!(
         stt.wait_ready(Duration::from_secs(30))
@@ -338,6 +353,7 @@ async fn run_stream(
     let chunk = Duration::from_millis(STT_CHUNK_MS);
     let mut max_lag = Duration::ZERO;
     let mut out = Vec::new();
+    let mut finals: Vec<String> = Vec::new();
     let mut last_due = t0;
     for (index, pcm) in chunks.iter().enumerate() {
         let due = t0 + chunk * (index as u32 + 1);
@@ -346,16 +362,19 @@ async fn run_stream(
         stt.push_and_poll(pcm.clone(), &mut out)
             .await
             .expect("push_and_poll");
+        push_finals(&mut finals, &out);
+        out.clear();
         max_lag = max_lag.max(Instant::now().saturating_duration_since(due));
         last_due = due;
     }
     stt.finalize_utterance().await.expect("finalize");
-    drain(&mut stt).await;
+    drain(&mut stt, &mut finals).await;
     let final_ms = Instant::now().saturating_duration_since(last_due);
     stt.stop().await.expect("stt stop");
     (
         max_lag.as_secs_f64() * 1000.0,
         final_ms.as_secs_f64() * 1000.0,
+        finals.join(" "),
     )
 }
 
@@ -371,47 +390,68 @@ async fn stt_stream_capacity_probe() {
     let chunks = Arc::new(clip_chunks());
     let audio_s_per_stream = chunks.len() as f64 * STT_CHUNK_MS as f64 / 1000.0;
 
-    // Warm-up: recognizer creation, first decode.
-    {
-        let warm = SherpaFactory.create_stt(&cfg).expect("create STT");
-        let head: Arc<Vec<Bytes>> = Arc::new(chunks.iter().take(100).cloned().collect());
-        run_stream(warm, head, Arc::new(Barrier::new(1))).await;
+    let mut modes: Vec<String> = std::env::var("PROBE_STT_BATCH")
+        .unwrap_or_else(|_| "off,on".into())
+        .split(',')
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty())
+        .collect();
+    for mode in &modes {
+        assert!(mode == "off" || mode == "on", "PROBE_STT_BATCH: {mode:?}");
     }
+    modes.sort_by_key(|m| m == "on"); // off first: it supplies the reference final
+    let mut reference: Option<String> = None;
 
-    for &n in &streams {
-        let ready = Arc::new(Barrier::new(n + 1));
-        let handles: Vec<_> = (0..n)
-            .map(|_| {
-                let stt = SherpaFactory.create_stt(&cfg).expect("create STT");
-                tokio::spawn(run_stream(stt, Arc::clone(&chunks), Arc::clone(&ready)))
-            })
-            .collect();
-        ready.wait().await;
-        let before = usage();
-        let mut lags = Vec::new();
-        let mut finals = Vec::new();
-        for handle in handles {
-            let (lag_ms, final_ms) = handle.await.expect("stream task");
-            lags.push(lag_ms);
-            finals.push(final_ms);
+    for mode in &modes {
+        set_stt_batch_decode(mode == "on");
+        // Warm-up: recognizer creation, first decode.
+        {
+            let warm = SherpaFactory.create_stt(&cfg).expect("create STT");
+            let head: Arc<Vec<Bytes>> = Arc::new(chunks.iter().take(100).cloned().collect());
+            run_stream(warm, head, Arc::new(Barrier::new(1))).await;
         }
-        let after = usage();
 
-        let lag_p95 = percentile(&lags, 95.0);
-        let realtime_ok = lag_p95 <= slo_ms;
-        emit(
-            "stt_stream_capacity_probe",
-            &format!("\"model\":\"{model}\",\"streams\":{n},\"stt_num_threads\":{threads}"),
-            &format!(
-                "\"stt_lag_ms_p95\":{:.1},\"stt_final_ms_p95\":{:.1},\"stt_realtime_ok\":{realtime_ok},\"cpu_s_per_audio_s\":{:.4},\"rss_mb_peak\":{:.1}",
-                lag_p95,
-                percentile(&finals, 95.0),
-                (after.cpu_s - before.cpu_s) / (n as f64 * audio_s_per_stream),
-                after.rss_mb_peak
-            ),
-        );
-        if !realtime_ok {
-            break;
+        for &n in &streams {
+            let ready = Arc::new(Barrier::new(n + 1));
+            let handles: Vec<_> = (0..n)
+                .map(|_| {
+                    let stt = SherpaFactory.create_stt(&cfg).expect("create STT");
+                    tokio::spawn(run_stream(stt, Arc::clone(&chunks), Arc::clone(&ready)))
+                })
+                .collect();
+            ready.wait().await;
+            let before = usage();
+            let mut lags = Vec::new();
+            let mut finals = Vec::new();
+            let mut texts = Vec::new();
+            for handle in handles {
+                let (lag_ms, final_ms, text) = handle.await.expect("stream task");
+                lags.push(lag_ms);
+                finals.push(final_ms);
+                texts.push(text);
+            }
+            let after = usage();
+            let reference_text = reference.get_or_insert_with(|| texts[0].clone());
+            let differing = texts.iter().filter(|t| *t != reference_text).count();
+
+            let lag_p95 = percentile(&lags, 95.0);
+            let realtime_ok = lag_p95 <= slo_ms;
+            emit(
+                "stt_stream_capacity_probe",
+                &format!(
+                    "\"model\":\"{model}\",\"streams\":{n},\"stt_num_threads\":{threads},\"batch\":\"{mode}\""
+                ),
+                &format!(
+                    "\"stt_lag_ms_p95\":{:.1},\"stt_final_ms_p95\":{:.1},\"stt_realtime_ok\":{realtime_ok},\"stt_finals_differing\":{differing},\"cpu_s_per_audio_s\":{:.4},\"rss_mb_peak\":{:.1}",
+                    lag_p95,
+                    percentile(&finals, 95.0),
+                    (after.cpu_s - before.cpu_s) / (n as f64 * audio_s_per_stream),
+                    after.rss_mb_peak
+                ),
+            );
+            if !realtime_ok {
+                break;
+            }
         }
     }
 }

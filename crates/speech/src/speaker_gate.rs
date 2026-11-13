@@ -3296,13 +3296,16 @@ mod tests {
     }
 
     /// Stage 2 stays inside the window's own verify budget (`verify` 300 ms): the window embed
-    /// takes 200 ms, each sub-window 60 ms, so the stage stops at the budget with "stage 2 total
-    /// bound" after at most 2 sub-window embeds (a count load can only lower, not a wall-clock
-    /// margin), and the change is booked with stage 1's point.
+    /// returns at once and each sub-window embed takes 160 ms. The first sub-window embed returns
+    /// with under 140 ms left, the second is bounded by what is left and always times out (its
+    /// 160 ms sleep is longer than any remaining bound), so the stage stops with "stage 2 total
+    /// bound" after at most 2 sub-window embeds and books stage 1's point. A runtime stall only
+    /// shrinks the remaining budget, so it can lower the count, never raise it, and it cannot push
+    /// the window's own (instant) embed past `verify`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stage_two_stays_inside_the_window_verify_budget() {
-        let mut script = vec![(0, caller_v()), (0, other_v()), (200, caller_v())];
-        script.extend((0..20).map(|_| (60, other_v())));
+        let mut script = vec![(0, caller_v()), (0, other_v()), (0, caller_v())];
+        script.extend((0..20).map(|_| (160, other_v())));
         let (gate, sink, emb) = delay_gate(300, script).await;
         for _ in 0..400 {
             if lock(&sink).len() >= 2 {
@@ -3312,8 +3315,8 @@ mod tests {
         }
         let (v2, _) = lock(&sink)[1];
         assert_eq!((v2.window, v2.recheck), (2, true));
-        // 3 = enrollment, window 1, window 2; with 100 ms of budget left and 60 ms embeds at most
-        // 2 sub-window embeds start. Load can only lower the count, never raise it.
+        // 3 = enrollment, window 1, window 2; with 160 ms embeds in a 300 ms budget at most 2
+        // sub-window embeds start. Load can only lower the count, never raise it.
         let stage2_embeds = lock(&emb.starts).len() - 3;
         assert!(stage2_embeds <= 2, "{stage2_embeds} stage-2 embeds");
         let changes = gate.take_speaker_changes();

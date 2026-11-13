@@ -76,6 +76,109 @@ pub const SPLIT_SEARCH_MS: u32 = 300;
 /// Frame length (ms) of the split-point energy search.
 const SPLIT_FRAME_MS: usize = 20;
 
+/// Adaptive reference ([`SpeakerGateConfig::adapt_reference`], only with
+/// `split_on_speaker_change`): a scored window is a candidate only when its score is at least
+/// `threshold + ADAPT_MARGIN`. Values from `crates/vendor-sherpa-onnx/examples/ADAPT_REFERENCE_BENCH.md`.
+pub const ADAPT_MARGIN: f32 = 0.1;
+/// EMA weight of one committed utterance (the mean of its candidates) in the new reference.
+pub const ADAPT_ALPHA: f32 = 0.1;
+/// An update whose result scores below this cosine against the enrolled embedding (the anchor)
+/// is rejected; the reference stays as it was.
+pub const ANCHOR_MIN_COSINE: f32 = 0.8;
+/// Candidates kept per utterance key (the rest of the utterance still counts for the
+/// all-`caller` rule).
+const ADAPT_MAX_CANDIDATES: usize = DEFAULT_RECHECK_MAX_WINDOWS as usize;
+
+/// Result of one adaptive-reference update ([`adapt_step`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum AdaptStep {
+    /// The new (unit-length) reference and its cosine to the anchor.
+    Commit {
+        reference: Vec<f32>,
+        cos_to_anchor: f32,
+    },
+    /// The update would fall below [`ANCHOR_MIN_COSINE`]; the reference is unchanged.
+    RejectAnchor { cos_to_anchor: f32 },
+    /// No usable candidate (empty, zero norm or a dimension mismatch).
+    Skip,
+}
+
+fn normalized(v: &[f32]) -> Option<Vec<f32>> {
+    let n = v
+        .iter()
+        .map(|x| f64::from(*x) * f64::from(*x))
+        .sum::<f64>()
+        .sqrt();
+    if n <= f64::EPSILON || !n.is_finite() {
+        return None;
+    }
+    Some(v.iter().map(|x| (f64::from(*x) / n) as f32).collect())
+}
+
+/// One adaptive-reference update: `normalize((1 - ADAPT_ALPHA) * r + ADAPT_ALPHA * c)` with `r`
+/// the unit reference and `c` the unit mean of the unit candidates; rejected when the result's
+/// cosine to `anchor` is below [`ANCHOR_MIN_COSINE`]. Shared with the adaptation bench.
+pub fn adapt_step(reference: &[f32], anchor: &[f32], candidates: &[Vec<f32>]) -> AdaptStep {
+    let Some(r) = normalized(reference) else {
+        return AdaptStep::Skip;
+    };
+    let mut sum = vec![0.0_f32; r.len()];
+    let mut n = 0_usize;
+    for c in candidates {
+        if c.len() != r.len() {
+            return AdaptStep::Skip;
+        }
+        if let Some(c) = normalized(c) {
+            for (s, x) in sum.iter_mut().zip(c) {
+                *s += x;
+            }
+            n += 1;
+        }
+    }
+    let Some(c) = (n > 0).then(|| normalized(&sum)).flatten() else {
+        return AdaptStep::Skip;
+    };
+    let mixed: Vec<f32> = r
+        .iter()
+        .zip(&c)
+        .map(|(a, b)| (1.0 - ADAPT_ALPHA) * a + ADAPT_ALPHA * b)
+        .collect();
+    let Some(new) = normalized(&mixed) else {
+        return AdaptStep::Skip;
+    };
+    let Some(cos_to_anchor) = cosine(&new, anchor) else {
+        return AdaptStep::Skip;
+    };
+    if cos_to_anchor < ANCHOR_MIN_COSINE {
+        return AdaptStep::RejectAnchor { cos_to_anchor };
+    }
+    AdaptStep::Commit {
+        reference: new,
+        cos_to_anchor,
+    }
+}
+
+/// Adaptive-reference counters (no embedding values): see [`SpeakerGate::adapt_stats`].
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct AdaptStats {
+    /// Utterances whose candidates were folded into the reference.
+    pub commits: u64,
+    /// Updates rejected by the anchor bound.
+    pub rejected_anchor: u64,
+    /// Settled utterances that committed nothing (split, a non-`caller` window, no candidate).
+    pub skipped: u64,
+    /// Cosine of the current reference to the enrolled anchor (`None` before enrollment).
+    pub cos_to_anchor: Option<f32>,
+}
+
+/// Per-key adaptive-reference state on the verifier task.
+#[derive(Default)]
+struct AdaptKey {
+    candidates: Vec<Vec<f32>>,
+    /// A scored window of the key was not `caller` (or was not scored).
+    dirty: bool,
+}
+
 /// Earliest speech time (ms of speech in the utterance) at which a barge-in released by the
 /// `window`-th scored window (1 = first check) can fire. SDK mirror:
 /// `speakerRecheckBargeEarliestMs(checkSpeechMs, window)`
@@ -225,6 +328,11 @@ enum Msg {
     Inherit {
         key: u64,
     },
+    /// The final of `key` was emitted ([`SpeakerGate::settle`]): commit its adaptive-reference
+    /// candidates if the utterance qualifies.
+    Settle {
+        key: u64,
+    },
     Reset,
 }
 
@@ -272,6 +380,16 @@ struct Shared {
     holds: std::sync::atomic::AtomicU64,
     /// Test hook: verdicts dropped because a re-open superseded their check.
     superseded: std::sync::atomic::AtomicU64,
+    adapt_commits: std::sync::atomic::AtomicU64,
+    adapt_rejected: std::sync::atomic::AtomicU64,
+    adapt_skipped: std::sync::atomic::AtomicU64,
+    /// f32 bits of the reference's cosine to the anchor; NaN before enrollment.
+    adapt_cos: std::sync::atomic::AtomicU32,
+    /// Test hook: `Msg::Settle` messages the verifier task has handled.
+    settles: std::sync::atomic::AtomicU64,
+    /// Adaptive-reference log lines (counts and cosine only), also printed under `VOICE_DEBUG`.
+    /// Test-visible via [`SpeakerGate::adapt_log`].
+    adapt_log: Mutex<Vec<String>>,
 }
 
 impl Shared {
@@ -281,6 +399,19 @@ impl Shared {
         if w.len() < 64 {
             w.push(line);
         }
+    }
+
+    fn adapt_note(&self, line: String) {
+        crate::agent::voice_debug(&line);
+        let mut w = lock(&self.adapt_log);
+        if w.len() < 64 {
+            w.push(line);
+        }
+    }
+
+    fn set_adapt_cos(&self, cos: Option<f32>) {
+        self.adapt_cos
+            .store(cos.unwrap_or(f32::NAN).to_bits(), Ordering::SeqCst);
     }
 }
 
@@ -397,6 +528,12 @@ impl SpeakerGate {
                 park_release: Notify::new(),
                 holds: std::sync::atomic::AtomicU64::new(0),
                 superseded: std::sync::atomic::AtomicU64::new(0),
+                adapt_commits: std::sync::atomic::AtomicU64::new(0),
+                adapt_rejected: std::sync::atomic::AtomicU64::new(0),
+                adapt_skipped: std::sync::atomic::AtomicU64::new(0),
+                adapt_cos: std::sync::atomic::AtomicU32::new(f32::NAN.to_bits()),
+                adapt_log: Mutex::new(Vec::new()),
+                settles: std::sync::atomic::AtomicU64::new(0),
             }),
             feed: Mutex::new(Feed::default()),
         })
@@ -433,6 +570,38 @@ impl SpeakerGate {
 
     pub fn note_stale_verdict(&self) {
         self.shared.stale.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Whether the adaptive reference is active: `adapt_reference` and `split_on_speaker_change`
+    /// both on. With either off the reference is the enrolled embedding for the whole session.
+    pub fn adapts_reference(&self) -> bool {
+        self.cfg.adapt_reference && self.cfg.split_on_speaker_change
+    }
+
+    /// The final of `key` was emitted: the verifier task commits its adaptive-reference
+    /// candidates when the utterance ended with no split and every scored window was `caller`.
+    /// Never blocks (a channel send; the commit runs on the verifier task). No-op unless
+    /// [`Self::adapts_reference`].
+    pub fn settle(&self, key: u64) {
+        if self.adapts_reference() {
+            self.send(Msg::Settle { key });
+        }
+    }
+
+    /// Adaptive-reference counters and the reference's cosine to the anchor.
+    pub fn adapt_stats(&self) -> AdaptStats {
+        let cos = f32::from_bits(self.shared.adapt_cos.load(Ordering::SeqCst));
+        AdaptStats {
+            commits: self.shared.adapt_commits.load(Ordering::SeqCst),
+            rejected_anchor: self.shared.adapt_rejected.load(Ordering::SeqCst),
+            skipped: self.shared.adapt_skipped.load(Ordering::SeqCst),
+            cos_to_anchor: (!cos.is_nan()).then_some(cos),
+        }
+    }
+
+    /// Adaptive-reference log lines so far (counts and cosine only).
+    pub fn adapt_log(&self) -> Vec<String> {
+        lock(&self.shared.adapt_log).clone()
     }
 
     /// Forget the enrolled voice; the next utterances enroll again.
@@ -1262,8 +1431,10 @@ impl SpeakerGate {
     /// U2 of an `other` -> `caller` split starts as the caller (only with
     /// `split_on_speaker_change`): books the confirming `caller` verdict for `key` as window 1
     /// without embedding the seed (a seed that starts in the bed must not cascade into another
-    /// split), arms `key`'s own watch on the verifier task, and returns the verdict for the verdict
-    /// handler (it releases the barge-in). Call it before the first [`Self::begin`] of `key`, so the
+    /// split), arms `key`'s own watch on the verifier task, and returns the verdict (for the caller's
+    /// bookkeeping only; it does not release anything). U2's barge-in is released by
+    /// [`Self::barge_decision`], which reads the booked `Caller` outcome for `key`. Call it before
+    /// the first [`Self::begin`] of `key`, so the
     /// feed sees the first check as sent and the next window follows `check_speech_ms` of U2's
     /// speech.
     pub fn inherit_caller(&self, key: u64) -> Verdict {
@@ -1786,6 +1957,11 @@ async fn run(
     let mut reference: Option<Vec<f32>> = None;
     let mut enroll_pcm: Vec<u8> = Vec::new();
     let mut watches: VecDeque<(u64, Watch)> = VecDeque::new();
+    // Adaptive reference (decision e): the enrolled embedding stays as the anchor; candidates are
+    // kept per key until its final settles it. In memory only, never logged or emitted.
+    let adapt = cfg.adapt_reference && cfg.split_on_speaker_change;
+    let mut anchor: Option<Vec<f32>> = None;
+    let mut adapt_keys: VecDeque<(u64, AdaptKey)> = VecDeque::new();
 
     while let Some(msg) = rx.recv().await {
         let pending = shared
@@ -1807,8 +1983,60 @@ async fn run(
             Msg::Reset => {
                 watches.clear();
                 reference = None;
+                anchor = None;
+                adapt_keys.clear();
+                shared.set_adapt_cos(None);
                 enroll_pcm.clear();
                 shared.enrolled.store(false, Ordering::SeqCst);
+            }
+            Msg::Settle { key } => {
+                shared.settles.fetch_add(1, Ordering::SeqCst);
+                let Some(i) = adapt_keys.iter().position(|(k, _)| *k == key) else {
+                    continue;
+                };
+                let Some((_, state)) = adapt_keys.remove(i) else {
+                    continue;
+                };
+                if !adapt {
+                    continue;
+                }
+                let split = lock(&shared.book).split_keys.contains(&key);
+                let (Some(r), Some(a)) = (reference.as_ref(), anchor.as_ref()) else {
+                    continue;
+                };
+                if split || state.dirty || state.candidates.is_empty() {
+                    let n = shared.adapt_skipped.fetch_add(1, Ordering::SeqCst) + 1;
+                    shared.adapt_note(format!(
+                        "speaker gate reference kept key={key} split={split} clean={} candidates={} skipped={n}",
+                        !state.dirty,
+                        state.candidates.len()
+                    ));
+                    continue;
+                }
+                match adapt_step(r, a, &state.candidates) {
+                    AdaptStep::Commit {
+                        reference: new,
+                        cos_to_anchor,
+                    } => {
+                        reference = Some(new);
+                        shared.set_adapt_cos(Some(cos_to_anchor));
+                        let n = shared.adapt_commits.fetch_add(1, Ordering::SeqCst) + 1;
+                        shared.adapt_note(format!(
+                            "speaker gate reference adapted key={key} candidates={} commits={n} cos_to_anchor={cos_to_anchor:.3}",
+                            state.candidates.len()
+                        ));
+                    }
+                    AdaptStep::RejectAnchor { cos_to_anchor } => {
+                        let n = shared.adapt_rejected.fetch_add(1, Ordering::SeqCst) + 1;
+                        shared.adapt_note(format!(
+                            "speaker gate reference update rejected key={key} candidates={} rejected={n} cos_to_anchor={cos_to_anchor:.3}",
+                            state.candidates.len()
+                        ));
+                    }
+                    AdaptStep::Skip => {
+                        shared.adapt_skipped.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
             }
             Msg::Enroll { pcm } => {
                 if reference.is_some() {
@@ -1820,6 +2048,10 @@ async fn run(
                 }
                 match embed_bounded(&embedder, enroll_pcm.clone(), verify * 4).await {
                     Ok(Some(v)) => {
+                        if adapt {
+                            anchor = Some(v.clone());
+                            shared.set_adapt_cos(Some(1.0));
+                        }
                         reference = Some(v);
                         enroll_pcm.clear();
                         shared.enrolled.store(true, Ordering::SeqCst);
@@ -1876,6 +2108,9 @@ async fn run(
                 }
                 let started = Instant::now();
                 let clip = cfg.split_on_speaker_change.then(|| pcm.clone());
+                // Adaptive reference: the window's embedding when it scored at least
+                // `threshold + ADAPT_MARGIN`.
+                let mut candidate: Option<Vec<f32>> = None;
                 let (outcome, timed_out, reason) = match reference.as_ref() {
                     None => (Outcome::Unknown, false, Some(UNKNOWN_NOT_ENROLLED)),
                     Some(_) if speech_bytes < min_check_bytes => {
@@ -1887,6 +2122,9 @@ async fn run(
                                 crate::agent::voice_debug(format!(
                                     "speaker gate score key={key} score={score:.3} recheck={recheck}"
                                 ));
+                                if adapt && score >= cfg.threshold + ADAPT_MARGIN {
+                                    candidate = Some(v);
+                                }
                                 if score >= cfg.threshold {
                                     (Outcome::Caller, false, None)
                                 } else {
@@ -1906,6 +2144,26 @@ async fn run(
                         Err(EmbedFail::Error) => (Outcome::Unknown, false, Some(UNKNOWN_ERROR)),
                     },
                 };
+                if adapt && reference.is_some() {
+                    let i = match adapt_keys.iter().position(|(k, _)| *k == key) {
+                        Some(i) => i,
+                        None => {
+                            adapt_keys.push_back((key, AdaptKey::default()));
+                            while adapt_keys.len() > BOOK_CAP {
+                                adapt_keys.pop_front();
+                            }
+                            adapt_keys.len() - 1
+                        }
+                    };
+                    let state = &mut adapt_keys[i].1;
+                    if outcome != Outcome::Caller {
+                        state.dirty = true;
+                    } else if let Some(v) = candidate.take() {
+                        if state.candidates.len() < ADAPT_MAX_CANDIDATES {
+                            state.candidates.push(v);
+                        }
+                    }
+                }
                 let span_start = end_ms.saturating_sub((speech_bytes / BYTES_PER_MS) as u32);
                 let mut change = clip.and_then(|clip| {
                     watch_step(
@@ -3568,5 +3826,334 @@ mod tests {
         assert!(cosine(&[1.0, 0.0], &[0.0, 1.0]).unwrap().abs() < 1e-6);
         assert!(cosine(&[0.0, 0.0], &[1.0, 0.0]).is_none());
         assert!(cosine(&[1.0], &[1.0, 2.0]).is_none());
+    }
+
+    // ---- adaptive reference (adapt_reference, decision e) --------------------------------------
+
+    fn adapt_cfg(adapt: bool, cap: u32) -> SpeakerGateConfig {
+        SpeakerGateConfig {
+            adapt_reference: adapt,
+            ..split_cfg(true, cap)
+        }
+    }
+
+    async fn wait_for(gate: &SpeakerGate, what: &str, f: impl Fn(&SpeakerGate) -> bool) {
+        for _ in 0..2000 {
+            if f(gate) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("timed out waiting for {what}: {:?}", gate.adapt_stats());
+    }
+
+    /// Scores 0.8 against `caller_v`: `caller`, and above threshold + margin (0.559).
+    fn near_caller_v() -> Vec<f32> {
+        vec![0.8, 0.6]
+    }
+
+    /// Scores 0.5 against `caller_v`: `caller` (>= 0.459) but below threshold + margin.
+    fn below_margin_v() -> Vec<f32> {
+        vec![0.5, 0.866_025_4]
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn adapt_commits_a_clean_caller_utterance_at_settle() {
+        let (gate, got) = run_script_cfg(
+            adapt_cfg(true, 2),
+            vec![caller_v(), near_caller_v(), near_caller_v()],
+            2,
+            10,
+        )
+        .await;
+        assert!(got.iter().all(|v| v.outcome == Outcome::Caller), "{got:?}");
+        assert_eq!(gate.adapt_stats().commits, 0, "nothing before the final");
+        assert_eq!(gate.adapt_stats().cos_to_anchor, Some(1.0));
+        gate.settle(1);
+        wait_for(&gate, "commit", |g| g.adapt_stats().commits == 1).await;
+        let cos = gate.adapt_stats().cos_to_anchor.unwrap();
+        assert!(cos < 1.0 && cos > 0.99, "one EMA step of weight 0.1: {cos}");
+        // A second settle of the same key finds nothing to commit.
+        gate.settle(1);
+        wait_for(&gate, "second settle", |g| {
+            g.shared.settles.load(Ordering::SeqCst) == 2
+        })
+        .await;
+        assert_eq!(gate.adapt_stats().commits, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_candidate_below_the_margin_is_never_committed() {
+        let (gate, got) = run_script_cfg(
+            adapt_cfg(true, 2),
+            vec![caller_v(), below_margin_v(), below_margin_v()],
+            2,
+            10,
+        )
+        .await;
+        assert!(got.iter().all(|v| v.outcome == Outcome::Caller), "{got:?}");
+        gate.settle(1);
+        wait_for(&gate, "skip", |g| g.adapt_stats().skipped == 1).await;
+        let st = gate.adapt_stats();
+        assert_eq!((st.commits, st.rejected_anchor), (0, 0));
+        assert_eq!(st.cos_to_anchor, Some(1.0), "reference unchanged");
+    }
+
+    /// Confident caller windows, then a confirmed caller -> other change: the key is split and
+    /// commits nothing, although its first windows were candidates.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_split_utterance_commits_nothing() {
+        let (gate, _got) = run_script_cfg(
+            adapt_cfg(true, 4),
+            vec![
+                caller_v(),
+                near_caller_v(),
+                near_caller_v(),
+                other_v(),
+                other_v(),
+            ],
+            4,
+            10,
+        )
+        .await;
+        assert_eq!(gate.take_speaker_changes().len(), 1);
+        gate.settle(1);
+        wait_for(&gate, "skip", |g| g.adapt_stats().skipped == 1).await;
+        let st = gate.adapt_stats();
+        assert_eq!((st.commits, st.cos_to_anchor), (0, Some(1.0)));
+        assert!(
+            gate.adapt_log().iter().any(|l| l.contains("split=true")),
+            "{:?}",
+            gate.adapt_log()
+        );
+    }
+
+    /// An other -> caller split (U1) commits nothing either: its first window is `other`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_other_to_caller_split_commits_nothing() {
+        let (gate, _got) = run_script_cfg(
+            adapt_cfg(true, 4),
+            vec![caller_v(), other_v(), near_caller_v()],
+            2,
+            10,
+        )
+        .await;
+        assert_eq!(gate.take_speaker_changes().len(), 1);
+        gate.settle(1);
+        wait_for(&gate, "skip", |g| g.adapt_stats().skipped == 1).await;
+        assert_eq!(gate.adapt_stats().commits, 0);
+    }
+
+    #[test]
+    fn an_update_below_the_anchor_bound_is_rejected() {
+        let anchor = vec![1.0, 0.0];
+        // Already drifted to cosine 0.81 against the anchor; a candidate further away.
+        let reference = vec![0.81, (1.0_f32 - 0.81 * 0.81).sqrt()];
+        match adapt_step(&reference, &anchor, &[vec![0.0, 1.0]]) {
+            AdaptStep::RejectAnchor { cos_to_anchor } => {
+                assert!(cos_to_anchor < ANCHOR_MIN_COSINE, "{cos_to_anchor}")
+            }
+            other => panic!("expected a rejection, got {other:?}"),
+        }
+        // Toward the anchor: committed, unit length, closer than before.
+        match adapt_step(&reference, &anchor, &[vec![1.0, 0.0]]) {
+            AdaptStep::Commit {
+                reference: new,
+                cos_to_anchor,
+            } => {
+                assert!(cos_to_anchor > 0.81);
+                let n: f32 = new.iter().map(|x| x * x).sum::<f32>().sqrt();
+                assert!((n - 1.0).abs() < 1e-5, "re-normalized: {n}");
+            }
+            other => panic!("expected a commit, got {other:?}"),
+        }
+        // EMA weight: one step from the anchor toward an orthogonal candidate moves at most
+        // ADAPT_ALPHA of the way.
+        let AdaptStep::Commit { cos_to_anchor, .. } =
+            adapt_step(&anchor, &anchor, &[vec![0.0, 1.0]])
+        else {
+            panic!("expected a commit");
+        };
+        let expected =
+            (1.0 - ADAPT_ALPHA) / ((1.0 - ADAPT_ALPHA).powi(2) + ADAPT_ALPHA.powi(2)).sqrt();
+        assert!((cos_to_anchor - expected).abs() < 1e-5);
+        assert_eq!(adapt_step(&anchor, &anchor, &[]), AdaptStep::Skip);
+        assert_eq!(adapt_step(&anchor, &anchor, &[vec![1.0]]), AdaptStep::Skip);
+        const { assert!(ADAPT_ALPHA <= 0.1) };
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reset_clears_the_reference_and_the_anchor() {
+        let (gate, verdicts, queue) = run_script_steps(
+            adapt_cfg(true, 2),
+            [caller_v(), near_caller_v(), near_caller_v()]
+                .into_iter()
+                .map(|v| (None, v))
+                .collect(),
+            2,
+            10,
+        )
+        .await;
+        gate.settle(1);
+        wait_for(&gate, "commit", |g| g.adapt_stats().commits == 1).await;
+        gate.reset();
+        wait_for(&gate, "reset", |g| g.adapt_stats().cos_to_anchor.is_none()).await;
+        assert!(!gate.is_enrolled());
+        // Re-enroll on another voice: the new anchor and reference are that voice only.
+        lock(&queue).clear();
+        lock(&queue).push_back((None, other_v()));
+        gate.send(Msg::Enroll {
+            pcm: vec![0_u8; 100 * BYTES_PER_MS],
+        });
+        wait_for(&gate, "re-enroll", |g| g.is_enrolled()).await;
+        assert_eq!(gate.adapt_stats().cos_to_anchor, Some(1.0));
+        lock(&queue).push_back((None, other_v()));
+        let before = lock(&verdicts).len();
+        gate.begin(2, &alternating(0));
+        for f in 1..10 {
+            gate.push_frame(&alternating(f));
+        }
+        for _ in 0..2000 {
+            if lock(&verdicts).iter().any(|v| v.key == 2) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let v = lock(&verdicts)[before..]
+            .iter()
+            .find(|v| v.key == 2)
+            .cloned()
+            .expect("verdict for key 2");
+        assert_eq!(
+            v.outcome,
+            Outcome::Caller,
+            "scored against the new reference only"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn option_off_leaves_the_reference_unchanged() {
+        for cfg in [adapt_cfg(false, 2), {
+            // adapt on, split off: no effect either.
+            let mut c = adapt_cfg(true, 2);
+            c.split_on_speaker_change = false;
+            c
+        }] {
+            let (gate, _got) = run_script_cfg(
+                cfg,
+                vec![caller_v(), near_caller_v(), near_caller_v()],
+                1,
+                10,
+            )
+            .await;
+            assert!(!gate.adapts_reference());
+            gate.settle(1); // no-op: nothing is sent
+            gate.send(Msg::Settle { key: 1 });
+            wait_for(&gate, "settle", |g| {
+                g.shared.settles.load(Ordering::SeqCst) >= 1
+            })
+            .await;
+            assert_eq!(gate.shared.settles.load(Ordering::SeqCst), 1);
+            assert_eq!(gate.adapt_stats(), AdaptStats::default());
+            assert!(gate.adapt_log().is_empty());
+        }
+    }
+
+    /// No embedding value reaches a log, warning or verdict string: the adapt log lines carry
+    /// only `key=value` pairs of ids, counts, booleans and a 3-decimal cosine.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn no_embedding_values_in_adapt_logs_or_verdicts() {
+        let reference = vec![0.612_345_7, 0.398_765_4, 0.276_543_2];
+        let cand = vec![0.623_456_1, 0.387_654_3, 0.265_432_1];
+        let far = vec![0.912_345_6, -0.301_234_5, -0.310_987_6];
+        let (gate, got) = run_script_cfg(
+            adapt_cfg(true, 4),
+            vec![
+                reference.clone(),
+                cand.clone(),
+                cand.clone(),
+                far.clone(),
+                far.clone(),
+            ],
+            4,
+            10,
+        )
+        .await;
+        // A second utterance that commits.
+        let (gate2, got2) = run_script_cfg(
+            adapt_cfg(true, 2),
+            vec![reference.clone(), cand.clone(), cand.clone()],
+            2,
+            10,
+        )
+        .await;
+        gate.settle(1);
+        gate2.settle(1);
+        wait_for(&gate, "skip", |g| g.adapt_stats().skipped == 1).await;
+        wait_for(&gate2, "commit", |g| g.adapt_stats().commits == 1).await;
+        let mut lines: Vec<String> = Vec::new();
+        for g in [&gate, &gate2] {
+            lines.extend(g.adapt_log());
+            lines.extend(g.warnings());
+            lines.push(format!("{:?}", g.adapt_stats()));
+        }
+        lines.extend(got.iter().chain(&got2).map(|v| format!("{v:?}")));
+        lines.extend(gate.take_speaker_changes().iter().map(|c| format!("{c:?}")));
+        assert!(gate2.adapt_log().iter().any(|l| l.contains("adapted")));
+        let shape = |l: &str| {
+            l.split_whitespace().all(|t| match t.split_once('=') {
+                None => t.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                Some((_, v)) => {
+                    v == "true"
+                        || v == "false"
+                        || v.chars().all(|c| c.is_ascii_digit())
+                        || (v.len() == 5 && v.starts_with("0.") || v == "1.000")
+                }
+            })
+        };
+        for l in gate.adapt_log().iter().chain(&gate2.adapt_log()) {
+            assert!(shape(l), "adapt log line with an unexpected token: {l}");
+        }
+        for v in reference.iter().chain(&cand).chain(&far) {
+            for digits in [format!("{v}"), format!("{v:.3}"), format!("{v:.4}")] {
+                for l in &lines {
+                    assert!(!l.contains(&digits), "embedding value {digits} in: {l}");
+                }
+            }
+        }
+    }
+
+    /// Source guard: no format string in the gate interpolates an embedding, the reference, the
+    /// anchor or a candidate (by name or with a Debug `{:?}` placeholder on a vector).
+    #[test]
+    fn gate_source_never_formats_embeddings() {
+        let src = include_str!("speaker_gate.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap();
+        for name in [
+            "reference",
+            "anchor",
+            "candidate",
+            "candidates",
+            "v",
+            "new",
+            "r",
+            "a",
+            "c",
+            "mixed",
+            "sum",
+            "pcm",
+            "clip",
+        ] {
+            for pat in [
+                format!("{{{name}}}"),
+                format!("{{{name}:"),
+                format!("{{{name}:?}}"),
+            ] {
+                assert!(
+                    !prod.contains(&pat),
+                    "format placeholder {pat} in speaker_gate.rs (embeddings and PCM are never logged)"
+                );
+            }
+        }
     }
 }

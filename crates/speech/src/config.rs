@@ -301,6 +301,15 @@ pub struct SpeakerGateConfig {
     ///
     /// A split re-decodes the first part on one extra STT stream, which is why this defaults off.
     pub split_on_speaker_change: bool,
+    /// Adaptive reference, only with `split_on_speaker_change` (no effect while it is off). The
+    /// reference moves toward confident caller windows (score at least threshold +
+    /// `speaker_gate::ADAPT_MARGIN`) of utterances that ended with no split and with every scored
+    /// window `caller`, committed when the agent emits the final: an EMA of weight
+    /// `speaker_gate::ADAPT_ALPHA`, re-normalized, rejected when it falls below
+    /// `speaker_gate::ANCHOR_MIN_COSINE` against the enrolled embedding (the anchor). Reset clears
+    /// both. In memory only: nothing is persisted, logged or emitted except counts and the cosine
+    /// to the anchor. Default decided by `crates/vendor-sherpa-onnx/examples/ADAPT_REFERENCE_BENCH.md`.
+    pub adapt_reference: bool,
     pub on_mismatch: SpeakerMismatchAction,
     /// Bound (ms) on one embedding call and on a final waiting for its verdict.
     pub verify_timeout_ms: u32,
@@ -310,6 +319,10 @@ pub struct SpeakerGateConfig {
     /// (`set_speaker_gate`); the load runs off the frame path. Default 10000.
     pub model_load_timeout_ms: u32,
 }
+
+/// Default for [`SpeakerGateConfig::adapt_reference`], set from the adaptation bench
+/// (`crates/vendor-sherpa-onnx/examples/ADAPT_REFERENCE_BENCH.md`).
+pub const DEFAULT_ADAPT_REFERENCE: bool = false;
 
 impl Default for SpeakerGateConfig {
     fn default() -> Self {
@@ -324,6 +337,7 @@ impl Default for SpeakerGateConfig {
             recheck_on_other: true,
             recheck_max_windows: crate::speaker_gate::DEFAULT_RECHECK_MAX_WINDOWS,
             split_on_speaker_change: false,
+            adapt_reference: DEFAULT_ADAPT_REFERENCE,
             on_mismatch: SpeakerMismatchAction::Flag,
             verify_timeout_ms: 500,
             barge_in: SpeakerGateBargeIn::CallerOnly,

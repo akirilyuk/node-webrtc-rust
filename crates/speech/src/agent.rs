@@ -4955,6 +4955,11 @@ impl VoiceAgent {
             if outcome != Outcome::Other && !cut {
                 gate.enroll_utterance(key);
             }
+            // Adaptive reference: the verifier task commits this utterance's candidates if it
+            // qualifies (no split, every scored window `caller`). A channel send, never awaited.
+            if !cut {
+                gate.settle(key);
+            }
         }
         self.fire_final_terminal_waiter(key).await;
     }

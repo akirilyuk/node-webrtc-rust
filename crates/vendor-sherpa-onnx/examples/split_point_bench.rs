@@ -66,7 +66,18 @@ const MAX_WINDOWS: usize = 12;
 const FRAME_MS: usize = 20;
 const SMOOTH_FRAMES: usize = 5;
 /// Stage 2 variants: (sub-window ms, hop ms).
-const SUB_WINDOWS: [(usize, usize); 4] = [(750, 250), (1000, 250), (1000, 125), (1250, 250)];
+const SUB_WINDOWS: [(usize, usize); 7] = [
+    (750, 250),
+    (1000, 250),
+    (1000, 125),
+    (1250, 250),
+    // Chunk 6b candidates (finer hop, shorter sub-windows).
+    (500, 50),
+    (750, 50),
+    (1000, 50),
+];
+/// The chunk-1 variant tables cover the first four sub-window configs only.
+const ORIG_SUB_WINDOWS: usize = 4;
 const REFINE_MS: [usize; 2] = [100, 150];
 const QUIET_MINS: [usize; 4] = [500, 800, 1000, 1500];
 
@@ -447,6 +458,184 @@ fn stage2_split(c: &Case, v: usize, anchor: Anchor, r: usize, threshold: f32) ->
     Some(refine(&c.samples, p, r))
 }
 
+/// Chunk 6b cut-point candidates, applied after the first `caller` sub-window `i` (start `t`).
+#[derive(Clone, Copy)]
+enum Cand {
+    /// Start of the first `caller` sub-window, energy refine `+-150` (the shipped pick).
+    Start,
+    /// Threshold crossing interpolated between sub-windows `i-1` and `i`, energy refine `+-150`.
+    Cross,
+    /// Lowest smoothed-energy frame in `[t, t + F)`, `F` = the given ms.
+    FwdMin(usize),
+    /// End of the longest quiet run in `[t, t + F)` (stage-1 rule), `F` = the given ms.
+    FwdQuiet(usize),
+    /// Lowest smoothed-energy frame in `[t, end of the last other sub-window)`.
+    FwdMinLoe,
+    /// End of the longest quiet run in `[t, end of the last other sub-window)`.
+    FwdQuietLoe,
+}
+
+fn cand_name(c: Cand) -> String {
+    match c {
+        Cand::Start => "start ±150".into(),
+        Cand::Cross => "cross ±150".into(),
+        Cand::FwdMin(f) => format!("fwd-min {f}"),
+        Cand::FwdQuiet(f) => format!("fwd-quiet {f}"),
+        Cand::FwdMinLoe => "fwd-min to last-other-end".into(),
+        Cand::FwdQuietLoe => "fwd-quiet to last-other-end".into(),
+    }
+}
+
+/// Lowest 5-frame-smoothed power frame start in `[a, b)`.
+fn min_smoothed(samples: &[f32], a: usize, b: usize) -> usize {
+    let n = b.saturating_sub(a) / FRAME_MS;
+    if n == 0 {
+        return a;
+    }
+    let raw: Vec<f64> = (0..n)
+        .map(|i| frame_power(samples, a + i * FRAME_MS))
+        .collect();
+    let mut best = (f64::INFINITY, a);
+    for i in 0..n {
+        let lo = i.saturating_sub(SMOOTH_FRAMES / 2);
+        let hi = (i + SMOOTH_FRAMES / 2 + 1).min(n);
+        let v = raw[lo..hi].iter().sum::<f64>() / (hi - lo) as f64;
+        if v < best.0 {
+            best = (v, a + i * FRAME_MS);
+        }
+    }
+    best.1
+}
+
+/// Candidate split and the embeds (and seconds) the product spends to reach it (it stops at the
+/// first `caller` sub-window). `None` without a `caller` sub-window.
+fn cand_split(c: &Case, v: usize, cand: Cand, threshold: f32) -> Option<(usize, usize, f64)> {
+    let (l, h) = SUB_WINDOWS[v];
+    let subs = &c.stage2[v].subs;
+    let i = subs.iter().position(|(_, s, _)| *s >= threshold)?;
+    let t = subs[i].0;
+    let secs: f64 = subs[..=i].iter().map(|x| x.2).sum();
+    let loe = if i > 0 { subs[i - 1].0 + l } else { t + h };
+    let p = match cand {
+        Cand::Start => refine(&c.samples, t, 150),
+        Cand::Cross => {
+            let x = if i > 0 {
+                let (s0, s1) = (subs[i - 1].1, subs[i].1);
+                let f = ((threshold - s0) / (s1 - s0)).clamp(0.0, 1.0) as f64;
+                subs[i - 1].0 + (f * h as f64).round() as usize
+            } else {
+                t
+            };
+            refine(&c.samples, x, 150)
+        }
+        Cand::FwdMin(f) => min_smoothed(&c.samples, t, t + f),
+        Cand::FwdQuiet(f) => stage1(&c.samples, t, t + f).0,
+        Cand::FwdMinLoe => min_smoothed(&c.samples, t, loe.max(t + FRAME_MS)),
+        Cand::FwdQuietLoe => stage1(&c.samples, t, loe.max(t + FRAME_MS)).0,
+    };
+    Some((p, i + 1, secs))
+}
+
+/// Chunk 6b table: every candidate on every sub-window config, combined with stage 1 (quiet min
+/// 500). Gate false-accept scenes (first `caller` window more than 800 ms before the bystander's
+/// voiced end) are counted in `all` and shown apart.
+fn chunk6b_candidates(cases: &[Case], threshold: f32) -> String {
+    let cands = [
+        Cand::Start,
+        Cand::Cross,
+        Cand::FwdMin(250),
+        Cand::FwdMin(500),
+        Cand::FwdMin(750),
+        Cand::FwdQuiet(250),
+        Cand::FwdQuiet(500),
+        Cand::FwdQuiet(750),
+        Cand::FwdMinLoe,
+        Cand::FwdQuietLoe,
+    ];
+    let mut md = String::from(
+        "\n### Chunk 6b candidates (stage 1 when its quiet run >= 500, else the candidate)\n\n\
+         cut / leak = words (scenes). `FA` = gate false-accept scenes (first `caller` window more \
+         than 800 ms before the bystander's voiced end). split - by end on no-pause non-FA scenes, \
+         min / p5 / p50 / p95 / max. Embeds and ms: stage 2 up to the first `caller` sub-window, \
+         p50 / p99 / max per scene.\n\n\
+         | sub/hop | candidate | paused cut | paused leak | no pause cut | no pause leak | no pause leak, non-FA | split - by end (no pause, non-FA) | split - caller on (both sets, non-FA) p95 / max | embeds | stage 2 ms |\n\
+         |---|---|---|---|---|---|---|---|---|---|---|\n",
+    );
+    for (v, &(l, h)) in SUB_WINDOWS.iter().enumerate() {
+        for &cand in &cands {
+            let mut cells: Vec<String> = Vec::new();
+            let mut embeds: Vec<f64> = Vec::new();
+            let mut ms: Vec<f64> = Vec::new();
+            let mut dist: Vec<f64> = Vec::new();
+            let mut vs_caller: Vec<f64> = Vec::new();
+            let mut nonfa_leak = (0usize, 0usize);
+            for paused in [true, false] {
+                let (mut cw, mut cs, mut lw, mut ls) = (0, 0, 0, 0);
+                for c in cases.iter().filter(|c| c.paused == paused) {
+                    let split = if c.s1_run >= 500 {
+                        c.s1_split
+                    } else {
+                        match cand_split(c, v, cand, threshold) {
+                            Some((p, e, secs)) => {
+                                embeds.push(e as f64);
+                                ms.push(secs * 1000.0);
+                                p
+                            }
+                            None => c.s1_split,
+                        }
+                    };
+                    let cut = c.caller.words_before(split);
+                    let leak = c.by.words - c.by.words_before(split);
+                    cw += cut;
+                    cs += usize::from(cut > 0);
+                    lw += leak;
+                    ls += usize::from(leak > 0);
+                    let fa = c.window_start + 800 < c.by.off;
+                    if !paused && !fa {
+                        nonfa_leak.0 += leak;
+                        nonfa_leak.1 += usize::from(leak > 0);
+                        dist.push(split as f64 - c.by.off as f64);
+                    }
+                    if !fa {
+                        vs_caller.push(split as f64 - c.caller.on as f64);
+                    }
+                }
+                cells.push(format!("{cw} ({cs})"));
+                cells.push(format!("{lw} ({ls})"));
+            }
+            for x in [&mut embeds, &mut ms, &mut dist, &mut vs_caller] {
+                x.sort_by(|a, b| a.total_cmp(b));
+            }
+            let last = |x: &Vec<f64>| x.last().copied().unwrap_or(f64::NAN);
+            let first = |x: &Vec<f64>| x.first().copied().unwrap_or(f64::NAN);
+            md.push_str(&format!(
+                "| {l}/{h} | {} | {} | {} | {} | {} | {} ({}) | {:.0} / {:.0} / {:.0} / {:.0} / {:.0} | {:.0} / {:.0} | {:.0} / {:.0} / {:.0} | {:.0} / {:.0} / {:.0} |\n",
+                cand_name(cand),
+                cells[0],
+                cells[1],
+                cells[2],
+                cells[3],
+                nonfa_leak.0,
+                nonfa_leak.1,
+                first(&dist),
+                percentile(&dist, 0.05),
+                percentile(&dist, 0.5),
+                percentile(&dist, 0.95),
+                last(&dist),
+                percentile(&vs_caller, 0.95),
+                last(&vs_caller),
+                percentile(&embeds, 0.5),
+                percentile(&embeds, 0.99),
+                last(&embeds),
+                percentile(&ms, 0.5),
+                percentile(&ms, 0.99),
+                last(&ms),
+            ));
+        }
+    }
+    md
+}
+
 #[derive(Default)]
 struct Tally {
     dist: Vec<f64>,
@@ -606,7 +795,7 @@ fn run() -> Result<(), String> {
         md.push_str(&format!("| {name} | {r} | {} |\n", t.row()));
     }
     md.push_str("\n### Stage 2 alone\n\n| variant | set | n | distance | cut | leak | no caller sub-window |\n|---|---|---|---|---|---|---|\n");
-    let variants: Vec<(usize, Anchor, usize)> = (0..SUB_WINDOWS.len())
+    let variants: Vec<(usize, Anchor, usize)> = (0..ORIG_SUB_WINDOWS)
         .flat_map(|v| ANCHORS.map(move |m| (v, m)))
         .flat_map(|(v, m)| REFINE_MS.map(move |r| (v, m, r)))
         .collect();
@@ -657,7 +846,7 @@ fn run() -> Result<(), String> {
         }
     }
     md.push_str("\n### Stage 2 embed time\n\n| sub-window/hop | embeds per scene p50 / max | per embed ms p50 / p99 / max | per scene total ms p50 / p99 / max |\n|---|---|---|---|\n");
-    for (v, (l, h)) in SUB_WINDOWS.iter().enumerate() {
+    for (v, (l, h)) in SUB_WINDOWS.iter().enumerate().take(ORIG_SUB_WINDOWS) {
         let mut per: Vec<f64> = Vec::new();
         let mut totals: Vec<f64> = Vec::new();
         let mut counts: Vec<f64> = Vec::new();
@@ -683,10 +872,50 @@ fn run() -> Result<(), String> {
             last(&totals)
         ));
     }
-    md.push_str("\n### Per scene (stage 1)\n\n| scene | range | first caller window | bystander voiced | caller voiced | quiet run ms | stage 1 split |\n|---|---|---|---|---|---|---|\n");
+    md.push_str(&chunk6b_candidates(&cases, threshold));
+    // The shipped pick (quiet min 500, L1000/H125 start ±150) per scene, measured from the
+    // bystander's voiced end: the no-pause gap the split has to land in.
+    let shipped = |c: &Case| {
+        if c.s1_run >= 500 {
+            c.s1_split
+        } else {
+            stage2_split(c, 2, Anchor::Start, 150, threshold).unwrap_or(c.s1_split)
+        }
+    };
+    md.push_str("\n### Shipped split vs the bystander's voiced end (quiet min 500, L1000/H125 start ±150)\n\n`split - by end` and `caller on - by end` in ms, min / p5 / p50 / p95 / max. `window late` = scenes whose first `caller` window starts no more than 800 ms before the bystander's voiced end (the rest are gate false accepts, see below).\n\n| set | scenes | split - by end | caller on - by end | split - caller on |\n|---|---|---|---|---|\n");
+    for (name, paused) in sets {
+        for late_only in [false, true] {
+            let sel: Vec<&Case> = cases
+                .iter()
+                .filter(|c| c.paused == paused)
+                .filter(|c| !late_only || c.window_start + 800 >= c.by.off)
+                .collect();
+            let dist = |f: &dyn Fn(&Case) -> f64| {
+                let mut x: Vec<f64> = sel.iter().map(|c| f(c)).collect();
+                x.sort_by(|a, b| a.total_cmp(b));
+                format!(
+                    "{:.0} / {:.0} / {:.0} / {:.0} / {:.0}",
+                    x.first().copied().unwrap_or(f64::NAN),
+                    percentile(&x, 0.05),
+                    percentile(&x, 0.5),
+                    percentile(&x, 0.95),
+                    x.last().copied().unwrap_or(f64::NAN)
+                )
+            };
+            md.push_str(&format!(
+                "| {name}{} | {} | {} | {} | {} |\n",
+                if late_only { ", window late" } else { "" },
+                sel.len(),
+                dist(&|c| shipped(c) as f64 - c.by.off as f64),
+                dist(&|c| c.caller.on as f64 - c.by.off as f64),
+                dist(&|c| shipped(c) as f64 - c.caller.on as f64)
+            ));
+        }
+    }
+    md.push_str("\n### Per scene (stage 1)\n\n| scene | range | first caller window | bystander voiced | caller voiced | quiet run ms | stage 1 split | shipped split | split - by end |\n|---|---|---|---|---|---|---|---|---|\n");
     for c in &cases {
         md.push_str(&format!(
-            "| {} | {}-{} | {} | {}-{} | {}-{} | {} | {} |\n",
+            "| {} | {}-{} | {} | {}-{} | {}-{} | {} | {} | {} | {} |\n",
             c.id,
             c.lo,
             c.hi,
@@ -696,7 +925,9 @@ fn run() -> Result<(), String> {
             c.caller.on,
             c.caller.off,
             c.s1_run,
-            c.s1_split
+            c.s1_split,
+            shipped(c),
+            shipped(c) as i64 - c.by.off as i64
         ));
     }
     print!("{md}");

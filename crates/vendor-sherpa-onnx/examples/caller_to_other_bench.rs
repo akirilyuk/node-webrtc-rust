@@ -311,6 +311,676 @@ fn levels(wins: &[Win], thr: f32) -> Vec<f64> {
     out
 }
 
+/// Gate `SPLIT_SMOOTH_FRAMES`.
+const SMOOTH: usize = 5;
+
+/// Where in the longest quiet run the cut lands.
+#[derive(Clone, Copy)]
+enum Pos {
+    End,
+    Start,
+    /// `end - ms`, not before the run's start.
+    Back(usize),
+    Mid,
+    /// The lowest-energy 20 ms frame of the run (ties: the later one).
+    MinEnergy,
+    /// The run's end, or, when the run reaches the range end (no loud frame after it: the next
+    /// speaker or the bed, not a pause), its start + `ms` (chunk 6e, parent decision).
+    StartIfOpen(usize),
+    /// Raw-frame cut (chunk 6e, parent decision): a closed run cuts right before the next
+    /// speaker's first loud raw frame (the smoothing offset undone); an open run (quiet to the
+    /// range end) cuts at the end of the caller's last loud raw frame + `ms`.
+    Raw(usize),
+    /// Hybrid (chunk 6e, decision r): a closed run cuts as [`Pos::Raw`]; an open run cuts at the
+    /// run's end (the range end), as [`Pos::End`].
+    Hybrid,
+}
+
+fn pos_name(p: Pos) -> String {
+    match p {
+        Pos::End => "end".into(),
+        Pos::Start => "start".into(),
+        Pos::Back(ms) => format!("end - {ms} ms"),
+        Pos::Mid => "midpoint".into(),
+        Pos::MinEnergy => "lowest-energy frame".into(),
+        Pos::StartIfOpen(ms) => format!("end; start + {ms} ms when it reaches the range end"),
+        Pos::Raw(ms) => {
+            format!("raw: closed = first loud raw frame; open = last loud raw frame + {ms} ms")
+        }
+        Pos::Hybrid => "hybrid: closed = first loud raw frame; open = run end".into(),
+    }
+}
+
+/// Caller -> other cut candidates (chunk 6e, decision q).
+#[derive(Clone, Copy)]
+enum Cut {
+    /// Today's gate: lowest-energy frame within +-300 ms of the first `other` window's start.
+    Today,
+    /// Longest quiet run (the gate's stage 1 rule) in `[first start - x, end)`, `end` the first
+    /// `other` window's end (`confirm`: the confirming window's end); cut at the run's end
+    /// (see [`Pos`]).
+    /// `mid_hi`: the range ends at the first `other` window's midpoint instead. `early` > 0: the
+    /// earliest run at least `early` x the longest one.
+    Quiet {
+        x: usize,
+        confirm: bool,
+        pos: Pos,
+        mid_hi: bool,
+        early: f64,
+    },
+    /// First quiet run of at least `min` ms in `[first start - x, first end)`; cut at its start.
+    FirstQuiet { x: usize, min: usize },
+}
+
+const CUTS: [Cut; 47] = [
+    Cut::Today,
+    Cut::Quiet {
+        x: 300,
+        confirm: false,
+        pos: Pos::End,
+        mid_hi: false,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 300,
+        confirm: false,
+        pos: Pos::Back(60),
+        mid_hi: false,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 300,
+        confirm: false,
+        pos: Pos::Back(100),
+        mid_hi: false,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 300,
+        confirm: false,
+        pos: Pos::Back(160),
+        mid_hi: false,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 300,
+        confirm: false,
+        pos: Pos::Mid,
+        mid_hi: false,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 300,
+        confirm: false,
+        pos: Pos::Start,
+        mid_hi: false,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 750,
+        confirm: false,
+        pos: Pos::End,
+        mid_hi: false,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 750,
+        confirm: false,
+        pos: Pos::Back(60),
+        mid_hi: false,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 750,
+        confirm: false,
+        pos: Pos::Back(100),
+        mid_hi: false,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 750,
+        confirm: false,
+        pos: Pos::Back(160),
+        mid_hi: false,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 750,
+        confirm: false,
+        pos: Pos::Mid,
+        mid_hi: false,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 750,
+        confirm: false,
+        pos: Pos::Start,
+        mid_hi: false,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::End,
+        mid_hi: false,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::Back(60),
+        mid_hi: false,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::Back(100),
+        mid_hi: false,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::Back(160),
+        mid_hi: false,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::Mid,
+        mid_hi: false,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::Start,
+        mid_hi: false,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1800,
+        confirm: false,
+        pos: Pos::End,
+        mid_hi: false,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::MinEnergy,
+        mid_hi: false,
+        early: 0.0,
+    },
+    Cut::FirstQuiet { x: 750, min: 300 },
+    Cut::Quiet {
+        x: 750,
+        confirm: false,
+        pos: Pos::End,
+        mid_hi: true,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 750,
+        confirm: false,
+        pos: Pos::Mid,
+        mid_hi: true,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 750,
+        confirm: false,
+        pos: Pos::End,
+        mid_hi: false,
+        early: 0.5,
+    },
+    Cut::Quiet {
+        x: 750,
+        confirm: false,
+        pos: Pos::Mid,
+        mid_hi: false,
+        early: 0.5,
+    },
+    Cut::Quiet {
+        x: 750,
+        confirm: false,
+        pos: Pos::End,
+        mid_hi: true,
+        early: 0.5,
+    },
+    Cut::Quiet {
+        x: 750,
+        confirm: false,
+        pos: Pos::Mid,
+        mid_hi: true,
+        early: 0.5,
+    },
+    Cut::Quiet {
+        x: 750,
+        confirm: false,
+        pos: Pos::End,
+        mid_hi: false,
+        early: 0.7,
+    },
+    Cut::Quiet {
+        x: 750,
+        confirm: false,
+        pos: Pos::Mid,
+        mid_hi: false,
+        early: 0.7,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::End,
+        mid_hi: true,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::Mid,
+        mid_hi: true,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::End,
+        mid_hi: false,
+        early: 0.5,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::Mid,
+        mid_hi: false,
+        early: 0.5,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::End,
+        mid_hi: true,
+        early: 0.5,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::Mid,
+        mid_hi: true,
+        early: 0.5,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::End,
+        mid_hi: false,
+        early: 0.7,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::Mid,
+        mid_hi: false,
+        early: 0.7,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::StartIfOpen(0),
+        mid_hi: true,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::StartIfOpen(60),
+        mid_hi: true,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::StartIfOpen(120),
+        mid_hi: true,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::StartIfOpen(200),
+        mid_hi: true,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::Raw(0),
+        mid_hi: true,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::Raw(40),
+        mid_hi: true,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::Raw(80),
+        mid_hi: true,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::Raw(120),
+        mid_hi: true,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::Hybrid,
+        mid_hi: true,
+        early: 0.0,
+    },
+];
+
+fn cut_name(c: Cut) -> String {
+    match c {
+        Cut::Today => "today: min-energy frame +-300 ms of the first other start".into(),
+        Cut::Quiet {
+            x,
+            confirm,
+            pos,
+            mid_hi,
+            early,
+        } => format!(
+            "{} quiet run [first start - {x}, {}), cut at run {}",
+            if early > 0.0 {
+                format!("earliest >= {early} x longest")
+            } else {
+                "longest".into()
+            },
+            if mid_hi {
+                "first other mid"
+            } else if confirm {
+                "confirm end"
+            } else {
+                "first other end"
+            },
+            pos_name(pos)
+        ),
+        Cut::FirstQuiet { x, min } => {
+            format!("first quiet run >= {min} ms [first start - {x}, first other end), cut at run start")
+        }
+    }
+}
+
+/// Mean square per 20 ms frame of `[lo, lo + n * 20)` ms.
+fn frame_powers(samples: &[f32], lo: usize, hi: usize) -> Vec<f64> {
+    let n = hi.saturating_sub(lo) / FRAME_MS;
+    (0..n)
+        .map(|i| {
+            let f = slice(samples, lo + i * FRAME_MS, lo + (i + 1) * FRAME_MS);
+            if f.is_empty() {
+                0.0
+            } else {
+                f.iter().map(|v| f64::from(*v) * f64::from(*v)).sum::<f64>() / f.len() as f64
+            }
+        })
+        .collect()
+}
+
+/// Quiet flags per frame of `[lo, hi)`, the gate's stage 1 rule: power smoothed over 5 frames
+/// (dB), quiet below the midpoint of the range's 10th and 90th percentile.
+fn quiet_flags(samples: &[f32], lo: usize, hi: usize) -> Vec<bool> {
+    let raw = frame_powers(samples, lo, hi);
+    let n = raw.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let db = |p: f64| 10.0 * p.max(1e-12).log10();
+    let smooth: Vec<f64> = (0..n)
+        .map(|i| {
+            let a = i.saturating_sub(SMOOTH / 2);
+            let b = (i + SMOOTH / 2 + 1).min(n);
+            db(raw[a..b].iter().sum::<f64>() / (b - a) as f64)
+        })
+        .collect();
+    let mut sorted = smooth.clone();
+    sorted.sort_by(f64::total_cmp);
+    let pct = |q: f64| sorted[((sorted.len() - 1) as f64 * q).round() as usize];
+    let mid = (pct(0.1) + pct(0.9)) / 2.0;
+    smooth.iter().map(|v| *v < mid).collect()
+}
+
+/// Raw-frame cut over `[lo, hi)` (see [`Pos::Raw`]): (cut, open run). `None` without a run.
+fn raw_cut(samples: &[f32], lo: usize, hi: usize, m: usize) -> Option<(usize, bool)> {
+    let raw = frame_powers(samples, lo, hi);
+    let n = raw.len();
+    if n == 0 {
+        return None;
+    }
+    let db = |p: f64| 10.0 * p.max(1e-12).log10();
+    let smooth: Vec<f64> = (0..n)
+        .map(|i| {
+            let a = i.saturating_sub(SMOOTH / 2);
+            let b = (i + SMOOTH / 2 + 1).min(n);
+            db(raw[a..b].iter().sum::<f64>() / (b - a) as f64)
+        })
+        .collect();
+    let mut sorted = smooth.clone();
+    sorted.sort_by(f64::total_cmp);
+    let pct = |q: f64| sorted[((sorted.len() - 1) as f64 * q).round() as usize];
+    let mid = (pct(0.1) + pct(0.9)) / 2.0;
+    let (mut best, mut best_end, mut run) = (0, 0, 0);
+    for (i, v) in smooth.iter().enumerate() {
+        if *v < mid {
+            run += 1;
+            if run >= best {
+                best = run;
+                best_end = i + 1;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    if best == 0 {
+        return None;
+    }
+    let loud = |i: usize| db(raw[i]) >= mid;
+    let start = best_end - best;
+    if best_end < n {
+        // Closed: the first loud raw frame at or after the smoothed end, within the smoothing reach
+        // either side.
+        let from = best_end.saturating_sub(SMOOTH / 2).max(start);
+        let to = (best_end + SMOOTH / 2).min(n);
+        let at = (from..to).find(|i| loud(*i)).unwrap_or(best_end);
+        return Some((lo + at * FRAME_MS, false));
+    }
+    // Open: the end of the last loud raw frame before the run (within the smoothing reach).
+    let reach = (start + SMOOTH / 2).min(n);
+    let last = (0..reach).rev().find(|i| loud(*i));
+    let at = last.map_or(lo + start * FRAME_MS, |i| lo + (i + 1) * FRAME_MS);
+    Some(((at + m).min(lo + n * FRAME_MS), true))
+}
+
+/// (start, end) ms of the longest quiet run in `[lo, hi)` (ties: the later run).
+fn longest_quiet(samples: &[f32], lo: usize, hi: usize) -> Option<(usize, usize)> {
+    let q = quiet_flags(samples, lo, hi);
+    let (mut best, mut best_end, mut run) = (0, None, 0);
+    for (i, v) in q.iter().enumerate() {
+        if *v {
+            run += 1;
+            if run >= best {
+                best = run;
+                best_end = Some(i + 1);
+            }
+        } else {
+            run = 0;
+        }
+    }
+    best_end
+        .filter(|_| best > 0)
+        .map(|e| (lo + (e - best) * FRAME_MS, lo + e * FRAME_MS))
+}
+
+/// Quiet runs `(start, end)` ms of `[lo, hi)`.
+fn quiet_runs(samples: &[f32], lo: usize, hi: usize) -> Vec<(usize, usize)> {
+    let q = quiet_flags(samples, lo, hi);
+    let mut out = Vec::new();
+    let mut start = None;
+    for (i, v) in q.iter().chain(std::iter::once(&false)).enumerate() {
+        match (*v, start) {
+            (true, None) => start = Some(i),
+            (false, Some(a)) => {
+                out.push((lo + a * FRAME_MS, lo + i * FRAME_MS));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `early` 0: the longest quiet run (ties later). Else the earliest run at least `early` x the
+/// longest.
+fn pick_quiet(samples: &[f32], lo: usize, hi: usize, early: f64) -> Option<(usize, usize)> {
+    if early <= 0.0 {
+        return longest_quiet(samples, lo, hi);
+    }
+    let runs = quiet_runs(samples, lo, hi);
+    let max = runs.iter().map(|(a, b)| b - a).max()?;
+    runs.into_iter()
+        .find(|(a, b)| (b - a) as f64 >= early * max as f64)
+}
+
+/// Start of the first quiet run of at least `min` ms in `[lo, hi)`.
+fn first_quiet(samples: &[f32], lo: usize, hi: usize, min: usize) -> Option<usize> {
+    let q = quiet_flags(samples, lo, hi);
+    let need = min.div_ceil(FRAME_MS);
+    let mut run = 0;
+    for (i, v) in q.iter().enumerate() {
+        run = if *v { run + 1 } else { 0 };
+        if run >= need {
+            return Some(lo + (i + 1 - run) * FRAME_MS);
+        }
+    }
+    None
+}
+
+/// Today's `split_point`: lowest-energy 20 ms frame of the clip `[start - 300, start + 1500)`
+/// within +-300 ms of `start` (ties: nearest `start`, then earlier).
+fn today_cut(samples: &[f32], start: usize) -> usize {
+    let a = start.saturating_sub(PRE_ROLL_MS);
+    let p = frame_powers(samples, a, start + WINDOW_MS);
+    let mut best: Option<(f64, usize, usize)> = None;
+    for (i, e) in p.iter().enumerate() {
+        let t = a + i * FRAME_MS;
+        if t + 300 < start || t > start + 300 {
+            continue;
+        }
+        let cand = (*e, t.abs_diff(start), t);
+        if best.is_none_or(|b| cand.partial_cmp(&b) == Some(std::cmp::Ordering::Less)) {
+            best = Some(cand);
+        }
+    }
+    best.map_or(start, |b| b.2)
+}
+
+/// Cut of candidate `c` for a change confirmed on windows `first` .. `confirm`; falls back to
+/// today's cut without a quiet run.
+/// (cut, whether a `StartIfOpen` cut took the run-start branch).
+fn cut_at(c: Cut, samples: &[f32], wins: &[Win], first: usize, confirm: usize) -> (usize, bool) {
+    let s = wins[first].start;
+    let today = || today_cut(samples, s);
+    let mut open = false;
+    let at = match c {
+        Cut::Today => today(),
+        Cut::Quiet {
+            x,
+            confirm: c2,
+            pos,
+            mid_hi,
+            early,
+        } => {
+            let hi = if mid_hi {
+                s + WINDOW_MS / 2
+            } else if c2 {
+                wins[confirm].end()
+            } else {
+                wins[first].end()
+            };
+            let lo = s.saturating_sub(x);
+            if let Pos::Raw(m) = pos {
+                let (at, o) = raw_cut(samples, lo, hi, m).unwrap_or_else(|| (today(), false));
+                return (at, o);
+            }
+            if let Pos::Hybrid = pos {
+                return match raw_cut(samples, lo, hi, 0) {
+                    Some((at, false)) => (at, false),
+                    Some((_, true)) => (
+                        pick_quiet(samples, lo, hi, 0.0).map_or_else(today, |(_, b)| b),
+                        true,
+                    ),
+                    None => (today(), false),
+                };
+            }
+            let range_end = lo + (hi.saturating_sub(lo) / FRAME_MS) * FRAME_MS;
+            pick_quiet(samples, lo, hi, early).map_or_else(today, |(a, b)| match pos {
+                Pos::StartIfOpen(ms) if b >= range_end => {
+                    open = true;
+                    (a + ms).min(b)
+                }
+                Pos::StartIfOpen(_) => b,
+                Pos::Raw(_) | Pos::Hybrid => unreachable!("handled above"),
+                Pos::End => b,
+                Pos::Start => a,
+                Pos::Back(ms) => b.saturating_sub(ms).max(a),
+                Pos::Mid => (a + b) / 2,
+                Pos::MinEnergy => {
+                    let p = frame_powers(samples, a, b);
+                    let mut best = (f64::INFINITY, b);
+                    for (i, e) in p.iter().enumerate() {
+                        if *e <= best.0 {
+                            best = (*e, a + i * FRAME_MS);
+                        }
+                    }
+                    best.1
+                }
+            })
+        }
+        Cut::FirstQuiet { x, min } => {
+            first_quiet(samples, s.saturating_sub(x), wins[first].end(), min).unwrap_or_else(today)
+        }
+    };
+    (at, open)
+}
+
+/// Words of `(on, off, words)` whose midpoint is before `t` (uniform word timing, as in
+/// `split_point_bench`).
+fn words_before(span: (usize, usize, usize), t: usize) -> usize {
+    let (on, off, words) = span;
+    let d = off.saturating_sub(on) as f64;
+    (0..words)
+        .filter(|j| (on as f64 + (*j as f64 + 0.5) * d / words as f64) < t as f64)
+        .count()
+}
+
+/// Per candidate: the cut on today's confirmed change, and its cost in seconds.
+struct Cuts {
+    at: Vec<usize>,
+    open: Vec<bool>,
+    secs: Vec<f64>,
+}
+
 struct Scene {
     tail: bool,
     by_db: i64,
@@ -318,6 +988,11 @@ struct Scene {
     excluded: bool,
     by_on: usize,
     wins: Vec<Win>,
+    /// Caller phrase (voiced on, off, words) and bystander (same; `None` on tails).
+    caller: (usize, usize, usize),
+    by: Option<(usize, usize, usize)>,
+    /// Cuts of today's confirmed change (`None`: today's gate confirms none).
+    cuts: Option<Cuts>,
 }
 
 enum Status {
@@ -364,7 +1039,13 @@ fn analyze(
         .find(|s| role(s) == "main" && !enrolled(s))
         .and_then(span)
         .ok_or(format!("{id}: no caller"))?;
+    let words = |s: &Json| text(s, "text").map_or(1, |t| t.split_whitespace().count().max(1));
+    let caller_words = segs
+        .iter()
+        .find(|s| role(s) == "main" && !enrolled(s))
+        .map_or(1, words);
     let by_seg = segs.iter().find(|s| role(s) == "bystander");
+    let by = by_seg.and_then(|b| span(b).map(|(a, e)| (a, e, words(b))));
     let (pair, excluded, by_on) = match by_seg {
         Some(b) => {
             let voice = text(b, "voice").unwrap_or_default();
@@ -446,6 +1127,19 @@ fn analyze(
     if wins[0].score < thr {
         return Ok((id, tail, Status::FirstOther));
     }
+    let cuts = simulate(&wins, thr, None).map(|(f, c)| {
+        let mut at = Vec::new();
+        let mut open = Vec::new();
+        let mut secs = Vec::new();
+        for cand in CUTS {
+            let t0 = Instant::now();
+            let (cut, o) = cut_at(cand, &samples, &wins, f, c);
+            at.push(cut);
+            open.push(o);
+            secs.push(t0.elapsed().as_secs_f64());
+        }
+        Cuts { at, open, secs }
+    });
     Ok((
         id,
         tail,
@@ -456,6 +1150,9 @@ fn analyze(
             excluded,
             by_on,
             wins,
+            caller: (caller.0, caller.1, caller_words),
+            by,
+            cuts,
         })),
     ))
 }
@@ -758,6 +1455,7 @@ fn run() -> Result<(), String> {
             md.push_str(&row(&format!("{p}{tag}"), t, &x));
         }
     }
+    md.push_str(&cut_section(&scenes));
     let mut e = costs.embed_s.iter().map(|s| s * 1e3).collect::<Vec<_>>();
     let mut g = costs.energy_s.iter().map(|s| s * 1e6).collect::<Vec<_>>();
     md.push_str(&format!(
@@ -777,6 +1475,78 @@ fn run() -> Result<(), String> {
         fs::write(&path, &md).map_err(|e| format!("write {}: {e}", path.display()))?;
     }
     Ok(())
+}
+
+/// Chunk 6e: caller -> other cut candidates on today's confirmed changes (main pairs).
+fn cut_section(scenes: &[Scene]) -> String {
+    let mut md = String::from(
+        "\n### Cut point (chunk 6e): caller → other cut candidates on today's confirmed changes\n\n\
+         Main pairs, every scene where today's gate confirms a caller → other change (tails: the false change on bed; takeovers: the real one). \
+         Caller words cut = caller words whose midpoint is at or after the cut (they move into the `other` part); \
+         bystander words left = bystander words whose midpoint is before the cut (they stay in the caller part). \
+         Word times are uniform over the voiced span, as in `split_point_bench`. \
+         `cut - caller end` = cut minus the caller's voiced end, ms.\n\n\
+         | candidate | tails: caller words cut (scenes) / of | tail cut - caller end p00 / p05 / p50 | takeovers: caller words cut (scenes) / of | takeovers: bystander words left (scenes) | takeover cut - caller end p00 / p05 / p50 / p95 | takeover cut - bystander on p50 / p95 / max | cost µs p99 / max | run-start branch: tails / takeovers |\n\
+         |---|---|---|---|---|---|---|---|---|\n",
+    );
+    let main: Vec<&Scene> = scenes.iter().filter(|s| !s.excluded).collect();
+    for (ci, c) in CUTS.iter().enumerate() {
+        let (mut tw, mut ts, mut tn) = (0, 0, 0);
+        let (mut to, mut ko) = (0, 0);
+        let (mut kw, mut ks, mut kn, mut lw, mut ls) = (0, 0, 0, 0, 0);
+        let (mut td, mut kd, mut kb, mut cost) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for s in &main {
+            let Some(cuts) = &s.cuts else { continue };
+            let at = cuts.at[ci];
+            cost.push(cuts.secs[ci] * 1e6);
+            if cuts.open[ci] {
+                if s.tail {
+                    to += 1;
+                } else {
+                    ko += 1;
+                }
+            }
+            let cut = s.caller.2 - words_before(s.caller, at);
+            let d = at as f64 - s.caller.1 as f64;
+            if s.tail {
+                tn += 1;
+                tw += cut;
+                ts += usize::from(cut > 0);
+                td.push(d);
+            } else {
+                kn += 1;
+                kw += cut;
+                ks += usize::from(cut > 0);
+                kd.push(d);
+                if let Some(b) = s.by {
+                    let left = words_before(b, at);
+                    lw += left;
+                    ls += usize::from(left > 0);
+                    kb.push(at as f64 - b.0 as f64);
+                }
+            }
+        }
+        md.push_str(&format!(
+            "| {} | {tw} ({ts}) / {tn} | {:.0} / {:.0} / {:.0} | {kw} ({ks}) / {kn} | {lw} ({ls}) | {:.0} / {:.0} / {:.0} / {:.0} | {:.0} / {:.0} / {:.0} | {:.1} / {:.1} | {to} / {ko} |\n",
+            cut_name(*c),
+            fpct(&mut td, 0.0),
+            fpct(&mut td, 0.05),
+            fpct(&mut td, 0.5),
+            fpct(&mut kd, 0.0),
+            fpct(&mut kd, 0.05),
+            fpct(&mut kd, 0.5),
+            fpct(&mut kd, 0.95),
+            fpct(&mut kb, 0.5),
+            fpct(&mut kb, 0.95),
+            fpct(&mut kb, 1.0),
+            fpct(&mut cost, 0.99),
+            fpct(&mut cost, 1.0),
+        ));
+    }
+    md.push_str(&format!(
+        "\nShip bar (decision q): 0 caller words cut on tails, takeovers no worse than today on caller words cut and bystander words left, inside the {VERIFY_MS} ms verify budget.\n"
+    ));
+    md
 }
 
 fn main() {

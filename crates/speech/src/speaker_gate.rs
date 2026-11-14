@@ -75,6 +75,12 @@ const SPLIT_SMOOTH_FRAMES: usize = 5;
 /// The split point is searched within this many ms either side of the first opposite window's
 /// start.
 pub const SPLIT_SEARCH_MS: u32 = 300;
+/// `caller` -> `other`: an open quiet run (quiet to the range end, the middle of the first `other`
+/// window) cuts no later than this many ms after the first `other` window's start (decision s,
+/// chunk 6e). It bounds how much of a steady quieter next speaker with no pause stays in the
+/// caller part. The smallest cap with 0 caller words cut on tails and takeovers:
+/// `crates/vendor-sherpa-onnx/examples/CALLER_TO_OTHER_BENCH.md` (cut point).
+pub const CALLER_TO_OTHER_OPEN_CUT_MAX_MS: u32 = 450;
 
 /// Frame length (ms) of the split-point energy search.
 const SPLIT_FRAME_MS: usize = 20;
@@ -1815,14 +1821,15 @@ impl QuietScan {
     /// Decision r (chunk 6e): a closed run (a loud frame follows inside the range) ends right
     /// before the next speaker's first loud raw frame, searched within the smoothing reach of the
     /// smoothed run end (the smoothing moves a run's edges by up to two frames). An open run (quiet
-    /// to the range end) ends at the smoothed run end. `None` without a quiet run.
-    fn raw_cut(&self) -> Option<i64> {
+    /// to the range end) ends at the smoothed run end, but no later than `open_max` (decision s).
+    /// `None` without a quiet run.
+    fn raw_cut(&self, open_max: i64) -> Option<i64> {
         if self.best_len == 0 {
             return None;
         }
         let n = self.raw_db.len();
         if self.best_end >= n {
-            return Some(self.at(self.best_end));
+            return Some(self.at(self.best_end).min(open_max));
         }
         let reach = SPLIT_SMOOTH_FRAMES / 2;
         let from = self
@@ -1904,13 +1911,14 @@ fn watch_step(
     })
 }
 
-/// The `caller` -> `other` split point (chunk 6e, decisions q and r): the longest quiet run
+/// The `caller` -> `other` split point (chunk 6e, decisions q, r and s): the longest quiet run
 /// (stage 1's rule, ties later) from the previous `caller` window's start to the middle of the
 /// first `other` window, so the cut lands after the caller's speech: in the gap before a
 /// bystander, or in the bed after a short caller phrase whose bed windows scored `other`. A closed
 /// run cuts right before the next speaker's first loud raw frame; an open run (quiet to the range
-/// end) cuts at its end ([`QuietScan::raw_cut`]), so the caller's fading last word is never cut. Without
-/// a previous window that tiles into the first `other` one (an unscored window in between), the
+/// end) cuts at its end, so the caller's fading last word is never cut, but no later than
+/// [`CALLER_TO_OTHER_OPEN_CUT_MAX_MS`] after the first `other` window's start
+/// ([`QuietScan::raw_cut`]). Without a previous window that tiles into the first `other` one (an unscored window in between), the
 /// range starts [`SPLIT_SEARCH_MS`] before the window (its pre-roll). Without a quiet run (no
 /// frame in range), today's [`split_point`]. Bench: `CALLER_TO_OTHER_BENCH.md` (cut point).
 fn caller_to_other_split(prev: Option<(u32, u32, Vec<u8>)>, first: (u32, u32, Vec<u8>)) -> u32 {
@@ -1928,7 +1936,7 @@ fn caller_to_other_split(prev: Option<(u32, u32, Vec<u8>)>, first: (u32, u32, Ve
         ),
     };
     tl.quiet_scan(lo, hi)
-        .and_then(|q| q.raw_cut())
+        .and_then(|q| q.raw_cut(i64::from(start) + i64::from(CALLER_TO_OTHER_OPEN_CUT_MAX_MS)))
         .map_or_else(|| split_point(start, end, &clip), |at| at.max(0) as u32)
 }
 
@@ -3064,18 +3072,15 @@ mod tests {
         );
     }
 
-    /// Decision r (chunk 6e): a steady quieter next speaker (-6 dB) with no pause at all, from
-    /// 3600 ms (900 ms of the first `other` window). The quiet run is open (the bystander lasts to
-    /// the range end), so the cut lands at its end, the first `other` window's middle: at or after
-    /// the step, never inside the caller, and within the leak bound of the integration rig
-    /// (`speaker_change_split_test` › `assert_other_caller_other`: 9 frames, 180 ms). The leak is
-    /// the distance from the step to that middle.
+    /// Decisions r and s (chunk 6e): a steady quieter next speaker (-6 dB) with no pause at all,
+    /// in the worst case: from the first `other` window's start (3000 ms). The quiet run is open
+    /// (the bystander lasts to the range end), so the cut lands at or after the step, never inside
+    /// the caller, and at most [`CALLER_TO_OTHER_OPEN_CUT_MAX_MS`] after the window start.
     #[test]
     fn caller_to_other_steady_quieter_bystander_cuts_at_or_after_the_step() {
-        const STEP: u32 = 3600;
-        const LEAK_MAX_MS: u32 = 9 * SPLIT_FRAME_MS as u32;
-        // -300 .. 3600 caller, 3600 .. 6300 bystander at half the amplitude.
-        let pcm = parts_pcm(&[(3900, 9000, false), (2700, 4500, true)]);
+        const STEP: u32 = 3000;
+        // -300 .. 3000 caller, 3000 .. 6300 bystander at half the amplitude.
+        let pcm = parts_pcm(&[(3300, 9000, false), (3300, 4500, true)]);
         let c = c2o_windows(
             &pcm,
             &[
@@ -3088,8 +3093,8 @@ mod tests {
         .expect("the bystander confirms the change");
         assert_eq!((c.from, c.to), (Outcome::Caller, Outcome::Other));
         assert!(
-            (STEP..=STEP + LEAK_MAX_MS).contains(&c.split_at_ms),
-            "cut {} at or after the step ({STEP}), at most {LEAK_MAX_MS} ms of bystander left",
+            (STEP..=STEP + CALLER_TO_OTHER_OPEN_CUT_MAX_MS).contains(&c.split_at_ms),
+            "cut {} at or after the step ({STEP}), at most {CALLER_TO_OTHER_OPEN_CUT_MAX_MS} ms later",
             c.split_at_ms
         );
     }

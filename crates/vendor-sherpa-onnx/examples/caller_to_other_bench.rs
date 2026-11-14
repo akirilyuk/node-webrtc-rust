@@ -337,6 +337,11 @@ enum Pos {
     /// [`Pos::Hybrid`] with the open-run cut capped at the first `other` window's start + `ms`
     /// (chunk 6e, decision s).
     HybridCap(usize),
+    /// [`Pos::HybridCap`], but the capped cut never lands before the open run's raw start (its
+    /// first frame after any loud raw frames within the smoothing reach): when the
+    /// caller is still loud past the cap, the cut waits for the quiet run (parent decision after
+    /// decision s).
+    HybridCapClamp(usize),
 }
 
 fn pos_name(p: Pos) -> String {
@@ -352,6 +357,9 @@ fn pos_name(p: Pos) -> String {
         }
         Pos::Hybrid => "hybrid: closed = first loud raw frame; open = run end".into(),
         Pos::HybridCap(ms) => format!("hybrid, open capped at first other start + {ms} ms"),
+        Pos::HybridCapClamp(ms) => {
+            format!("hybrid, open capped at first other start + {ms} ms, not before the run start")
+        }
     }
 }
 
@@ -376,7 +384,7 @@ enum Cut {
     FirstQuiet { x: usize, min: usize },
 }
 
-const CUTS: [Cut; 52] = [
+const CUTS: [Cut; 53] = [
     Cut::Today,
     Cut::Quiet {
         x: 300,
@@ -729,6 +737,13 @@ const CUTS: [Cut; 52] = [
         mid_hi: true,
         early: 0.0,
     },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::HybridCapClamp(450),
+        mid_hi: true,
+        early: 0.0,
+    },
 ];
 
 fn cut_name(c: Cut) -> String {
@@ -851,6 +866,44 @@ fn raw_cut(samples: &[f32], lo: usize, hi: usize, m: usize) -> Option<(usize, bo
     Some(((at + m).min(lo + n * FRAME_MS), true))
 }
 
+/// Raw start (ms) of the longest quiet run in `[lo, hi)`: its first frame after any loud raw frames
+/// within the smoothing reach of the smoothed start (as the gate's `QuietScan::raw_cut`).
+fn raw_open_start(samples: &[f32], lo: usize, hi: usize) -> Option<usize> {
+    let raw = frame_powers(samples, lo, hi);
+    let n = raw.len();
+    let db = |p: f64| 10.0 * p.max(1e-12).log10();
+    let smooth: Vec<f64> = (0..n)
+        .map(|i| {
+            let a = i.saturating_sub(SMOOTH / 2);
+            let b = (i + SMOOTH / 2 + 1).min(n);
+            db(raw[a..b].iter().sum::<f64>() / (b - a) as f64)
+        })
+        .collect();
+    let mut sorted = smooth.clone();
+    sorted.sort_by(f64::total_cmp);
+    let pct = |q: f64| sorted[((sorted.len() - 1) as f64 * q).round() as usize];
+    let mid = (pct(0.1) + pct(0.9)) / 2.0;
+    let (mut best, mut best_end, mut run) = (0, 0, 0);
+    for (i, v) in smooth.iter().enumerate() {
+        if *v < mid {
+            run += 1;
+            if run >= best {
+                best = run;
+                best_end = i + 1;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    if best == 0 {
+        return None;
+    }
+    let start = best_end - best;
+    let to = (start + SMOOTH / 2).min(n);
+    let at = (start..to).find(|i| db(raw[*i]) < mid).unwrap_or(to);
+    Some(lo + at * FRAME_MS)
+}
+
 /// (start, end) ms of the longest quiet run in `[lo, hi)` (ties: the later run).
 fn longest_quiet(samples: &[f32], lo: usize, hi: usize) -> Option<(usize, usize)> {
     let q = quiet_flags(samples, lo, hi);
@@ -962,15 +1015,26 @@ fn cut_at(c: Cut, samples: &[f32], wins: &[Win], first: usize, confirm: usize) -
                 let (at, o) = raw_cut(samples, lo, hi, m).unwrap_or_else(|| (today(), false));
                 return (at, o);
             }
-            if let Pos::Hybrid | Pos::HybridCap(_) = pos {
-                let cap = match pos {
-                    Pos::HybridCap(c) => s + c,
-                    _ => usize::MAX,
+            if let Pos::Hybrid | Pos::HybridCap(_) | Pos::HybridCapClamp(_) = pos {
+                let (cap, clamp) = match pos {
+                    Pos::HybridCap(c) => (s + c, false),
+                    Pos::HybridCapClamp(c) => (s + c, true),
+                    _ => (usize::MAX, false),
                 };
+                let raw_start = raw_open_start(samples, lo, hi).unwrap_or(0);
                 return match raw_cut(samples, lo, hi, 0) {
                     Some((at, false)) => (at, false),
                     Some((_, true)) => (
-                        pick_quiet(samples, lo, hi, 0.0).map_or_else(today, |(_, b)| b.min(cap)),
+                        pick_quiet(samples, lo, hi, 0.0).map_or_else(today, |(a, b)| {
+                            let capped = b.min(cap);
+                            let a = a.max(raw_start);
+                            if clamp && capped < a {
+                                eprintln!("clamp: cut moved from {capped} to the run start {a}");
+                                a
+                            } else {
+                                capped
+                            }
+                        }),
                         true,
                     ),
                     None => (today(), false),
@@ -983,7 +1047,9 @@ fn cut_at(c: Cut, samples: &[f32], wins: &[Win], first: usize, confirm: usize) -
                     (a + ms).min(b)
                 }
                 Pos::StartIfOpen(_) => b,
-                Pos::Raw(_) | Pos::Hybrid | Pos::HybridCap(_) => unreachable!("handled above"),
+                Pos::Raw(_) | Pos::Hybrid | Pos::HybridCap(_) | Pos::HybridCapClamp(_) => {
+                    unreachable!("handled above")
+                }
                 Pos::End => b,
                 Pos::Start => a,
                 Pos::Back(ms) => b.saturating_sub(ms).max(a),

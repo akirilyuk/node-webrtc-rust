@@ -109,6 +109,17 @@
 //! with that recording at `--s4-bed-db` (default -12) dB re the main voice (voiced RMS), read from
 //! a seeded offset and looped when shorter than the scene; the scene's `babble_db` is that level.
 //!
+//! `--caller-to-other N` (default 0; needs `--s4-bed`): generates **only** S5 scenes for the
+//! caller->other noise-window bench (`caller_to_other_bench`, plan decision o), all over the
+//! `--s4-bed` recording at `--s4-bed-db`:
+//! - `s5_test_tNNN` (takeover, `kind: caller_to_other`), 3N scenes: 300 ms lead, a main-voice
+//!   enrollment sentence (`enroll`, long sentence 0 or 1), 1500 ms, the caller (a long sentence
+//!   other than the enrollment ones, or an S3 phrase), a 0-1000 ms gap, then one test-set bystander
+//!   reading a long background sentence at -6, -3 or 0 dB re the main voice (index % 3; the voice
+//!   is test voice (index / 3) % 5, so every level x voice cell has N / 5 scenes), 1500 ms tail.
+//! - `s5_test_bNNN` (tail, `kind: caller_tail`), 3N / 2 scenes: lead, enrollment, 1500 ms, an S3
+//!   phrase, then 8000 ms of bed only.
+//!
 //! Their manifest segments also carry `voiced_start_ms` / `voiced_end_ms`: the first and last
 //! 20 ms frame of the clip above -45 dBFS (the onsets the bench measures against). Other scenes
 //! never carry them, so manifests without the flag are unchanged.
@@ -161,6 +172,12 @@ const S4_PAUSE_MAX_MS: usize = 4000;
 const S4_NOPAUSE_MAX_MS: usize = 250;
 /// S4 gap between the enrollment sentence and the bystander.
 const S4_ENROLL_GAP_MS: usize = 1500;
+/// S5 takeover: gap between the caller's last voiced frame and the bystander's first one.
+const S5_TAKEOVER_GAP_MAX_MS: usize = 1000;
+/// S5 takeover bystander levels re the main voice.
+const S5_BYSTANDER_DB: [i32; 3] = [-6, -3, 0];
+/// S5 tail: bed only after the caller.
+const S5_TAIL_BED_MS: usize = 8000;
 /// Frame RMS (dBFS) above which a frame of a clip counts as voiced (`voiced_start_ms`).
 const VOICED_FRAME_DB: f32 = -45.0;
 
@@ -936,6 +953,102 @@ impl Ctx {
         )
     }
 
+    /// S5 (`caller_to_other` takeover when `!tail`, else `caller_tail`), test set, over the
+    /// `--s4-bed` recording. See the module docs.
+    fn caller_to_other(&mut self, index: usize, tail: bool) -> Result<(), String> {
+        let set = Set::Test;
+        let id = format!("s5_test_{}{:03}", if tail { "b" } else { "t" }, index);
+        if !self.wants(&id) {
+            return Ok(());
+        }
+        let bed = match &self.s4_bed {
+            Some(bed) if !bed.is_empty() => bed.clone(),
+            _ => return Err("--caller-to-other needs --s4-bed".into()),
+        };
+        let seed = scene_seed(&id);
+        let mut rng = Rng::new(seed);
+        let enroll_text = self.longs[index % 2].clone();
+        let caller_text = if !tail && index.is_multiple_of(2) && self.longs.len() > 2 {
+            self.longs[2 + rng.below(self.longs.len() - 2)].clone()
+        } else {
+            self.s3_phrases[rng.below(self.s3_phrases.len())].clone()
+        };
+        let enroll = self.main_clip(&enroll_text)?;
+        let caller = self.main_clip(&caller_text)?;
+        let enroll_at = ms(LEAD_MS);
+        let caller_at = enroll_at + enroll.len() + ms(S4_ENROLL_GAP_MS);
+        let (_, caller_voiced_end) = voiced_span(&caller, caller_at);
+        let mut by_part = None;
+        let mut by_db = 0;
+        let total = if tail {
+            (ms(caller_voiced_end) + ms(S5_TAIL_BED_MS)).max(caller_at + caller.len())
+        } else {
+            let voice = set.voices()[(index / 3) % 5];
+            by_db = S5_BYSTANDER_DB[index % 3];
+            let by_text = self.long_background[rng.below(self.long_background.len())].clone();
+            let gap = rng.range(0, S5_TAKEOVER_GAP_MAX_MS);
+            let by = normalize_to(
+                &self.synth.clip(&voice, &by_text)?,
+                MAIN_REF_DB + by_db as f32,
+            );
+            let (by_lead, _) = voiced_span(&by, 0);
+            let by_at = (ms(caller_voiced_end) + ms(gap))
+                .saturating_sub(ms(by_lead))
+                .max(caller_at);
+            let total = by_at + by.len() + ms(TAIL_MS);
+            by_part = Some((voice, by_text, by, by_at));
+            total
+        };
+        let offset = rng.below(bed.len());
+        let mut mix: Vec<f32> = (0..total).map(|i| bed[(offset + i) % bed.len()]).collect();
+        scale_babble(&mut mix, MAIN_REF_DB + self.s4_bed_db as f32);
+        let mut main_track = vec![0f32; mix.len()];
+        add_at(&mut mix, &enroll, enroll_at);
+        add_at(&mut main_track, &enroll, enroll_at);
+        add_at(&mut mix, &caller, caller_at);
+        add_at(&mut main_track, &caller, caller_at);
+        let mut segments = Vec::new();
+        let mut seg = segment(
+            "main",
+            &MAIN_VOICE,
+            &enroll_text,
+            enroll_at,
+            enroll.len(),
+            true,
+        );
+        seg.voiced = Some(voiced_span(&enroll, enroll_at));
+        segments.push(seg);
+        let mut seg = segment(
+            "main",
+            &MAIN_VOICE,
+            &caller_text,
+            caller_at,
+            caller.len(),
+            false,
+        );
+        seg.voiced = Some(voiced_span(&caller, caller_at));
+        segments.push(seg);
+        if let Some((voice, by_text, by, by_at)) = by_part {
+            add_at(&mut mix, &by, by_at);
+            let mut seg = segment("bystander", &voice, &by_text, by_at, by.len(), false);
+            seg.voiced = Some(voiced_span(&by, by_at));
+            segments.push(seg);
+        }
+        segments.sort_by_key(|s| s.start_ms);
+        self.finish(
+            id,
+            if tail { "caller_tail" } else { "caller_to_other" },
+            set,
+            by_db,
+            MAIN_REF_DB as i32,
+            self.s4_bed_db,
+            seed,
+            segments,
+            mix,
+            Some(main_track),
+        )
+    }
+
     /// S2: one other voice saying one sentence, babble at -20 dB underneath, no main speech.
     fn bystander_alone(&mut self, set: Set, index: usize, level_db: i32) -> Result<(), String> {
         let id = format!("s2_{}_u{:02}_m{}", set.name(), index, level_db.abs());
@@ -1366,6 +1479,9 @@ struct Args {
     long_bystander_db: Option<i32>,
     /// `--other-to-caller`: S4 scenes per variant (paused, no pause); > 0 generates only S4.
     other_to_caller: usize,
+    /// `--caller-to-other`: S5 takeovers per bystander level (and 3N / 2 tails); > 0 generates
+    /// only S5.
+    caller_to_other: usize,
     /// `--s4-bed` / `--s4-bed-db`.
     s4_bed: Option<PathBuf>,
     s4_bed_db: i32,
@@ -1414,6 +1530,7 @@ fn parse_args() -> Result<Args, String> {
     let mut long_bystanders = 0usize;
     let mut long_bystander_db = None;
     let mut other_to_caller = 0usize;
+    let mut caller_to_other = 0usize;
     let mut s4_bed = None;
     let mut s4_bed_db = -12i32;
     let mut it = std::env::args().skip(1);
@@ -1467,6 +1584,12 @@ fn parse_args() -> Result<Args, String> {
                     .parse()
                     .map_err(|e| format!("--other-to-caller {text:?}: {e}"))?;
             }
+            "--caller-to-other" => {
+                let text = value("--caller-to-other")?.to_string_lossy().into_owned();
+                caller_to_other = text
+                    .parse()
+                    .map_err(|e| format!("--caller-to-other {text:?}: {e}"))?;
+            }
             "--s4-bed" => s4_bed = Some(value("--s4-bed")?),
             "--s4-bed-db" => {
                 let text = value("--s4-bed-db")?.to_string_lossy().into_owned();
@@ -1493,6 +1616,7 @@ fn parse_args() -> Result<Args, String> {
         long_bystanders,
         long_bystander_db,
         other_to_caller,
+        caller_to_other,
         s4_bed,
         s4_bed_db,
     })
@@ -1567,7 +1691,14 @@ fn run() -> Result<(), String> {
     };
 
     let sets = [Set::Tune, Set::Test];
-    if args.other_to_caller > 0 {
+    if args.caller_to_other > 0 {
+        for index in 0..3 * args.caller_to_other {
+            ctx.caller_to_other(index, false)?;
+        }
+        for index in 0..3 * args.caller_to_other / 2 {
+            ctx.caller_to_other(index, true)?;
+        }
+    } else if args.other_to_caller > 0 {
         for index in 0..args.other_to_caller {
             ctx.other_to_caller(index, true)?;
             ctx.other_to_caller(index, false)?;

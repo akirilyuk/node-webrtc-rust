@@ -1,4 +1,6 @@
 #[cfg(test)]
+mod stun_retransmit_test;
+#[cfg(test)]
 mod util_test;
 
 use std::collections::HashSet;
@@ -65,6 +67,23 @@ pub async fn get_xormapped_addr(
 
 const MAX_MESSAGE_SIZE: usize = 1280;
 
+/// Initial retransmission timeout for a Binding request (RFC 5389 section 7.2.1, RTO = 500 ms).
+/// Each retransmission doubles it: sends at 0, 0.5, 1.5, 3.5 s, ... until the caller's deadline.
+pub(crate) const STUN_REQUEST_INITIAL_RTO: Duration = Duration::from_millis(500);
+
+/// Sends a Binding request to `server_addr` and returns the matching response.
+///
+/// node-webrtc-rust vendored patch: upstream sent one request and took the first datagram that
+/// arrived within `deadline`, so one lost datagram cost the whole deadline (5 s during gathering)
+/// and any stray datagram was decoded as the answer. Now:
+/// - `deadline > 0`: the request is retransmitted with the same transaction id, starting at
+///   `STUN_REQUEST_INITIAL_RTO` and doubling (RFC 5389 section 7.2.1), and the call never takes
+///   longer than `deadline` in total.
+/// - `deadline == 0`: one send and an unbounded wait (no caller uses this today).
+///
+/// In both modes only a datagram that decodes as STUN, is a Binding success or error response
+/// and carries the request's transaction id is accepted; anything else on `conn` is ignored and
+/// the wait continues with the time that is left.
 pub async fn stun_request(
     conn: &Arc<dyn Conn + Send + Sync>,
     server_addr: SocketAddr,
@@ -72,26 +91,74 @@ pub async fn stun_request(
 ) -> Result<Message> {
     let mut request = Message::new();
     request.build(&[Box::new(BINDING_REQUEST), Box::new(TransactionId::new())])?;
+    let tid = request.transaction_id;
+
+    let mut bs = vec![0_u8; MAX_MESSAGE_SIZE];
+
+    if deadline == Duration::from_secs(0) {
+        conn.send_to(&request.raw, server_addr).await?;
+        loop {
+            let (n, _) = conn.recv_from(&mut bs).await?;
+            if let Some(res) = decode_binding_response(&bs[..n], &tid) {
+                return Ok(res);
+            }
+        }
+    }
+
+    let start = tokio::time::Instant::now();
+    let end = start + deadline;
+    let mut rto = STUN_REQUEST_INITIAL_RTO;
+    let mut next_send = start + rto;
+    let mut sends = 1_u32;
 
     conn.send_to(&request.raw, server_addr).await?;
-    let mut bs = vec![0_u8; MAX_MESSAGE_SIZE];
-    let (n, _) = if deadline > Duration::from_secs(0) {
-        match tokio::time::timeout(deadline, conn.recv_from(&mut bs)).await {
-            Ok(result) => match result {
-                Ok((n, addr)) => (n, addr),
-                Err(err) => return Err(Error::Other(err.to_string())),
-            },
-            Err(err) => return Err(Error::Other(err.to_string())),
+    loop {
+        let wake = next_send.min(end);
+        match tokio::time::timeout_at(wake, conn.recv_from(&mut bs)).await {
+            Ok(Ok((n, _))) => {
+                if let Some(res) = decode_binding_response(&bs[..n], &tid) {
+                    return Ok(res);
+                }
+                // Not the answer to this request: keep waiting with the time that is left.
+            }
+            Ok(Err(err)) => return Err(Error::Other(err.to_string())),
+            Err(_) => {
+                if tokio::time::Instant::now() >= end {
+                    return Err(Error::Other(format!(
+                        "stun request to {server_addr}: no response after {sends} transmissions in {deadline:?}"
+                    )));
+                }
+                // Retransmit. A send that fails or does not finish before the deadline counts as
+                // a lost datagram; the next timer decides.
+                match tokio::time::timeout_at(end, conn.send_to(&request.raw, server_addr)).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(err)) => {
+                        log::debug!("stun request to {server_addr}: retransmission failed: {err}")
+                    }
+                    Err(_) => {}
+                }
+                sends += 1;
+                rto *= 2;
+                next_send += rto;
+            }
         }
-    } else {
-        conn.recv_from(&mut bs).await?
-    };
+    }
+}
 
+/// Returns the decoded message if `raw` is a Binding success or error response for `tid`.
+fn decode_binding_response(raw: &[u8], tid: &TransactionId) -> Option<Message> {
     let mut res = Message::new();
-    res.raw = bs[..n].to_vec();
-    res.decode()?;
-
-    Ok(res)
+    res.raw = raw.to_vec();
+    if res.decode().is_err() {
+        return None;
+    }
+    if res.transaction_id != *tid
+        || res.typ.method != METHOD_BINDING
+        || (res.typ.class != CLASS_SUCCESS_RESPONSE && res.typ.class != CLASS_ERROR_RESPONSE)
+    {
+        return None;
+    }
+    Some(res)
 }
 
 pub async fn local_interfaces(

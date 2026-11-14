@@ -168,9 +168,10 @@ if suite_enabled rust; then
     cargo test --manifest-path third_party/dtls/Cargo.toml
   # Vendored webrtc-ice (third_party/webrtc-ice), same reason. Guards net.ice-check-loop-blocked-by-send
   # (a STUN write that never completes must not stop the agent's checks and nomination) and the
-  # nomination failover / bounded data writes (agent_failover_test).
+  # nomination failover / bounded data writes (agent_failover_test) and the STUN Binding
+  # retransmit during srflx gathering (stun_retransmit_test).
   bash "$CI_STEP" --timeout "$DEFAULT_CARGO_LIB_TIMEOUT_SEC" "cargo vendored webrtc-ice" -- \
-    cargo test --manifest-path third_party/webrtc-ice/Cargo.toml -- agent_stun_send_test agent_failover_test
+    cargo test --manifest-path third_party/webrtc-ice/Cargo.toml -- agent_stun_send_test agent_failover_test stun_retransmit_test
   # Perf benches only compile here; timing thresholds are not a PR gate (scripts/perf/).
   # Type-check benches only: `cargo bench --no-run` compiles in the release profile, which CI
   # does not cache, and exceeded the 180 s step timeout on a cold cache (#311, #313).

@@ -1320,3 +1320,109 @@ describe('split distance, glue and exact-threshold counts (reporting only)', () 
     )
   })
 })
+
+describe('other→caller split: the caller turn is judged on U2 by utteranceId', () => {
+  // Turn 6 of the S3 scene on 3da9cf89 (.test-logs/20261114-150734-head-noisy-bystander.log): the
+  // VAD opened on the bystander tail in the caller's slot (utt-8, final other "Dark itself rest"),
+  // the gate split it other→caller into utt-10, which carries the caller's sentence and barge-in.
+  const t5: Turn = {
+    role: 'bystander',
+    startMs: 49_000,
+    endMs: 53_500,
+    text: 'Dark clouds gathered itself over the rest of the valley',
+    kind: 'background',
+  }
+  const t6: Turn = {
+    role: 'main',
+    startMs: 53_702,
+    endMs: 58_500,
+    text: 'I booked a table for four people',
+    kind: 'long',
+  }
+  const t7: Turn = {
+    role: 'bystander',
+    startMs: 62_003,
+    endMs: 64_500,
+    text: 'Her garden is full of tomatoes',
+    kind: 'background',
+  }
+  const SCENE = [t5, t6, t7]
+
+  const events = (u2Text: string): Seen[] =>
+    [
+      ev('user_speaking_start', 49_200, { utteranceId: 'utt-6' }),
+      ev('user_speech_final', 53_000, {
+        utteranceId: 'utt-6',
+        text: 'dark clouds gathered',
+        speaker: 'other',
+      }),
+      ev('user_speaking_start', 53_620, { utteranceId: 'utt-8' }),
+      ev('user_utterance_split', 58_206, {
+        fromUtteranceId: 'utt-8',
+        toUtteranceId: 'utt-10',
+        splitAtMs: 860,
+        fromStartMs: 53_400,
+        from: 'other',
+        to: 'caller',
+      }),
+      ev('user_speaking_start', 58_206, { utteranceId: 'utt-10' }),
+      ev('user_speech_final', 58_273, {
+        utteranceId: 'utt-8',
+        text: 'Dark itself rest',
+        speaker: 'other',
+        speakerRechecked: true,
+        speakerCheckWindows: 2,
+      }),
+      ev('user_speech_partial', 58_305, { utteranceId: 'utt-10', text: 'I boked a table' }),
+      ev('barge_in', 58_305, { utteranceId: 'utt-10' }),
+      ev('user_speaking_end', 59_400, { utteranceId: 'utt-10' }),
+      ev('user_speech_final', 59_500, {
+        utteranceId: 'utt-10',
+        text: u2Text,
+        speaker: 'caller',
+        speakerRechecked: true,
+        speakerCheckWindows: 5,
+      }),
+      ev('user_speaking_start', 62_100, { utteranceId: 'utt-11' }),
+      ev('user_speech_final', 65_000, {
+        utteranceId: 'utt-11',
+        text: 'her garden',
+        speaker: 'other',
+      }),
+    ].sort((a, b) => a.atMs - b.atMs)
+
+  it('pairs turn 6 with U2 (utt-10) and passes on its caller final and barge-in', () => {
+    const seen = events('I booked a table for four people')
+    const { starts, followed } = pairTurnUtterances(SCENE, seen)
+    expect(starts.map((s) => s?.utteranceId)).toEqual(['utt-6', 'utt-10', 'utt-11'])
+    expect([...followed]).toEqual([[1, 'utt-8']])
+    expect(evaluateTurns(SCENE, seen, 'p')).toEqual([])
+  })
+
+  it('fails when U2 holds words of the bystander before the caller turn', () => {
+    const seen = events('Dark itself rest I booked a table for four people')
+    expect(evaluateTurns(SCENE, seen, 'p').join('\n')).toContain(
+      'turn 1 (main long "I booked a table for four peop"): caller final utt-10 after the other→caller split of utt-8 holds bystander words (dark itself rest)',
+    )
+  })
+
+  it('still fails a split whose U2 final is not caller', () => {
+    const seen = events('I booked a table for four people').map((e) =>
+      e.type === 'user_speech_final' && e.utteranceId === 'utt-10' ? { ...e, speaker: 'other' } : e,
+    )
+    const failures = evaluateTurns(SCENE, seen, 'p').join('\n')
+    expect(failures).toContain('final speaker other, expected caller')
+    expect(failures).toContain(
+      'barge_in at 58305 ms for utterance utt-10 whose final is speaker other',
+    )
+  })
+
+  it('does not follow a caller→other split (the caller turn keeps its own utterance)', () => {
+    const seen = events('I booked a table for four people').map((e) =>
+      e.type === 'user_utterance_split' ? { ...e, from: 'caller', to: 'other' } : e,
+    )
+    const { starts, followed } = pairTurnUtterances(SCENE, seen)
+    expect(starts[1]?.utteranceId).toBe('utt-8')
+    expect(followed.size).toBe(0)
+  })
+})

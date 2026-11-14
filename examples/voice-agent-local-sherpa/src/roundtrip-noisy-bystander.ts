@@ -254,6 +254,8 @@ async function runPass(params: {
           toUtteranceId: event.toUtteranceId,
           splitAtMs: event.splitAtMs,
           fromStartMs: event.fromStartMs,
+          from: event.from,
+          to: event.to,
         })
       }
     } catch (error) {

@@ -256,11 +256,18 @@ export function utteranceEndMs(utteranceId: string, seen: Seen[]): number | unde
  * a bystander slot after that slot's own utterance, and the caller's onset joined it (no new
  * speech start). It goes to the immediately following caller turn under the same final, span and
  * deciding-window conditions; the bystander turn keeps its own utterance.
+ *
+ * Last, a caller turn whose paired utterance was cut by an other→caller `user_utterance_split`
+ * (`from: 'other'`, `to: 'caller'`, `fromUtteranceId` = its utteranceId) is judged on the split's
+ * to-utterance (U2), by utteranceId: its `user_speaking_start`, final and barge-in. Other→caller
+ * links are followed in a chain; a caller→other link ends it (the caller part stays on the last
+ * caller to-utterance). U1's text is never credited to the turn. `followed` maps the turn index to
+ * the cut utterance's id.
  */
 export function pairTurnUtterances(
   turns: Turn[],
   seen: Seen[],
-): { starts: (Seen | undefined)[]; merged: Set<number> } {
+): { starts: (Seen | undefined)[]; merged: Set<number>; followed: Map<number, string> } {
   const allStarts = seen.filter(
     (e) => e.type === SPEECH_EVENT_TYPE.userSpeakingStart && e.utteranceId != null,
   )
@@ -329,7 +336,29 @@ export function pairTurnUtterances(
     pairedIds.add(unpaired.utteranceId!)
     merged.add(j)
   }
-  return { starts, merged }
+  // Follow other→caller splits from the paired utterance to its caller part, by utteranceId.
+  const splits = seen.filter((e) => e.type === SPEECH_EVENT_TYPE.userUtteranceSplit)
+  const followed = new Map<number, string>()
+  turns.forEach((turn, i) => {
+    const start = starts[i]
+    if (turn.role !== 'main' || start?.utteranceId == null) return
+    const visited = new Set<string>()
+    let cur = start.utteranceId
+    for (;;) {
+      visited.add(cur)
+      const next = splits.find(
+        (x) => x.fromUtteranceId === cur && x.from === 'other' && x.to === 'caller',
+      )
+      if (next?.toUtteranceId == null || visited.has(next.toUtteranceId)) break
+      cur = next.toUtteranceId
+    }
+    if (cur === start.utteranceId) return
+    const u2Start = allStarts.find((e) => e.utteranceId === cur)
+    if (u2Start == null) return
+    followed.set(i, start.utteranceId)
+    starts[i] = u2Start
+  })
+  return { starts, merged, followed }
 }
 
 /**
@@ -625,7 +654,7 @@ export function evaluateTurns(
       )
     }
   }
-  const { starts, merged } = pairTurnUtterances(turns, seen)
+  const { starts, merged, followed } = pairTurnUtterances(turns, seen)
   let bystandersHeard = 0
   turns.forEach((turn, i) => {
     const tag = `${label} turn ${i} (${turn.role} ${turn.kind} "${turn.text.slice(0, 30)}")`
@@ -661,6 +690,30 @@ export function evaluateTurns(
       return
     }
     const isMerged = merged.has(i)
+    const cutId = followed.get(i)
+    if (cutId != null) {
+      console.log(
+        `${tag}: other→caller split ${cutId} -> ${id}; judged on ${id} (final, speaker, barge-in)`,
+      )
+      // The caller's part is U2 alone: no word of the bystander sentence before this caller turn
+      // (U1's speaker) may land in U2's caller final.
+      const prev = turns
+        .slice(0, i)
+        .reverse()
+        .find((t) => t.role === 'bystander')
+      if (prev != null && final != null) {
+        const callerWords = new Set(longWords(turn.text))
+        const finalWords = new Set(longWords(final.text ?? ''))
+        const leaked = [
+          ...new Set(longWords(prev.text).filter((w) => !callerWords.has(w) && finalWords.has(w))),
+        ]
+        if (leaked.length > 0) {
+          failures.push(
+            `${tag}: caller final ${id} after the other→caller split of ${cutId} holds bystander words (${leaked.join(' ')}): "${final.text ?? ''}"`,
+          )
+        }
+      }
+    }
     if (isMerged) {
       console.log(
         `${tag}: merged utterance ${id} (started ${start.atMs} ms, before the caller at ${turn.startMs} ms; final caller, ${isRechecked(start, seen) ? 're-checked' : 'first window'}, windows ${String(final?.speakerCheckWindows)})`,
@@ -725,8 +778,12 @@ export function evaluateTurns(
           `${tag}: barge-in at ${barge.atMs} ms on merged utterance ${id}, not after the caller's scene start ${turn.startMs} ms`,
         )
       }
-      // A barge-in released by the deciding window cannot come before that window ends.
-      const decided = isRechecked(start, seen) ? verdictAfterMs(start, seen) : undefined
+      // A barge-in released by the deciding window cannot come before that window ends. U2 of an
+      // other→caller split inherits the windows scored before the cut (its speech start event is
+      // emitted at the split, after that audio), so its window count does not run from its start
+      // event; its barge carries U2's utteranceId, so it was released no earlier than the split.
+      const decided =
+        isRechecked(start, seen) && cutId == null ? verdictAfterMs(start, seen) : undefined
       if (decided != null && delay < decided - BARGE_EARLY_SLACK_MS) {
         failures.push(
           `${tag}: barge-in ${delay} ms after speech start, before the deciding window ends at ${decided} ms (slack ${BARGE_EARLY_SLACK_MS} ms)`,

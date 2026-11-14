@@ -190,7 +190,6 @@ cut / leak = words (scenes). `FA` = gate false-accept scenes (first `caller` win
 
 | sub/hop | candidate | paused cut | paused leak | no pause cut | no pause leak | no pause leak, non-FA | split - by end (no pause, non-FA) | split - caller on (both sets, non-FA) p95 / max | embeds | stage 2 ms |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 1250/250 | 8 / 8 | 12.1 / 18.9 / 41.4 | 96 / 132 / 161 |
 | 1000/125 | start ±150 | 0 (0) | 73 (6) | 0 (0) | 167 (80) | 82 (69) | -1352 / -473 / -268 / 158 / 243 | -8 / 39 | 10 / 17 / 17 | 101 / 185 / 210 |
 | 1250/250 | start ±150 | 0 (0) | 71 (6) | 0 (0) | 204 (93) | 115 (82) | -897 / -633 / -357 / 123 / 243 | -8 / 39 | 5 / 8 / 8 | 60 / 116 / 119 |
 | 1250/250 | cross ±150 | 0 (0) | 73 (6) | 0 (0) | 259 (111) | 168 (100) | -887 / -758 / -428 / 123 / 243 | -8 / 39 | 5 / 8 / 8 | 60 / 116 / 119 |

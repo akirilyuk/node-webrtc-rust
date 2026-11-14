@@ -1,5 +1,11 @@
 # Split-point bench: other → caller (chunk 1, plan 2026-11-13-speaker-split-other-to-caller)
 
+**Superseded for the product cut (chunk 6g, 2026-11-14).** The `other` -> `caller` cut no longer
+uses stage 1 or the 1250/250 `fwd-quiet 500` pick below: it is the first `caller` 750/125
+sub-window's start minus 300 ms, clamped to the previous window's start (config A in
+`NEAR_MISS_BENCH.md`, which measures caller words lost with a recognizer diff). This file stays as
+the record of the earlier pick.
+
 **Status (2026-11-13): blocked on gate false accepts (plan decision g).** The paused set meets 0
 caller-word cuts with stage 1. No stage-2 variant reaches 0 bystander words after the split on the
 no-pause set. The cause is a gate false accept, not the split search (see "Why the no-pause set

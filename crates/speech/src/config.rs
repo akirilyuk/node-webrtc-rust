@@ -292,10 +292,12 @@ pub struct SpeakerGateConfig {
     /// - `caller` -> `other` after `speaker_gate::SPEAKER_CHANGE_CONFIRM_WINDOWS` consecutive
     ///   `other` windows; the split is the lowest-energy frame near the first opposite window.
     /// - `other` -> `caller` after one `caller` window
-    ///   (`speaker_gate::OTHER_TO_CALLER_CONFIRM_WINDOWS`); the split searches backward from the
-    ///   previous scored window's start: the end of the longest quiet run (at least
-    ///   `speaker_gate::SPLIT_QUIET_RUN_MIN_MS`), else sub-window embeddings on the verifier task
-    ///   (bounded by `verify_timeout_ms`, falling back to the quiet run on a timeout). The first
+    ///   (`speaker_gate::OTHER_TO_CALLER_CONFIRM_WINDOWS`), or after one window just under the
+    ///   threshold (from `speaker_gate::NEAR_MISS_MIN_SCORE`) with a `caller` sub-window. The split
+    ///   comes from sub-window embeddings on the verifier task from the previous scored window's
+    ///   start: the first `caller` sub-window's start minus `speaker_gate::SPLIT_BACKOFF_MS`, never
+    ///   before that window's start, which is also the split without one or on a timeout (bounded
+    ///   by `verify_timeout_ms`). The first
     ///   part stays `other` (never upgraded, never barges); the second part inherits the `caller`
     ///   verdict (`SpeakerGate::inherit_caller`) and gets its own watch.
     ///

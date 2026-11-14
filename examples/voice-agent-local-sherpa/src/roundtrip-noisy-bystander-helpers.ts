@@ -493,6 +493,26 @@ export function similaritySummary(sims: number[]): {
   return { nearMissCount, minSimilarity }
 }
 
+/**
+ * End of the window that decided an other→caller split, in scene ms: the n-th check window needs
+ * n × checkSpeechMs of speech (types.ts `speakerCheckWindows`), so it ends no earlier than U1
+ * `fromStartMs` + k × checkSpeechMs on the media clock, k = the cut utterance's (U1's) final
+ * `speakerCheckWindows` (it includes the deciding window). `undefined` when a field is missing
+ * (callers fail closed).
+ */
+export function splitDecidingWindowEndSceneMs(
+  split: Seen | undefined,
+  finals: Map<string, Seen>,
+  sceneStartMediaMs: number | undefined,
+): number | undefined {
+  if (split?.fromStartMs == null || split.fromUtteranceId == null || sceneStartMediaMs == null) {
+    return undefined
+  }
+  const k = finals.get(split.fromUtteranceId)?.speakerCheckWindows
+  if (k == null) return undefined
+  return split.fromStartMs + k * CHECK_SPEECH_MS - sceneStartMediaMs
+}
+
 /** `user_utterance_split` -> scene-clock ms of the split point (undefined when a field is missing). */
 export function splitSceneMs(e: Seen, sceneStartMediaMs: number): number | undefined {
   if (e.fromStartMs == null || e.splitAtMs == null) return undefined
@@ -655,6 +675,7 @@ export function evaluateTurns(
     }
   }
   const { starts, merged, followed } = pairTurnUtterances(turns, seen)
+  const splits = seen.filter((e) => e.type === SPEECH_EVENT_TYPE.userUtteranceSplit)
   let bystandersHeard = 0
   turns.forEach((turn, i) => {
     const tag = `${label} turn ${i} (${turn.role} ${turn.kind} "${turn.text.slice(0, 30)}")`
@@ -780,8 +801,24 @@ export function evaluateTurns(
       }
       // A barge-in released by the deciding window cannot come before that window ends. U2 of an
       // other→caller split inherits the windows scored before the cut (its speech start event is
-      // emitted at the split, after that audio), so its window count does not run from its start
-      // event; its barge carries U2's utteranceId, so it was released no earlier than the split.
+      // emitted at the split, after that audio), so its bound is anchored on U1: the end of the
+      // window that decided the split (U1 `fromStartMs` + U1 `speakerCheckWindows` x
+      // checkSpeechMs, scene time). A missing field fails closed.
+      if (cutId != null) {
+        const split = splits.find(
+          (x) => x.toUtteranceId === id && x.from === 'other' && x.to === 'caller',
+        )
+        const end = splitDecidingWindowEndSceneMs(split, finals, opts.sceneStartMediaMs)
+        if (end == null) {
+          failures.push(
+            `${tag}: other→caller split ${String(split?.fromUtteranceId)} -> ${id}: deciding window end unknown (fromStartMs, U1 speakerCheckWindows or sceneStartMediaMs missing)`,
+          )
+        } else if (barge.atMs < end - BARGE_EARLY_SLACK_MS) {
+          failures.push(
+            `${tag}: barge-in at ${barge.atMs} ms on ${id}, before the split's deciding window ends at ${end} ms (U1 ${String(split?.fromUtteranceId)}, slack ${BARGE_EARLY_SLACK_MS} ms)`,
+          )
+        }
+      }
       const decided =
         isRechecked(start, seen) && cutId == null ? verdictAfterMs(start, seen) : undefined
       if (decided != null && delay < decided - BARGE_EARLY_SLACK_MS) {
@@ -818,7 +855,6 @@ export function evaluateTurns(
       }
     }
   })
-  const splits = seen.filter((e) => e.type === SPEECH_EVENT_TYPE.userUtteranceSplit)
   for (const e of splits) {
     console.log(
       `${label}: user_utterance_split ${String(e.fromUtteranceId)} -> ${String(e.toUtteranceId)} at ${String(e.splitAtMs)} ms`,

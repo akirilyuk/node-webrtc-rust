@@ -27,8 +27,8 @@ import { SPEECH_EVENT_TYPE } from '@node-webrtc-rust/sdk/voice'
 import { DEFAULT_BARGE_PHRASE_MIN_SIMILARITY } from './roundtrip-barge-in-helpers.js'
 import { normalizeForCompare, wordSimilarity } from './roundtrip-counting.js'
 import {
-  CHECK_SPEECH_MS,
   callerWindowSimilarity,
+  splitDecidingWindowEndSceneMs,
   splitSceneMs,
   type Seen,
 } from './roundtrip-noisy-bystander-helpers.js'
@@ -280,12 +280,8 @@ export function evaluateNoPauseScene(
   // in .test-logs/20261113-224730-nopause-n02-windows.log) the split utt-2 -> utt-4 followed the
   // `re-check key=2 window=3` score 0.470, and utt-2's final carried speakerCheckWindows=3. A
   // missing field or split time is a cut-point leak (fail closed).
-  const decidingWindowEndSceneMs = (s: Seen | undefined): number | undefined => {
-    if (s?.fromStartMs == null || s.fromUtteranceId == null) return undefined
-    const k = finals.get(s.fromUtteranceId)?.speakerCheckWindows
-    if (k == null) return undefined
-    return s.fromStartMs + k * CHECK_SPEECH_MS - sceneStartMediaMs
-  }
+  const decidingWindowEndSceneMs = (s: Seen | undefined): number | undefined =>
+    splitDecidingWindowEndSceneMs(s, finals, sceneStartMediaMs)
   const isFalseAccept = (
     id: string,
   ): { yes: boolean; sceneSplitMs?: number; windowEndMs?: number } => {

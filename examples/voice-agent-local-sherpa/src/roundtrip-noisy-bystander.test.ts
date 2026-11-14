@@ -1348,7 +1348,10 @@ describe('other→caller split: the caller turn is judged on U2 by utteranceId',
   }
   const SCENE = [t5, t6, t7]
 
-  const events = (u2Text: string): Seen[] =>
+  // u1_onset_media_ms=53400 and sceneStartMediaMs=620 in the log: with U1's 2 windows the split's
+  // deciding window ends at 53400 + 2 x 1500 - 620 = 55780 ms (scene), before the barge at 58305.
+  const OPTS = { sceneStartMediaMs: 620 }
+  const events = (u2Text: string, u1Windows = 2): Seen[] =>
     [
       ev('user_speaking_start', 49_200, { utteranceId: 'utt-6' }),
       ev('user_speech_final', 53_000, {
@@ -1371,7 +1374,7 @@ describe('other→caller split: the caller turn is judged on U2 by utteranceId',
         text: 'Dark itself rest',
         speaker: 'other',
         speakerRechecked: true,
-        speakerCheckWindows: 2,
+        speakerCheckWindows: u1Windows,
       }),
       ev('user_speech_partial', 58_305, { utteranceId: 'utt-10', text: 'I boked a table' }),
       ev('barge_in', 58_305, { utteranceId: 'utt-10' }),
@@ -1396,12 +1399,28 @@ describe('other→caller split: the caller turn is judged on U2 by utteranceId',
     const { starts, followed } = pairTurnUtterances(SCENE, seen)
     expect(starts.map((s) => s?.utteranceId)).toEqual(['utt-6', 'utt-10', 'utt-11'])
     expect([...followed]).toEqual([[1, 'utt-8']])
-    expect(evaluateTurns(SCENE, seen, 'p')).toEqual([])
+    expect(evaluateTurns(SCENE, seen, 'p', OPTS)).toEqual([])
+  })
+
+  it('fails a U2 barge before the deciding window anchored on U1 ends', () => {
+    // U1 with 4 windows: the deciding window ends at 53400 + 4 x 1500 - 620 = 58780 ms (scene),
+    // after the barge at 58305 (more than the 50 ms slack).
+    const seen = events('I booked a table for four people', 4)
+    expect(evaluateTurns(SCENE, seen, 'p', OPTS).join('\n')).toContain(
+      "barge-in at 58305 ms on utt-10, before the split's deciding window ends at 58780 ms (U1 utt-8, slack 50 ms)",
+    )
+  })
+
+  it('fails closed when the deciding window end cannot be computed', () => {
+    const seen = events('I booked a table for four people')
+    expect(evaluateTurns(SCENE, seen, 'p').join('\n')).toContain(
+      'other→caller split utt-8 -> utt-10: deciding window end unknown',
+    )
   })
 
   it('fails when U2 holds words of the bystander before the caller turn', () => {
     const seen = events('Dark itself rest I booked a table for four people')
-    expect(evaluateTurns(SCENE, seen, 'p').join('\n')).toContain(
+    expect(evaluateTurns(SCENE, seen, 'p', OPTS).join('\n')).toContain(
       'turn 1 (main long "I booked a table for four peop"): caller final utt-10 after the other→caller split of utt-8 holds bystander words (dark itself rest)',
     )
   })
@@ -1410,7 +1429,7 @@ describe('other→caller split: the caller turn is judged on U2 by utteranceId',
     const seen = events('I booked a table for four people').map((e) =>
       e.type === 'user_speech_final' && e.utteranceId === 'utt-10' ? { ...e, speaker: 'other' } : e,
     )
-    const failures = evaluateTurns(SCENE, seen, 'p').join('\n')
+    const failures = evaluateTurns(SCENE, seen, 'p', OPTS).join('\n')
     expect(failures).toContain('final speaker other, expected caller')
     expect(failures).toContain(
       'barge_in at 58305 ms for utterance utt-10 whose final is speaker other',

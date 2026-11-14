@@ -8,6 +8,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.18.5] - 2026-11-14
+
+### Changed
+
+- **sherpa:** STT audio is fed to the stream inline; the decode permit and the blocking-thread hop are taken only when a chunk is ready to decode or a result is unread (before, every audio message paid for a hop). The inline step never waits: when the session or recognizer is busy it takes the old path. `SHERPA_STT_INLINE_PUSH=0` restores one hop per message. Release builds use thin LTO.
+- **sherpa:** opt-in batched STT decode (`SHERPA_STT_BATCH_DECODE=1` or `set_stt_batch_decode(true)`): one decode thread per loaded model decodes every ready stream of a round in one call, with no batching window. Off by default; with the switch off the code path is unchanged.
+
+### Fixed
+
+- **ice:** server-reflexive gathering no longer loses its candidate, and 5 s of gathering, to one lost UDP datagram. STUN Binding requests are retransmitted with the same transaction id at 0, 0.5, 1.5 and 3.5 s (RFC 5389 section 7.2.1) inside the existing 5 s bound; only a Binding response with the request's transaction id is accepted; every send, the first included, is bounded by the deadline.
+
 ## [0.18.4] - 2026-11-10
 
 ### Added

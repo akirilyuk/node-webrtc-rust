@@ -236,8 +236,9 @@ pub struct SpeakerChange {
     pub key: u64,
     pub from: Outcome,
     pub to: Outcome,
-    /// `caller` -> `other`: start of the lowest-energy 20 ms frame within [`SPLIT_SEARCH_MS`] of
-    /// the first opposite window's start. `other` -> `caller`: the end of the longest quiet run
+    /// `caller` -> `other`: the end of the longest quiet run from the previous `caller` window's
+    /// start to the middle of the first `other` window (see `caller_to_other_split`). `other` ->
+    /// `caller`: the end of the longest quiet run
     /// from the previous scored window's start to the first `caller` window's start +
     /// [`SPLIT_SEARCH_MS`] (stage 1), or, when that run is under [`SPLIT_QUIET_RUN_MIN_MS`], the
     /// first `caller` sub-window refined by energy (stage 2).
@@ -1646,8 +1647,8 @@ struct Watch {
     run: u32,
     /// `caller` label: span, end and clip of the first window of the opposite run.
     first: Option<(u32, u32, Vec<u8>)>,
-    /// `other` label: span, end and clip of the last scored window (the backward range of an
-    /// `other` -> `caller` split starts at its start).
+    /// Span, end and clip of the last scored window of the watch's own label (the backward range
+    /// of a split starts at its start).
     prev: Option<(u32, u32, Vec<u8>)>,
     /// A change was reported: the key is not watched further.
     done: bool,
@@ -1735,13 +1736,17 @@ impl Timeline {
     /// smoothed over [`SPLIT_SMOOTH_FRAMES`] frames; a frame is quiet below the midpoint (dB) of
     /// the range's 10th and 90th percentile; ties go to the later run. `None` without a frame.
     fn longest_quiet_run(&self, lo: i64, hi: i64) -> Option<(i64, i64)> {
+        self.quiet_scan(lo, hi).map(|q| q.run_end_len())
+    }
+
+    /// The scan behind [`Self::longest_quiet_run`], with the raw frames and the threshold kept.
+    fn quiet_scan(&self, lo: i64, hi: i64) -> Option<QuietScan> {
         let lo = lo.max(self.start_ms).max(0);
         let hi = hi.min(self.end_ms());
         let n = ((hi - lo).max(0) as usize) / SPLIT_FRAME_MS;
         if n == 0 {
             return None;
         }
-        let db = |p: f64| 10.0 * p.max(1e-12).log10();
         let raw: Vec<f64> = (0..n)
             .map(|i| self.frame_power(lo + (i * SPLIT_FRAME_MS) as i64))
             .collect();
@@ -1752,23 +1757,83 @@ impl Timeline {
                 db(raw[a..b].iter().sum::<f64>() / (b - a) as f64)
             })
             .collect();
+        let raw_db = raw.into_iter().map(db).collect();
         let mut sorted = smooth.clone();
         sorted.sort_by(|a, b| a.total_cmp(b));
         let pct = |q: f64| sorted[((sorted.len() - 1) as f64 * q).round() as usize];
         let mid = (pct(0.1) + pct(0.9)) / 2.0;
-        let (mut best_len, mut best_end, mut run) = (0_usize, lo, 0_usize);
+        let (mut best_len, mut best_end, mut run) = (0_usize, 0_usize, 0_usize);
         for (i, v) in smooth.iter().enumerate() {
             if *v < mid {
                 run += 1;
                 if run >= best_len {
                     best_len = run;
-                    best_end = lo + ((i + 1) * SPLIT_FRAME_MS) as i64;
+                    best_end = i + 1;
                 }
             } else {
                 run = 0;
             }
         }
-        Some((best_end, (best_len * SPLIT_FRAME_MS) as i64))
+        Some(QuietScan {
+            lo,
+            raw_db,
+            mid,
+            best_end,
+            best_len,
+        })
+    }
+}
+
+fn db(p: f64) -> f64 {
+    10.0 * p.max(1e-12).log10()
+}
+
+/// The result of [`Timeline::quiet_scan`]: frame indexes count from `lo`.
+struct QuietScan {
+    lo: i64,
+    /// Unsmoothed frame power, dB.
+    raw_db: Vec<f64>,
+    /// The quiet threshold (dB) of the smoothed power.
+    mid: f64,
+    /// One past the last frame of the longest quiet run.
+    best_end: usize,
+    best_len: usize,
+}
+
+impl QuietScan {
+    fn at(&self, frame: usize) -> i64 {
+        self.lo + (frame * SPLIT_FRAME_MS) as i64
+    }
+
+    fn run_end_len(&self) -> (i64, i64) {
+        (
+            self.at(self.best_end),
+            (self.best_len * SPLIT_FRAME_MS) as i64,
+        )
+    }
+
+    /// Decision r (chunk 6e): a closed run (a loud frame follows inside the range) ends right
+    /// before the next speaker's first loud raw frame, searched within the smoothing reach of the
+    /// smoothed run end (the smoothing moves a run's edges by up to two frames). An open run (quiet
+    /// to the range end) ends at the smoothed run end. `None` without a quiet run.
+    fn raw_cut(&self) -> Option<i64> {
+        if self.best_len == 0 {
+            return None;
+        }
+        let n = self.raw_db.len();
+        if self.best_end >= n {
+            return Some(self.at(self.best_end));
+        }
+        let reach = SPLIT_SMOOTH_FRAMES / 2;
+        let from = self
+            .best_end
+            .saturating_sub(reach)
+            .max(self.best_end - self.best_len);
+        let to = (self.best_end + reach).min(n);
+        let at = (from..to)
+            .find(|i| self.raw_db[*i] >= self.mid)
+            .unwrap_or(self.best_end);
+        Some(self.at(at))
     }
 }
 
@@ -1791,8 +1856,7 @@ fn watch_step(
     if !recheck {
         if scored {
             watches.retain(|(k, _)| *k != key);
-            let prev = (outcome == Outcome::Other).then_some((span.0, span.1, clip));
-            watches.push_back((key, Watch::armed(outcome, prev)));
+            watches.push_back((key, Watch::armed(outcome, Some((span.0, span.1, clip)))));
             while watches.len() > BOOK_CAP {
                 watches.pop_front();
             }
@@ -1806,7 +1870,7 @@ fn watch_step(
     if !scored || outcome == w.label {
         w.run = 0;
         w.first = None;
-        if scored && w.label == Outcome::Other {
+        if scored {
             w.prev = Some((span.0, span.1, clip));
         }
         return None;
@@ -1831,13 +1895,41 @@ fn watch_step(
         return None;
     }
     w.done = true;
-    let (start_ms, end_ms, clip) = w.first.take()?;
+    let first = w.first.take()?;
     Some(SpeakerChange {
         key,
         from: w.label,
         to: outcome,
-        split_at_ms: split_point(start_ms, end_ms, &clip),
+        split_at_ms: caller_to_other_split(w.prev.take(), first),
     })
+}
+
+/// The `caller` -> `other` split point (chunk 6e, decisions q and r): the longest quiet run
+/// (stage 1's rule, ties later) from the previous `caller` window's start to the middle of the
+/// first `other` window, so the cut lands after the caller's speech: in the gap before a
+/// bystander, or in the bed after a short caller phrase whose bed windows scored `other`. A closed
+/// run cuts right before the next speaker's first loud raw frame; an open run (quiet to the range
+/// end) cuts at its end ([`QuietScan::raw_cut`]), so the caller's fading last word is never cut. Without
+/// a previous window that tiles into the first `other` one (an unscored window in between), the
+/// range starts [`SPLIT_SEARCH_MS`] before the window (its pre-roll). Without a quiet run (no
+/// frame in range), today's [`split_point`]. Bench: `CALLER_TO_OTHER_BENCH.md` (cut point).
+fn caller_to_other_split(prev: Option<(u32, u32, Vec<u8>)>, first: (u32, u32, Vec<u8>)) -> u32 {
+    let (start, end, clip) = first;
+    let hi = i64::from(start) + i64::from(end.saturating_sub(start) / 2);
+    let prev = prev.filter(|(_, pend, _)| *pend + 2 * SPLIT_FRAME_MS as u32 >= start);
+    let (tl, lo) = match prev.as_ref() {
+        Some((pstart, pend, pclip)) => (
+            Timeline::from_clips(&[(*pend, pclip), (end, &clip)]),
+            i64::from(*pstart),
+        ),
+        None => (
+            Timeline::from_clips(&[(end, &clip)]),
+            i64::from(start) - i64::from(SPLIT_SEARCH_MS),
+        ),
+    };
+    tl.quiet_scan(lo, hi)
+        .and_then(|q| q.raw_cut())
+        .map_or_else(|| split_point(start, end, &clip), |at| at.max(0) as u32)
 }
 
 /// Stage 1 of the `other` -> `caller` split point. The range runs from the previous scored
@@ -2863,10 +2955,11 @@ mod tests {
     }
 
     /// First window labels the caller; two opposite re-check windows in a row confirm a change.
-    /// The split is the silent frame of the first opposite window's clip (clip: 500 ms ending at
-    /// 400 ms, so it starts at -100 ms; the silent frame is at 260 ms).
+    /// The split is the end of the quiet run around the silent frame of the first opposite
+    /// window's clip (clip: 500 ms ending at 400 ms, so it starts at -100 ms; the silent frame is
+    /// at 260 ms), bounded by the middle of that window (300 ms).
     #[test]
-    fn caller_to_other_after_two_opposite_windows_splits_at_the_low_energy_frame() {
+    fn caller_to_other_after_two_opposite_windows_splits_at_the_quiet_run() {
         let mut w = VecDeque::new();
         assert!(watch_step(&mut w, 1, Outcome::Caller, false, (0, 200), tone(500, 9000)).is_none());
         let first = clip_with_quiet_frame(500, 260 + 100);
@@ -2879,11 +2972,126 @@ mod tests {
                 key: 1,
                 from: Outcome::Caller,
                 to: Outcome::Other,
-                split_at_ms: 260
+                split_at_ms: 300
             }
         );
         // Reported once.
         assert!(watch_step(&mut w, 1, Outcome::Other, true, (600, 800), tone(500, 9000)).is_none());
+    }
+
+    /// Mono s16le on the utterance clock: each part is `(ms, amp, alternating)`; alternating parts
+    /// flip the sign sample by sample (same power).
+    fn parts_pcm(parts: &[(usize, i16, bool)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (ms, amp, alt) in parts {
+            for i in 0..ms * BYTES_PER_MS / 2 {
+                let v = if *alt && i % 2 == 1 { -amp } else { *amp };
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        out
+    }
+
+    /// Feeds 1500 ms windows (clips with 300 ms pre-roll) of `pcm` (starting at -300 ms) through
+    /// the watch with `outcomes`; returns the change.
+    fn c2o_windows(pcm: &[u8], outcomes: &[Outcome]) -> Option<SpeakerChange> {
+        let mut w = VecDeque::new();
+        let mut change = None;
+        for (k, o) in outcomes.iter().enumerate() {
+            let (start, end) = (k * 1500, (k + 1) * 1500);
+            let clip = pcm[start * BYTES_PER_MS..(end + 300) * BYTES_PER_MS].to_vec();
+            if let Some(c) = watch_step(&mut w, 1, *o, k > 0, (start as u32, end as u32), clip) {
+                change = Some(c);
+            }
+        }
+        change
+    }
+
+    /// The n03 shape (chunk 6e): a caller phrase that ends 400 ms into window 3, then bed only;
+    /// windows 3 and 4 score `other` and confirm a (false) caller -> other change. The cut lands
+    /// after the caller's last voiced frame (3400 ms), so the caller's sentence stays whole and the
+    /// `other` part is bed. Today's `split_point` (lowest-energy frame within 300 ms of the window
+    /// start, one level throughout the caller) cut at 3000 ms, inside the phrase.
+    #[test]
+    fn caller_to_other_cut_lands_after_the_caller_phrase_on_bed_windows() {
+        // -300 .. 3400 caller, 3400 .. 6300 bed.
+        let pcm = parts_pcm(&[(3700, 9000, false), (2900, 300, true)]);
+        let c = c2o_windows(
+            &pcm,
+            &[
+                Outcome::Caller,
+                Outcome::Caller,
+                Outcome::Other,
+                Outcome::Other,
+            ],
+        )
+        .expect("two bed windows confirm the change");
+        assert_eq!((c.from, c.to), (Outcome::Caller, Outcome::Other));
+        assert!(
+            (3401..=3750).contains(&c.split_at_ms),
+            "cut {} after the caller's end (3400), within window 3's middle (3750)",
+            c.split_at_ms
+        );
+        let first = pcm[3000 * BYTES_PER_MS..4800 * BYTES_PER_MS].to_vec();
+        assert!(
+            split_point(3000, 4500, &first) < 3400,
+            "today's cut lands inside the caller's phrase"
+        );
+    }
+
+    /// A real takeover: the caller ends at 3100 ms, a bystander starts at 3400 ms (300 ms gap at bed
+    /// level). The cut lands in the gap: no caller word moves to the `other` part and no bystander
+    /// word stays in the caller part.
+    #[test]
+    fn caller_to_other_takeover_cuts_between_the_caller_and_the_bystander() {
+        // -300 .. 3100 caller, 3100 .. 3400 bed, 3400 .. 6300 bystander.
+        let pcm = parts_pcm(&[(3400, 9000, false), (300, 300, true), (2900, 9000, true)]);
+        let c = c2o_windows(
+            &pcm,
+            &[
+                Outcome::Caller,
+                Outcome::Caller,
+                Outcome::Other,
+                Outcome::Other,
+            ],
+        )
+        .expect("the bystander confirms the change");
+        assert_eq!((c.from, c.to), (Outcome::Caller, Outcome::Other));
+        assert!(
+            (3100..=3400).contains(&c.split_at_ms),
+            "cut {} between the caller's end (3100) and the bystander's onset (3400)",
+            c.split_at_ms
+        );
+    }
+
+    /// Decision r (chunk 6e): a steady quieter next speaker (-6 dB) with no pause at all, from
+    /// 3600 ms (900 ms of the first `other` window). The quiet run is open (the bystander lasts to
+    /// the range end), so the cut lands at its end, the first `other` window's middle: at or after
+    /// the step, never inside the caller, and within the leak bound of the integration rig
+    /// (`speaker_change_split_test` › `assert_other_caller_other`: 9 frames, 180 ms). The leak is
+    /// the distance from the step to that middle.
+    #[test]
+    fn caller_to_other_steady_quieter_bystander_cuts_at_or_after_the_step() {
+        const STEP: u32 = 3600;
+        const LEAK_MAX_MS: u32 = 9 * SPLIT_FRAME_MS as u32;
+        // -300 .. 3600 caller, 3600 .. 6300 bystander at half the amplitude.
+        let pcm = parts_pcm(&[(3900, 9000, false), (2700, 4500, true)]);
+        let c = c2o_windows(
+            &pcm,
+            &[
+                Outcome::Caller,
+                Outcome::Caller,
+                Outcome::Other,
+                Outcome::Other,
+            ],
+        )
+        .expect("the bystander confirms the change");
+        assert_eq!((c.from, c.to), (Outcome::Caller, Outcome::Other));
+        assert!(
+            (STEP..=STEP + LEAK_MAX_MS).contains(&c.split_at_ms),
+            "cut {} at or after the step ({STEP}), at most {LEAK_MAX_MS} ms of bystander left",
+            c.split_at_ms
+        );
     }
 
     #[test]
@@ -3326,6 +3534,21 @@ mod tests {
             run_script(false, vec![caller_v(), caller_v(), other_v(), other_v()], 1).await;
         assert_eq!(got.len(), 1, "a caller utterance is not watched: {got:?}");
         assert_eq!(gate.outcome_for(1), Some(Outcome::Caller));
+        assert!(gate.take_speaker_changes().is_empty());
+    }
+
+    /// Option off (chunk 6e): the n03 script (caller, caller, other, other) gets the first verdict
+    /// only, no window is watched and no change (so no cut) is reported.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn option_off_reports_no_caller_to_other_cut_on_the_n03_shape() {
+        let (gate, got) =
+            run_script(false, vec![caller_v(), caller_v(), other_v(), other_v()], 1).await;
+        assert_eq!(
+            got.iter()
+                .map(|v| (v.outcome, v.recheck))
+                .collect::<Vec<_>>(),
+            vec![(Outcome::Caller, false)]
+        );
         assert!(gate.take_speaker_changes().is_empty());
     }
 

@@ -1373,8 +1373,14 @@ async fn assert_other_caller_other(mut rig: Rig) {
     );
     let ((a1, b1), (a2, b2), (a3, b3)) = (ab(&f1), ab(&f2), ab(&f3));
     assert!(a1 <= 2 && b1 >= 18, "U1 a{a1} b{b1}");
-    assert!(b2 <= 2 && a2 >= 13, "U2 a{a2} b{b2}");
-    assert!(a3 <= 2 && b3 >= 38, "U3 a{a3} b{b3}");
+    // Decision r (chunk 6e): a steady quieter next speaker with no pause is not told apart from
+    // a fading last word, so the caller -> other cut runs to the end of the open quiet run and a
+    // few `other` frames stay in the caller part; we prefer that over clipping the caller.
+    // Measured leak: 9 frames (180 ms). The U2 and U3 bounds are tied to that leak, and together
+    // they lose no more `other` frames than the original `b3 >= 38` allowed.
+    assert!(b2 <= 9 && a2 >= 13, "U2 a{a2} b{b2}");
+    assert!(a3 <= 2 && b3 >= 31, "U3 a{a3} b{b3}");
+    assert!(b2 + b3 >= 38, "U2 + U3 b{}", b2 + b3);
     assert_eq!(rig.barge_ids(), vec![Some(u2)]);
     assert_eq!(rig.agent.speaker_split_counts().3, 0, "nothing stale");
     rig.agent.stop().await.unwrap();

@@ -334,6 +334,9 @@ enum Pos {
     /// Hybrid (chunk 6e, decision r): a closed run cuts as [`Pos::Raw`]; an open run cuts at the
     /// run's end (the range end), as [`Pos::End`].
     Hybrid,
+    /// [`Pos::Hybrid`] with the open-run cut capped at the first `other` window's start + `ms`
+    /// (chunk 6e, decision s).
+    HybridCap(usize),
 }
 
 fn pos_name(p: Pos) -> String {
@@ -348,6 +351,7 @@ fn pos_name(p: Pos) -> String {
             format!("raw: closed = first loud raw frame; open = last loud raw frame + {ms} ms")
         }
         Pos::Hybrid => "hybrid: closed = first loud raw frame; open = run end".into(),
+        Pos::HybridCap(ms) => format!("hybrid, open capped at first other start + {ms} ms"),
     }
 }
 
@@ -372,7 +376,7 @@ enum Cut {
     FirstQuiet { x: usize, min: usize },
 }
 
-const CUTS: [Cut; 47] = [
+const CUTS: [Cut; 52] = [
     Cut::Today,
     Cut::Quiet {
         x: 300,
@@ -690,6 +694,41 @@ const CUTS: [Cut; 47] = [
         mid_hi: true,
         early: 0.0,
     },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::HybridCap(0),
+        mid_hi: true,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::HybridCap(150),
+        mid_hi: true,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::HybridCap(300),
+        mid_hi: true,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::HybridCap(450),
+        mid_hi: true,
+        early: 0.0,
+    },
+    Cut::Quiet {
+        x: 1500,
+        confirm: false,
+        pos: Pos::HybridCap(600),
+        mid_hi: true,
+        early: 0.0,
+    },
 ];
 
 fn cut_name(c: Cut) -> String {
@@ -923,11 +962,15 @@ fn cut_at(c: Cut, samples: &[f32], wins: &[Win], first: usize, confirm: usize) -
                 let (at, o) = raw_cut(samples, lo, hi, m).unwrap_or_else(|| (today(), false));
                 return (at, o);
             }
-            if let Pos::Hybrid = pos {
+            if let Pos::Hybrid | Pos::HybridCap(_) = pos {
+                let cap = match pos {
+                    Pos::HybridCap(c) => s + c,
+                    _ => usize::MAX,
+                };
                 return match raw_cut(samples, lo, hi, 0) {
                     Some((at, false)) => (at, false),
                     Some((_, true)) => (
-                        pick_quiet(samples, lo, hi, 0.0).map_or_else(today, |(_, b)| b),
+                        pick_quiet(samples, lo, hi, 0.0).map_or_else(today, |(_, b)| b.min(cap)),
                         true,
                     ),
                     None => (today(), false),
@@ -940,7 +983,7 @@ fn cut_at(c: Cut, samples: &[f32], wins: &[Win], first: usize, confirm: usize) -
                     (a + ms).min(b)
                 }
                 Pos::StartIfOpen(_) => b,
-                Pos::Raw(_) | Pos::Hybrid => unreachable!("handled above"),
+                Pos::Raw(_) | Pos::Hybrid | Pos::HybridCap(_) => unreachable!("handled above"),
                 Pos::End => b,
                 Pos::Start => a,
                 Pos::Back(ms) => b.saturating_sub(ms).max(a),

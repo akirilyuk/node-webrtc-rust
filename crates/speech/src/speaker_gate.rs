@@ -61,11 +61,14 @@ pub const OTHER_TO_CALLER_CONFIRM_WINDOWS: u32 = 1;
 /// `crates/vendor-sherpa-onnx/examples/SPLIT_POINT_BENCH.md` (decision h pick).
 pub const SPLIT_QUIET_RUN_MIN_MS: u32 = 500;
 /// Stage 2: sub-window length embedded to localize the caller's onset.
-pub const SPLIT_STAGE2_SUB_MS: u32 = 1000;
+pub const SPLIT_STAGE2_SUB_MS: u32 = 1250;
 /// Stage 2: hop between sub-windows.
-pub const SPLIT_STAGE2_HOP_MS: u32 = 125;
-/// Stage 2: the localized point is refined to the lowest-energy frame within this many ms.
-pub const SPLIT_STAGE2_REFINE_MS: u32 = 150;
+pub const SPLIT_STAGE2_HOP_MS: u32 = 250;
+/// Stage 2: the split is the end of the longest quiet run (stage 1's rule) within this many ms
+/// after the start of the first `caller` sub-window, or that start without a quiet run. The
+/// first `caller` sub-window starts inside the bystander's speech (it scores `caller` once most of
+/// it is caller audio), so the cut moves forward to the gap before the caller (chunk 6b).
+pub const SPLIT_STAGE2_FORWARD_MS: u32 = 500;
 /// Frames of power smoothing in the stage 1 quiet-run search (100 ms).
 const SPLIT_SMOOTH_FRAMES: usize = 5;
 
@@ -1767,23 +1770,6 @@ impl Timeline {
         }
         Some((best_end, (best_len * SPLIT_FRAME_MS) as i64))
     }
-
-    /// Start of the lowest-energy 20 ms frame within `+-r` ms of `p` (ties: nearest `p`, then the
-    /// earlier one). Frames outside the audio (and before the onset) are not candidates.
-    fn refine_point(&self, p: i64, r: i64) -> i64 {
-        let mut best: Option<(f64, i64, i64)> = None;
-        let mut t = p - r;
-        while t <= p + r {
-            if t >= self.start_ms.max(0) && t + SPLIT_FRAME_MS as i64 <= self.end_ms() {
-                let cand = (self.frame_power(t), (t - p).abs(), t);
-                if best.is_none_or(|b| cand.partial_cmp(&b) == Some(std::cmp::Ordering::Less)) {
-                    best = Some(cand);
-                }
-            }
-            t += SPLIT_FRAME_MS as i64;
-        }
-        best.map_or(p, |b| b.2)
-    }
 }
 
 /// One scored window for the watch. The first scored (non-re-check) window labels the key. Each
@@ -1896,8 +1882,9 @@ fn other_to_caller_split(
 }
 
 /// Stage 2 of the `other` -> `caller` split point: embeds [`SPLIT_STAGE2_SUB_MS`] sub-windows on a
-/// [`SPLIT_STAGE2_HOP_MS`] hop from the start of the range, and refines the start of the first
-/// one that scores `caller` to the lowest-energy frame within [`SPLIT_STAGE2_REFINE_MS`]. Runs on
+/// [`SPLIT_STAGE2_HOP_MS`] hop from the start of the range, and moves the start of the first one
+/// that scores `caller` forward to the end of the longest quiet run within
+/// [`SPLIT_STAGE2_FORWARD_MS`] (the start itself without a quiet run). Runs on
 /// the verifier task, inside the window's own verify budget: the whole stage has `verify` minus
 /// what the window's verify (started at `window_started`) already spent, each embed
 /// `min(verify, left)`, so the window's verdict never lands later than `verify_timeout_ms` after
@@ -1969,7 +1956,9 @@ async fn stage2_split(
     let p = found?;
     let at = refine
         .tl
-        .refine_point(p, i64::from(SPLIT_STAGE2_REFINE_MS))
+        .longest_quiet_run(p, p + i64::from(SPLIT_STAGE2_FORWARD_MS))
+        .filter(|(_, run)| *run > 0)
+        .map_or(p, |(end, _)| end)
         .max(0);
     Some(at as u32)
 }
@@ -3544,11 +3533,11 @@ mod tests {
         assert!(!gate.rechecked(2));
     }
 
-    /// Stage 2 (no quiet run): sub-windows of 1000 ms on a 125 ms hop are embedded on the verifier
+    /// Stage 2 (no quiet run): sub-windows of 1250 ms on a 250 ms hop are embedded on the verifier
     /// task from the previous window's start; the first `caller` one decides the split, which
-    /// stays inside +-150 ms of its start. The script scores sub-windows other, other, caller:
-    /// the third starts at 250 ms, so the split lies in 100..=400 ms, and the two vectors after it
-    /// stay unused.
+    /// lies within [`SPLIT_STAGE2_FORWARD_MS`] after its start. The script scores sub-windows
+    /// other, other, caller: the third starts at 500 ms, so the split lies in 500..=1000 ms, and
+    /// the two vectors after it stay unused.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stage_two_localizes_on_the_first_caller_sub_window() {
         let mut cfg = split_cfg(true, 12);
@@ -3558,8 +3547,8 @@ mod tests {
             other_v(),  // window 1
             caller_v(), // window 2: confirms
             other_v(),  // sub-window at 0 ms
-            other_v(),  // 125 ms
-            caller_v(), // 250 ms
+            other_v(),  // 250 ms
+            caller_v(), // 500 ms
             caller_v(), // unused
             caller_v(), // unused
         ]
@@ -3574,7 +3563,7 @@ mod tests {
             (Outcome::Other, Outcome::Caller)
         );
         assert!(
-            (100..=400).contains(&changes[0].split_at_ms),
+            (500..=1000).contains(&changes[0].split_at_ms),
             "split {}",
             changes[0].split_at_ms
         );
@@ -3705,6 +3694,104 @@ mod tests {
         );
     }
 
+    /// Stage 2 test embedder: the bystander alternates +-amp sample by sample, the caller holds
+    /// +amp (same power), so a sub-window scores `caller` once at least half of it is caller audio
+    /// (positive share >= 0.75), like a real embedding that needs most of its window.
+    struct MajorityEmbedder;
+    #[async_trait::async_trait]
+    impl SpeakerEmbedder for MajorityEmbedder {
+        async fn embed(
+            &self,
+            pcm: Bytes,
+            _rate: u32,
+        ) -> crate::error::SpeechResult<Option<Vec<f32>>> {
+            let s = pcm.as_chunks::<2>().0;
+            let pos = s.iter().filter(|b| i16::from_le_bytes(**b) > 0).count();
+            Ok(Some(if pos * 4 >= s.len() * 3 {
+                caller_v()
+            } else {
+                other_v()
+            }))
+        }
+    }
+
+    /// Bystander (`by_ms`), a quiet gap at a bed level (`gap_ms`), then the caller (`caller_ms`),
+    /// on the utterance clock from 0.
+    fn no_pause_scene(by_ms: usize, gap_ms: usize, caller_ms: usize) -> Refine {
+        let mut pcm = Vec::new();
+        for (ms, kind) in [(by_ms, 0), (gap_ms, 1), (caller_ms, 2)] {
+            for i in 0..ms * BYTES_PER_MS / 2 {
+                let v: i16 = match kind {
+                    0 if i % 2 == 0 => 9000,
+                    0 => -9000,
+                    1 if i % 2 == 0 => 300,
+                    1 => -300,
+                    _ => 9000,
+                };
+                pcm.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        let end = (pcm.len() / BYTES_PER_MS) as u32;
+        let tl = Timeline::from_clips(&[(end, &pcm)]);
+        let audio_end = tl.end_ms();
+        Refine {
+            tl,
+            lo: 0,
+            audio_end,
+        }
+    }
+
+    async fn stage2_on(refine: &Refine) -> Option<u32> {
+        let embedder: Arc<dyn SpeakerEmbedder> = Arc::new(MajorityEmbedder);
+        let gate = SpeakerGate::new(split_cfg(true, 12));
+        stage2_split(
+            &embedder,
+            &caller_v(),
+            0.5,
+            refine,
+            Duration::from_millis(5000),
+            Instant::now(),
+            &gate.shared,
+            1,
+        )
+        .await
+    }
+
+    /// The n00 shape (no pause): the bystander ends at 2400 ms, the caller starts 140 ms later.
+    /// The first `caller` sub-window starts ~400 ms inside the bystander's speech; the cut lands
+    /// in the gap (the end of the quiet run within `SPLIT_STAGE2_FORWARD_MS` of that start), not
+    /// at the sub-window start, and never after the caller's onset.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stage_two_no_pause_cut_lands_in_the_gap_not_inside_the_bystander() {
+        let at = stage2_on(&no_pause_scene(2400, 140, 1460))
+            .await
+            .expect("caller sub-window");
+        assert!(
+            (2400..=2540).contains(&at),
+            "split {at}: bystander ends 2400, caller starts 2540"
+        );
+    }
+
+    /// No quiet run within `SPLIT_STAGE2_FORWARD_MS` of the first `caller` sub-window (one level
+    /// throughout): the cut stays at that sub-window's start, never later.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stage_two_without_a_forward_quiet_run_cuts_at_the_sub_window_start() {
+        let refine = no_pause_scene(1500, 0, 2500);
+        let at = stage2_on(&refine).await.expect("caller sub-window");
+        let sub = SPLIT_STAGE2_SUB_MS as usize;
+        let hop = SPLIT_STAGE2_HOP_MS as usize;
+        // First sub-window with at least half caller audio.
+        let first = (0..)
+            .map(|k| k * hop)
+            .find(|t| t + sub >= 1500 + sub / 2)
+            .unwrap();
+        assert_eq!(
+            at as usize, first,
+            "cut at the first caller sub-window start"
+        );
+        assert!((at as usize) < 1500, "never past the caller's onset");
+    }
+
     /// A U1 final awaiting its verdict during a slow stage 2 (50 ms sub-windows, the third is
     /// `caller`) gets the booked `other` -> `caller` change, never `other` before the change
     /// exists: the check stays in flight until the change is stored.
@@ -3745,25 +3832,25 @@ mod tests {
         assert_eq!(lock(&sink).len(), 2);
     }
 
-    /// With 1500 ms windows stage 2's point can land up to start(k) + 650 ms (the bench "start"
-    /// variant: the last sub-window starts at start(k) + 500, refined +-150): the first caller
-    /// sub-window is the 17th, at 2000 ms, with window 2 starting at 1500 ms.
+    /// With 1500 ms windows stage 2's point can land up to start(k) + 750 ms (the last 1250 ms
+    /// sub-window starts at start(k) + 250, moved forward up to [`SPLIT_STAGE2_FORWARD_MS`]): the
+    /// first caller sub-window is the 8th, at 1750 ms, with window 2 starting at 1500 ms.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn stage_two_split_can_land_up_to_650_ms_after_the_caller_window_start() {
+    async fn stage_two_split_can_land_up_to_750_ms_after_the_caller_window_start() {
         let mut cfg = split_cfg(true, 12);
         cfg.check_speech_ms = 1500;
         let mut steps: Vec<Step> = vec![(None, caller_v()), (None, other_v()), (None, caller_v())];
-        steps.extend((0..16).map(|_| (None, other_v())));
+        steps.extend((0..7).map(|_| (None, other_v())));
         steps.push((None, caller_v()));
         let (gate, _v, queue) = run_script_steps(cfg, steps.into(), 2, 75).await;
         let changes = gate.take_speaker_changes();
         assert_eq!(changes.len(), 1, "{changes:?}");
         let at = changes[0].split_at_ms;
         assert!(
-            (1850..=1500 + 650).contains(&at),
-            "split {at}: beyond start(k) + 300 (old range), within start(k) + 650"
+            (1750..=1500 + 750).contains(&at),
+            "split {at}: at or after the 8th sub-window start, within start(k) + 750"
         );
-        assert_eq!(lock(&queue).len(), 0, "all 17 sub-windows embedded");
+        assert_eq!(lock(&queue).len(), 0, "all 8 sub-windows embedded");
     }
 
     /// (a) Flag on: a caller-first utterance watched for 3 more windows without a change reports

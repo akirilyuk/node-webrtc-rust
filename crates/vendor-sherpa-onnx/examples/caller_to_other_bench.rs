@@ -900,7 +900,10 @@ fn raw_open_start(samples: &[f32], lo: usize, hi: usize) -> Option<usize> {
     }
     let start = best_end - best;
     let to = (start + SMOOTH / 2).min(n);
-    let at = (start..to).find(|i| db(raw[*i]) < mid).unwrap_or(to);
+    let at = (start..to)
+        .rev()
+        .find(|i| db(raw[*i]) >= mid)
+        .map_or(start, |i| i + 1);
     Some(lo + at * FRAME_MS)
 }
 

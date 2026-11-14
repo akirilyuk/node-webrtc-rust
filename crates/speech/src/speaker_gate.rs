@@ -1835,8 +1835,9 @@ impl QuietScan {
             let start = self.best_end - self.best_len;
             let to = (start + SPLIT_SMOOTH_FRAMES / 2).min(n);
             let raw_start = (start..to)
-                .find(|i| self.raw_db[*i] < self.mid)
-                .unwrap_or(to);
+                .rev()
+                .find(|i| self.raw_db[*i] >= self.mid)
+                .map_or(start, |i| i + 1);
             return Some(self.at(self.best_end).min(open_max).max(self.at(raw_start)));
         }
         let reach = SPLIT_SMOOTH_FRAMES / 2;
@@ -4572,5 +4573,19 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn open_run_raw_start_skips_a_loud_frame_inside_the_reach() {
+        // Smoothed open run starts at frame 2, but raw frame 3 is still loud (the caller): the
+        // cut lands after it, at frame 4, not at the first quiet raw frame (2).
+        let scan = QuietScan {
+            lo: 0,
+            raw_db: vec![-10.0, -10.0, -40.0, -25.0, -40.0, -40.0, -40.0],
+            mid: -30.0,
+            best_end: 7,
+            best_len: 5,
+        };
+        assert_eq!(scan.raw_cut(0), Some((4 * SPLIT_FRAME_MS) as i64));
     }
 }

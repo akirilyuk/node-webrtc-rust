@@ -1037,7 +1037,11 @@ impl Ctx {
         segments.sort_by_key(|s| s.start_ms);
         self.finish(
             id,
-            if tail { "caller_tail" } else { "caller_to_other" },
+            if tail {
+                "caller_tail"
+            } else {
+                "caller_to_other"
+            },
             set,
             by_db,
             MAIN_REF_DB as i32,

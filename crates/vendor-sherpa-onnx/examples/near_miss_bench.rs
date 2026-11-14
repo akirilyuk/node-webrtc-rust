@@ -1213,10 +1213,15 @@ mod straddle {
 
     /// One scene: per variant, per config: `Some((kept words, leaked words, path, cut - onset))`
     /// when the variant confirms (path 0 stage 1, 1 stage 2, 2 fallback).
+    /// Per config: (lost, leaked, flags, cut offset) of one scene; `None` when it did not confirm.
+    type CfgRes = Option<(u16, u16, u8, i32)>;
+    /// Sub-window scores per (sub, hop): (start, score, embed ms).
+    type SubsCache = std::collections::HashMap<(usize, usize), Vec<(usize, f32, f64)>>;
+
     struct SceneRec {
         floor_kept: usize,
         today_ok: bool,
-        res: Vec<Vec<Option<(u16, u16, u8, i32)>>>,
+        res: Vec<Vec<CfgRes>>,
         /// Today's confirm, per sub/hop: (embeds until the first caller sub-window, their ms).
         emb: [(usize, f64); 4],
     }
@@ -1302,8 +1307,7 @@ mod straddle {
         };
         let floor_kept = a_at(p.c_on).0;
         let cs = cfgs();
-        let mut subs_cache: std::collections::HashMap<(usize, usize), Vec<(usize, f32, f64)>> =
-            Default::default();
+        let mut subs_cache: SubsCache = Default::default();
         let mut res = Vec::new();
         let mut today_ok = false;
         let mut emb = [(0usize, 0f64); 4];
@@ -1426,7 +1430,7 @@ mod straddle {
         for ((pa, sign), (n, l)) in attr {
             out.push_str(&format!("attr\t{title}\t{pa}\t{sign}\t{n}\t{l}\n"));
         }
-        for sh in 0..SUBHOP.len() {
+        for (sh, sub_hop) in SUBHOP.iter().enumerate() {
             let mut n: Vec<i64> = recs
                 .iter()
                 .filter(|r| r.today_ok)
@@ -1439,8 +1443,8 @@ mod straddle {
                 .collect();
             out.push_str(&format!(
                 "emb\t{title}\t{}/{}\t{}\t{}\t{}\t{}\n",
-                SUBHOP[sh].0,
-                SUBHOP[sh].1,
+                sub_hop.0,
+                sub_hop.1,
                 pct_i(&mut n, 0.5),
                 pct_i(&mut n, 0.99),
                 pct_i(&mut ms, 0.5),
@@ -1547,11 +1551,11 @@ mod straddle {
     fn head_align(r: &[String], h: &[String]) -> (usize, Vec<usize>) {
         let (n, m) = (r.len(), h.len());
         let mut d = vec![vec![0usize; m + 1]; n + 1];
-        for i in 0..=n {
-            d[i][0] = i;
+        for (i, row) in d.iter_mut().enumerate() {
+            row[0] = i;
         }
-        for j in 0..=m {
-            d[0][j] = j;
+        for (j, cell) in d[0].iter_mut().enumerate() {
+            *cell = j;
         }
         for i in 1..=n {
             for j in 1..=m {
@@ -2177,11 +2181,15 @@ mod straddle {
             Some(p) => {
                 let bytes = fs::read(p).map_err(|e| format!("bed: {e}"))?;
                 let f: Vec<f32> = bytes
-                    .chunks_exact(4)
-                    .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|b| f32::from_le_bytes(*b))
                     .collect();
                 Some(
-                    f.chunks_exact(3)
+                    f.as_chunks::<3>()
+                        .0
+                        .iter()
                         .map(|c| (c[0] + c[1] + c[2]) / 3.0)
                         .collect(),
                 )

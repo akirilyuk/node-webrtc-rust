@@ -20,7 +20,6 @@ use node_webrtc_rust_speech::events::{SpeechEvent, SpeechEventKind};
 use node_webrtc_rust_speech::pipeline::{
     FinalizeMode, SpeakerEmbedder, SttOutput, SttProvider, SttTranscript, VendorFactory,
 };
-use node_webrtc_rust_speech::speaker_gate::CALLER_TO_OTHER_OPEN_CUT_MAX_MS;
 use node_webrtc_rust_speech::{PcmWriter, SpeechResult, VendorRegistry, VoiceAgent};
 use node_webrtc_rust_vendor_mock::MockFactory;
 use tokio::sync::{broadcast, Notify};
@@ -1377,13 +1376,13 @@ async fn assert_other_caller_other(mut rig: Rig) {
     // Decisions r and s (chunk 6e): a steady quieter next speaker with no pause is not told apart
     // from a fading last word, so the caller -> other cut runs to the end of the open quiet run and
     // a few `other` frames stay in the caller part; we prefer that over clipping the caller. The
-    // cut lands at most CALLER_TO_OTHER_OPEN_CUT_MAX_MS (450 ms) after the first `other` window's
-    // start, so in general at most ceil(450 / 20) = 23 `other` frames stay in the caller part.
-    // Measured in this rig: 9. The U2 and U3 bounds are tied to that leak, and together they lose
-    // no more `other` frames than the original `b3 >= 38` allowed.
-    let leak_max = CALLER_TO_OTHER_OPEN_CUT_MAX_MS.div_ceil(20) as usize;
-    assert!(b2 <= leak_max && a2 >= 13, "U2 a{a2} b{b2}");
-    assert!(a3 <= 2 && b3 >= 40 - leak_max, "U3 a{a3} b{b3}");
+    // general bound (the cut at most CALLER_TO_OTHER_OPEN_CUT_MAX_MS, 450 ms, after the first
+    // `other` window's start unless the caller is still speaking) is covered by the worst-case
+    // unit test in speaker_gate.rs. Here the leak is a regression detector at its measured 9
+    // frames (180 ms); together U2 and U3 lose no more `other` frames than the original
+    // `b3 >= 38` allowed.
+    assert!(b2 <= 9 && a2 >= 13, "U2 a{a2} b{b2}");
+    assert!(a3 <= 2 && b3 >= 31, "U3 a{a3} b{b3}");
     assert!(b2 + b3 >= 38, "U2 + U3 b{}", b2 + b3);
     assert_eq!(rig.barge_ids(), vec![Some(u2)]);
     assert_eq!(rig.agent.speaker_split_counts().3, 0, "nothing stale");

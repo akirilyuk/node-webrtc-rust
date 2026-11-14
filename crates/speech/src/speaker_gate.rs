@@ -77,8 +77,9 @@ const SPLIT_SMOOTH_FRAMES: usize = 5;
 pub const SPLIT_SEARCH_MS: u32 = 300;
 /// `caller` -> `other`: an open quiet run (quiet to the range end, the middle of the first `other`
 /// window) cuts no later than this many ms after the first `other` window's start (decision s,
-/// chunk 6e). It bounds how much of a steady quieter next speaker with no pause stays in the
-/// caller part. The smallest cap with 0 caller words cut on tails and takeovers:
+/// chunk 6e), unless the caller is still speaking then: the cut never lands before the quiet
+/// run's start, so it never clips the caller. It bounds how much of a steady quieter next speaker
+/// with no pause stays in the caller part. The smallest cap with 0 caller words cut on tails and takeovers:
 /// `crates/vendor-sherpa-onnx/examples/CALLER_TO_OTHER_BENCH.md` (cut point).
 pub const CALLER_TO_OTHER_OPEN_CUT_MAX_MS: u32 = 450;
 
@@ -1821,7 +1822,9 @@ impl QuietScan {
     /// Decision r (chunk 6e): a closed run (a loud frame follows inside the range) ends right
     /// before the next speaker's first loud raw frame, searched within the smoothing reach of the
     /// smoothed run end (the smoothing moves a run's edges by up to two frames). An open run (quiet
-    /// to the range end) ends at the smoothed run end, but no later than `open_max` (decision s).
+    /// to the range end) ends at the smoothed run end, but no later than `open_max` (decision s)
+    /// and never before the run's raw start (the caller is still speaking until then): the run's
+    /// first frame after any loud raw frames within the smoothing reach of its smoothed start.
     /// `None` without a quiet run.
     fn raw_cut(&self, open_max: i64) -> Option<i64> {
         if self.best_len == 0 {
@@ -1829,7 +1832,12 @@ impl QuietScan {
         }
         let n = self.raw_db.len();
         if self.best_end >= n {
-            return Some(self.at(self.best_end).min(open_max));
+            let start = self.best_end - self.best_len;
+            let to = (start + SPLIT_SMOOTH_FRAMES / 2).min(n);
+            let raw_start = (start..to)
+                .find(|i| self.raw_db[*i] < self.mid)
+                .unwrap_or(to);
+            return Some(self.at(self.best_end).min(open_max).max(self.at(raw_start)));
         }
         let reach = SPLIT_SMOOTH_FRAMES / 2;
         let from = self
@@ -3096,6 +3104,34 @@ mod tests {
             (STEP..=STEP + CALLER_TO_OTHER_OPEN_CUT_MAX_MS).contains(&c.split_at_ms),
             "cut {} at or after the step ({STEP}), at most {CALLER_TO_OTHER_OPEN_CUT_MAX_MS} ms later",
             c.split_at_ms
+        );
+    }
+
+    /// The open-run cap never clips the caller: the caller stays loud until 3600 ms, 150 ms past
+    /// the cap (3000 + [`CALLER_TO_OTHER_OPEN_CUT_MAX_MS`]), then bed. The cut waits for the quiet
+    /// run, at or after the caller's last loud frame, instead of landing at 3450 ms.
+    #[test]
+    fn caller_to_other_open_run_cap_never_clips_the_caller() {
+        const CALLER_END: u32 = 3600;
+        // -300 .. 3600 caller, 3600 .. 6300 bed.
+        let pcm = parts_pcm(&[(3900, 9000, false), (2700, 300, true)]);
+        let c = c2o_windows(
+            &pcm,
+            &[
+                Outcome::Caller,
+                Outcome::Caller,
+                Outcome::Other,
+                Outcome::Other,
+            ],
+        )
+        .expect("the bed windows confirm the change");
+        assert_eq!((c.from, c.to), (Outcome::Caller, Outcome::Other));
+        assert!(
+            c.split_at_ms >= CALLER_END,
+            "cut {} at or after the caller's last loud frame (ends {CALLER_END}), not at the cap \
+             ({})",
+            c.split_at_ms,
+            3000 + CALLER_TO_OTHER_OPEN_CUT_MAX_MS
         );
     }
 

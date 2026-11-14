@@ -340,6 +340,9 @@ enum Msg {
     /// ([`SpeakerGate::inherit_caller`]): arms its watch with label `caller`.
     Inherit {
         key: u64,
+        /// U2's caller floor on its own clock (decision y): its `caller` -> `other` cut never
+        /// lands before it.
+        floor: Option<u32>,
     },
     /// The final of `key` was emitted ([`SpeakerGate::settle`]): commit its adaptive-reference
     /// candidates if the utterance qualifies.
@@ -378,6 +381,9 @@ struct Book {
     /// Keys whose `other` -> `caller` split the agent skipped and that were upgraded to `caller`
     /// instead ([`SpeakerGate::upgrade_after_skipped_split`]).
     skip_upgraded: VecDeque<u64>,
+    /// Per U1 key of a confirmed `other` -> `caller` change: the caller floor of its U2, on U2's
+    /// clock (decision y; [`SpeakerGate::caller_floor_for`]).
+    caller_floors: VecDeque<(u64, u32)>,
 }
 
 struct Shared {
@@ -1462,6 +1468,17 @@ impl SpeakerGate {
         lock(&self.shared.book).changes.drain(..).collect()
     }
 
+    /// The caller floor for U2 of the `other` -> `caller` change of `key` (U1), on U2's clock:
+    /// booked with the change, so a taken change always has it. `None` for any other key.
+    pub fn caller_floor_for(&self, key: u64) -> Option<u32> {
+        lock(&self.shared.book)
+            .caller_floors
+            .iter()
+            .rev()
+            .find(|(k, _)| *k == key)
+            .map(|(_, f)| *f)
+    }
+
     /// U2 of an `other` -> `caller` split starts as the caller (only with
     /// `split_on_speaker_change`): books the confirming `caller` verdict for `key` as window 1
     /// without embedding the seed (a seed that starts in the bed must not cascade into another
@@ -1471,7 +1488,10 @@ impl SpeakerGate {
     /// the first [`Self::begin`] of `key`, so the
     /// feed sees the first check as sent and the next window follows `check_speech_ms` of U2's
     /// speech.
-    pub fn inherit_caller(&self, key: u64) -> Verdict {
+    ///
+    /// `floor_ms` is U2's caller floor on U2's clock ([`Self::caller_floor_for`] of U1's key):
+    /// U2's `caller` -> `other` cut searches from it and never lands before it (decision y).
+    pub fn inherit_caller(&self, key: u64, floor_ms: Option<u32>) -> Verdict {
         {
             let mut book = lock(&self.shared.book);
             book.verdicts.retain(|(k, _)| *k != key);
@@ -1484,7 +1504,10 @@ impl SpeakerGate {
             book.reported_windows.retain(|(k, _)| *k != key);
             push_capped(&mut book.reported_windows, (key, 1));
         }
-        self.send(Msg::Inherit { key });
+        self.send(Msg::Inherit {
+            key,
+            floor: floor_ms,
+        });
         Verdict {
             key,
             outcome: Outcome::Caller,
@@ -1664,6 +1687,10 @@ struct Watch {
     /// An `other` -> `caller` change: the audio the sub-window scan runs on (taken once by the
     /// verifier).
     refine: Option<Refine>,
+    /// U2 of an `other` -> `caller` split (decision y): the caller floor on this key's clock. The
+    /// `caller` -> `other` cut searches from it and never lands before it. `None` for any key not
+    /// born from such a split.
+    floor: Option<u32>,
 }
 
 impl Watch {
@@ -1675,6 +1702,7 @@ impl Watch {
             prev,
             done: false,
             refine: None,
+            floor: None,
         }
     }
 }
@@ -1907,7 +1935,7 @@ fn watch_step(
         key,
         from: w.label,
         to: outcome,
-        split_at_ms: caller_to_other_split(w.prev.take(), first),
+        split_at_ms: caller_to_other_split(w.prev.take(), first, w.floor),
     })
 }
 
@@ -1921,7 +1949,16 @@ fn watch_step(
 /// ([`QuietScan::raw_cut`]). Without a previous window that tiles into the first `other` one (an unscored window in between), the
 /// range starts [`SPLIT_SEARCH_MS`] before the window (its pre-roll). Without a quiet run (no
 /// frame in range), today's [`split_point`]. Bench: `CALLER_TO_OTHER_BENCH.md` (cut point).
-fn caller_to_other_split(prev: Option<(u32, u32, Vec<u8>)>, first: (u32, u32, Vec<u8>)) -> u32 {
+///
+/// `floor` (decision y, U2 of an `other` -> `caller` split only): the range starts at
+/// `max(range start, floor)` and the cut is never before the floor; an empty range
+/// (`floor >= hi`) cuts at the floor. The audio before the floor is proven caller (the sub-window
+/// that confirmed U2), so the pre-onset gap U2's backed-off start holds is never a cut candidate.
+fn caller_to_other_split(
+    prev: Option<(u32, u32, Vec<u8>)>,
+    first: (u32, u32, Vec<u8>),
+    floor: Option<u32>,
+) -> u32 {
     let (start, end, clip) = first;
     let hi = i64::from(start) + i64::from(end.saturating_sub(start) / 2);
     let prev = prev.filter(|(_, pend, _)| *pend + 2 * SPLIT_FRAME_MS as u32 >= start);
@@ -1935,9 +1972,33 @@ fn caller_to_other_split(prev: Option<(u32, u32, Vec<u8>)>, first: (u32, u32, Ve
             i64::from(start) - i64::from(SPLIT_SEARCH_MS),
         ),
     };
-    tl.quiet_scan(lo, hi)
+    let Some(floor) = floor else {
+        return tl
+            .quiet_scan(lo, hi)
+            .and_then(|q| q.raw_cut(i64::from(start) + i64::from(CALLER_TO_OTHER_OPEN_CUT_MAX_MS)))
+            .map_or_else(|| split_point(start, end, &clip), |at| at.max(0) as u32);
+    };
+    if i64::from(floor) >= hi {
+        return floor;
+    }
+    tl.quiet_scan(lo.max(i64::from(floor)), hi)
         .and_then(|q| q.raw_cut(i64::from(start) + i64::from(CALLER_TO_OTHER_OPEN_CUT_MAX_MS)))
         .map_or_else(|| split_point(start, end, &clip), |at| at.max(0) as u32)
+        .max(floor)
+}
+
+/// U2's caller floor (decision y) on U2's clock, for an `other` -> `caller` cut `cut` (U1's clock)
+/// whose sub-window scan found the first `caller` sub-window at `found`: the end of that
+/// sub-window (`found + SPLIT_STAGE2_SUB_MS`). U2's clock starts at the agent's split frame,
+/// `cut` rounded DOWN to [`SPLIT_FRAME_MS`] (`split_live_utterance`), so the floor is measured
+/// from that rounded origin: it is exact on U2's audio (up to one frame later than `found +
+/// SUB - cut`). With no `caller` sub-window (fallback cut or a budget stop): [`SPLIT_BACKOFF_MS`]
+/// from U2's start.
+fn caller_floor(cut: u32, found: Option<i64>) -> u32 {
+    let origin = i64::from(cut) / SPLIT_FRAME_MS as i64 * SPLIT_FRAME_MS as i64;
+    found.map_or(SPLIT_BACKOFF_MS, |p| {
+        (p + i64::from(SPLIT_STAGE2_SUB_MS) - origin).max(0) as u32
+    })
 }
 
 /// The audio of the `other` -> `caller` sub-window scan and its fallback cut. The scan starts at
@@ -2114,10 +2175,13 @@ async fn run(
             shared.backlog_logged.store(false, Ordering::SeqCst);
         }
         match msg {
-            Msg::Inherit { key } => {
-                // U2 of an `other` -> `caller` split starts as the caller, with its own watch.
+            Msg::Inherit { key, floor } => {
+                // U2 of an `other` -> `caller` split starts as the caller, with its own watch and
+                // its caller floor (decision y).
                 watches.retain(|(k, _)| *k != key);
-                watches.push_back((key, Watch::armed(Outcome::Caller, None)));
+                let mut watch = Watch::armed(Outcome::Caller, None);
+                watch.floor = floor;
+                watches.push_back((key, watch));
                 while watches.len() > BOOK_CAP {
                     watches.pop_front();
                 }
@@ -2358,6 +2422,7 @@ async fn run(
                 // task, bounded); no `caller` sub-window or a budget stop keeps the previous
                 // window's start.
                 let o2c = change.is_some_and(|c| c.from == Outcome::Other);
+                let mut o2c_found: Option<i64> = None;
                 if o2c {
                     let refine = watches
                         .iter_mut()
@@ -2384,6 +2449,7 @@ async fn run(
                         if let Some(c) = change.as_mut() {
                             c.split_at_ms = other_to_caller_cut(refine.lo, found);
                         }
+                        o2c_found = found;
                     }
                 }
                 // U1 of an `other` -> `caller` change stays `other`: nothing upgrades or barges on
@@ -2393,6 +2459,12 @@ async fn run(
                 {
                     let mut book = lock(&shared.book);
                     if let Some(change) = change {
+                        if o2c {
+                            // Booked with the change: the agent reads it when it takes the change.
+                            let floor = caller_floor(change.split_at_ms, o2c_found);
+                            book.caller_floors.retain(|(k, _)| *k != key);
+                            push_capped(&mut book.caller_floors, (key, floor));
+                        }
                         push_capped(&mut book.split_keys, key);
                         push_capped(&mut book.changes, change);
                     }
@@ -3047,6 +3119,164 @@ mod tests {
         change
     }
 
+    /// U2 of an `other` -> `caller` split (decision y): its watch is armed as `caller` by
+    /// `Msg::Inherit` with `floor`, so every scored window of U2 is a re-check. Windows are 1500 ms
+    /// on U2's clock from 0 (window 2 is `(0, 1500)`), clips carry 300 ms of pre-roll (`pcm`
+    /// starts at -300 ms). Returns the change.
+    fn c2o_windows_u2(
+        pcm: &[u8],
+        outcomes: &[Outcome],
+        floor: Option<u32>,
+    ) -> Option<SpeakerChange> {
+        let mut armed = Watch::armed(Outcome::Caller, None);
+        armed.floor = floor;
+        let mut w = VecDeque::from(vec![(1_u64, armed)]);
+        let mut change = None;
+        for (k, o) in outcomes.iter().enumerate() {
+            let (start, end) = (k * 1500, (k + 1) * 1500);
+            let clip = pcm[start * BYTES_PER_MS..(end + 300) * BYTES_PER_MS].to_vec();
+            if let Some(c) = watch_step(&mut w, 1, *o, true, (start as u32, end as u32), clip) {
+                change = Some(c);
+            }
+        }
+        change
+    }
+
+    /// The n05 floor of the eu-load run 43618944729: cut A at 6075 (U1 clock) from a `caller`
+    /// sub-window found at 6375; U2's origin is the split frame 6060, so the floor is
+    /// 6375 + 750 - 6060 = 1065 on U2's clock.
+    const N05_FLOOR: u32 = 1065;
+
+    /// The n05 shape on U2 (eu-load 43618944729): U2 starts 624 ms before the caller's onset
+    /// (cut A's back-off): the bystander's tail to 425 ms, a quiet gap to 625 ms, the caller's
+    /// ~1.5 s phrase to 2150 ms, then the bed (100 ms of it before the range end, shorter than
+    /// the gap). Window 2 scores `caller`, windows 3-4 `other` on
+    /// the bed tail (a false caller -> other change). Without the floor (ac82b61b) the longest
+    /// quiet run in [0, 2250) is the pre-onset gap and the cut lands right before the caller's
+    /// first loud frame, moving the whole phrase to U3. With the floor the search starts at 1065
+    /// and the cut lands after the phrase end, so U2 keeps the phrase and U3 is bed.
+    #[test]
+    fn split_born_u2_caller_to_other_cut_lands_after_the_phrase_n05() {
+        let pcm = parts_pcm(&[
+            (725, 9000, false),
+            (200, 300, true),
+            (1525, 9000, false),
+            (2650, 300, true),
+        ]);
+        let outcomes = [Outcome::Caller, Outcome::Other, Outcome::Other];
+        assert_eq!(caller_floor(6075, Some(6375)), N05_FLOOR);
+        let c = c2o_windows_u2(&pcm, &outcomes, Some(N05_FLOOR)).expect("change");
+        assert_eq!((c.from, c.to), (Outcome::Caller, Outcome::Other));
+        assert!(c.split_at_ms >= N05_FLOOR, "{c:?}");
+        // The search's 20 ms frames start at the floor (1065), so the phrase end (2150) falls
+        // inside a frame: the cut is within one frame of it, never inside the phrase body.
+        assert!(
+            (2150 - SPLIT_FRAME_MS as u32..=2150 + 2 * SPLIT_FRAME_MS as u32)
+                .contains(&c.split_at_ms),
+            "the cut lands at the phrase end (2150): {c:?}"
+        );
+        // The same windows without the floor (ac82b61b): cut before the caller's onset.
+        let old = c2o_windows_u2(&pcm, &outcomes, None).expect("change");
+        assert!(old.split_at_ms <= 625 + SPLIT_FRAME_MS as u32, "{old:?}");
+    }
+
+    /// A real takeover after a split-born U2: the caller (625 .. 1900 ms) pauses 150 ms and a
+    /// quieter speaker B takes over at 2050 ms. The cut is at or after the floor and inside the
+    /// takeover boundary (the pause), right before B's first loud frame.
+    #[test]
+    fn split_born_u2_real_takeover_still_splits_after_the_floor() {
+        let pcm = parts_pcm(&[
+            (725, 9000, false),
+            (200, 300, true),
+            (1275, 9000, false),
+            (150, 300, true),
+            (2450, 4000, false),
+        ]);
+        let c = c2o_windows_u2(
+            &pcm,
+            &[Outcome::Caller, Outcome::Other, Outcome::Other],
+            Some(N05_FLOOR),
+        )
+        .expect("change");
+        assert!(c.split_at_ms >= N05_FLOOR, "{c:?}");
+        assert!(
+            (1900..=2050).contains(&c.split_at_ms),
+            "inside the pause before B: {c:?}"
+        );
+    }
+
+    /// No `caller` sub-window (fallback cut or a budget stop): the floor is `SPLIT_BACKOFF_MS`
+    /// from U2's start. U2 starts in a 250 ms quiet gap before the caller (250 .. 2100 ms), then
+    /// bed: without the floor the cut lands at the gap's end (before the caller); with the 300 ms
+    /// floor the search starts after the gap and the cut lands after the phrase.
+    #[test]
+    fn split_born_u2_fallback_floor_is_the_back_off() {
+        assert_eq!(caller_floor(1510, None), SPLIT_BACKOFF_MS);
+        let pcm = parts_pcm(&[
+            (300, 9000, false),
+            (250, 300, true),
+            (1850, 9000, false),
+            (2400, 300, true),
+        ]);
+        let outcomes = [Outcome::Caller, Outcome::Other, Outcome::Other];
+        let old = c2o_windows_u2(&pcm, &outcomes, None).expect("change");
+        assert!(old.split_at_ms <= 250 + SPLIT_FRAME_MS as u32, "{old:?}");
+        let c = c2o_windows_u2(&pcm, &outcomes, Some(SPLIT_BACKOFF_MS)).expect("change");
+        assert!(c.split_at_ms >= SPLIT_BACKOFF_MS, "{c:?}");
+        assert!(
+            (2100..=2100 + 2 * SPLIT_FRAME_MS as u32).contains(&c.split_at_ms),
+            "{c:?}"
+        );
+    }
+
+    /// The floor on U2's clock: the found `caller` sub-window's end minus U2's origin, the cut
+    /// rounded down to the split frame (the agent's `split_at_ms / 20`); clamped cut A included.
+    #[test]
+    fn caller_floor_is_the_sub_window_end_on_u2s_clock() {
+        assert_eq!(caller_floor(1200, Some(1500)), 1050, "unclamped cut A");
+        assert_eq!(
+            caller_floor(1500, Some(1700)),
+            950,
+            "cut clamped to the scan start"
+        );
+        assert_eq!(
+            caller_floor(1519, Some(1819)),
+            1069,
+            "origin rounded down to 1500"
+        );
+        assert_eq!(caller_floor(0, None), SPLIT_BACKOFF_MS);
+    }
+
+    /// Floor at or past the range end (window 2 itself scores `other`, so the range ends at 750):
+    /// the cut is the floor, so the proven `caller` sub-window stays whole in U2.
+    #[test]
+    fn split_born_u2_empty_range_cuts_at_the_floor() {
+        let pcm = parts_pcm(&[(725, 9000, false), (200, 300, true), (3875, 9000, false)]);
+        let c = c2o_windows_u2(&pcm, &[Outcome::Other, Outcome::Other], Some(N05_FLOOR))
+            .expect("change");
+        assert_eq!(c.split_at_ms, N05_FLOOR);
+    }
+
+    /// Keys that are not split-born carry no floor: the n05 audio through a watch armed by a first
+    /// window (today's path) cuts as on ac82b61b, the same as a U2 watch with no floor.
+    #[test]
+    fn keys_not_split_born_cut_as_before() {
+        let pcm = parts_pcm(&[
+            (725, 9000, false),
+            (200, 300, true),
+            (1525, 9000, false),
+            (2650, 300, true),
+        ]);
+        let outcomes = [Outcome::Caller, Outcome::Other, Outcome::Other];
+        let plain = c2o_windows(&pcm, &outcomes).expect("change");
+        let u2 = c2o_windows_u2(&pcm, &outcomes, None).expect("change");
+        assert_eq!(plain, u2);
+        assert!(
+            plain.split_at_ms <= 625 + SPLIT_FRAME_MS as u32,
+            "{plain:?}"
+        );
+    }
+
     /// The n03 shape (chunk 6e): a caller phrase that ends 400 ms into window 3, then bed only;
     /// windows 3 and 4 score `other` and confirm a (false) caller -> other change. The cut lands
     /// after the caller's last voiced frame (3400 ms), so the caller's sentence stays whole and the
@@ -3682,6 +3912,26 @@ mod tests {
         assert_eq!(gate.windows_scored(1), 2);
     }
 
+    /// Decision y plumbing: a confirmed `other` -> `caller` change books U2's caller floor with
+    /// the change (on U2's clock: the back-off without a `caller` sub-window, else the found
+    /// sub-window's end, at most `SPLIT_BACKOFF_MS + SPLIT_STAGE2_SUB_MS` plus one frame of
+    /// origin rounding). No change, or the flag off: no floor.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn other_to_caller_change_books_the_u2_caller_floor() {
+        let script = vec![caller_v(), other_v(), caller_v(), caller_v(), caller_v()];
+        let (on, _) = run_script(true, script.clone(), 2).await;
+        assert_eq!(on.take_speaker_changes().len(), 1);
+        let floor = on
+            .caller_floor_for(1)
+            .expect("floor booked with the change");
+        let max = SPLIT_BACKOFF_MS + SPLIT_STAGE2_SUB_MS + SPLIT_FRAME_MS as u32;
+        assert!((SPLIT_BACKOFF_MS..max).contains(&floor), "{floor}");
+        assert_eq!(on.caller_floor_for(2), None);
+        let (off, _) = run_script(false, script, 2).await;
+        assert!(off.take_speaker_changes().is_empty());
+        assert_eq!(off.caller_floor_for(1), None);
+    }
+
     /// Flag on, [other, caller]: the book holds the first `other` only (no `caller` upgrade); flag
     /// off for the same script holds `other` then one `caller` upgrade.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3726,7 +3976,7 @@ mod tests {
             (1, Outcome::Other, Outcome::Caller)
         );
         gate.end_utterance();
-        let v = gate.inherit_caller(2);
+        let v = gate.inherit_caller(2, None);
         assert_eq!(
             (v.key, v.outcome, v.recheck, v.window),
             (2, Outcome::Caller, false, 1)

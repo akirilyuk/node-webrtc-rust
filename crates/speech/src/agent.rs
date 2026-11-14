@@ -3974,7 +3974,7 @@ impl VoiceAgent {
         // barge-in below is released by that confirmed verdict, never by a provisional one.
         // U2's own watch can split it again (caller -> other).
         if change.from == Outcome::Other && change.to == Outcome::Caller {
-            let _ = gate.inherit_caller(u2_key);
+            let _ = gate.inherit_caller(u2_key, gate.caller_floor_for(change.key));
         }
         // The gate judges U2 as a new utterance from its first post-split frame.
         let mut frames = seed.chunks(640);

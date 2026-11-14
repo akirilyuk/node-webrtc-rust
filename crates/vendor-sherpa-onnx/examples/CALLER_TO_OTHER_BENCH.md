@@ -212,3 +212,29 @@ Threshold 0 (score: 0.459) is today's gate.
 ### Per-window cost
 
 Windows scored: 2784. Embed ms p50 / p99 / max: 16.8 / 18.3 / 19.1. Energy share (frame dB + p90 + share) µs p50 / p99 / max: 11.8 / 15.7 / 22.8, 0.0031 % of the 500 ms verify budget at p99. The VAD-active share reuses the flag the agent's VAD already computes per frame (no extra work, but `agent.rs` must pass it with each frame).
+
+## Cut point (chunk 6e, decisions q and r)
+
+Main pairs, every scene where today's gate confirms a caller → other change: 45 tails (the false change on bed after a short caller phrase) and 175 takeovers (the real one). Caller words cut = caller words whose midpoint is at or after the cut (they move into the `other` part). Bystander words left = bystander words whose midpoint is before the cut (they stay in the caller part). Word times are uniform over the voiced span, as in `split_point_bench`. `cut - caller end` = cut minus the caller's voiced end, ms.
+
+Today's cut (the lowest-energy frame within ±300 ms of the first `other` window's start) lands inside the caller's phrase: 3 tail and 26 takeover caller words cut. Decision q moves it to the end of the caller's speech: the longest quiet run from the previous `caller` window's start to the middle of the first `other` window.
+
+Bar: 0 caller words cut on tails and on takeovers, bystander words left at most 41 in 22 scenes (today), and the `speaker_change_split_test` split tests passing.
+
+- **Run end** (the smoothed quiet run's end) meets the word bar, but cuts 40 to 180 ms late in the rig's tests. The smoothing moves a run's end by up to two frames, and with a steady quieter next speaker the run reaches the range end.
+- **Raw, M = 0 to 120 ms**: a closed run (a loud frame follows inside the range) cuts right before the next speaker's first loud raw frame; an open run (quiet to the range end) cuts at the caller's last loud raw frame + M. The closed branch fixes the brief-gap tests, but the open branch cuts the caller's fading last word: in real speech it falls below the threshold 200 to 320 ms before its voiced end. No M meets the bar (M = 120 still cuts 3 tail and 2 takeover words, and leaves 5 B frames in the rig's caller part where the test allowed 2).
+- **Hybrid (decision r, shipped)**: the closed branch of the raw rule, and the run end for an open run. 0 caller words cut on tails and on takeovers, 30 (18) bystander words left. The open branch is taken on 25 tails and 41 takeovers.
+
+Decision r: a steady quieter next speaker with no pause cannot be told apart from a fading last word by one quiet threshold, so the cut prefers a few leaked `other` frames over clipping the caller. In the rig (B 6 dB below A after a single silent frame), 9 frames (180 ms) of B stay in the caller part; `assert_other_caller_other` bounds that leak (caller part b <= 9, next part b >= 31, together >= 38).
+
+| candidate | tails: caller words cut (scenes) / of | tail cut - caller end p00 / p05 / p50 | takeovers: caller words cut (scenes) / of | takeovers: bystander words left (scenes) | takeover cut - caller end p00 / p05 / p50 / p95 | takeover cut - bystander on p50 / p95 / max | cost µs p99 / max | open branch: tails / takeovers |
+|---|---|---|---|---|---|---|---|---|
+| today: min-energy frame +-300 ms of the first other start | 3 (3) / 45 | -277 / -237 / 277 | 26 (19) / 175 | 41 (22) | -563 / -463 / 217 / 797 | -248 / 499 / 1200 | 13.8 / 13.9 | 0 / 0 |
+| longest quiet run [first start - 1500, first other mid), cut at run end | 0 (0) / 45 | 243 / 263 / 743 | 0 (0) / 175 | 30 (18) | 17 / 123 / 517 / 903 | -8 / 159 / 956 | 17.5 / 34.7 | 0 / 0 |
+| longest quiet run [first start - 1500, first other mid), cut at run raw: closed = first loud raw frame; open = last loud raw frame + 0 ms | 4 (4) / 45 | -323 / -297 / 403 | 12 (12) / 175 | 27 (18) | -297 / -197 / 357 / 883 | 7 / 179 / 877 | 18.2 / 1283.4 | 25 / 41 |
+| longest quiet run [first start - 1500, first other mid), cut at run raw: closed = first loud raw frame; open = last loud raw frame + 40 ms | 4 (4) / 45 | -283 / -257 / 423 | 9 (9) / 175 | 27 (18) | -257 / -157 / 357 / 883 | 7 / 179 / 877 | 17.2 / 17.6 | 25 / 41 |
+| longest quiet run [first start - 1500, first other mid), cut at run raw: closed = first loud raw frame; open = last loud raw frame + 80 ms | 3 (3) / 45 | -243 / -217 / 437 | 5 (5) / 175 | 28 (18) | -217 / -117 / 357 / 897 | 7 / 179 / 877 | 17.4 / 22.6 | 25 / 41 |
+| longest quiet run [first start - 1500, first other mid), cut at run raw: closed = first loud raw frame; open = last loud raw frame + 120 ms | 3 (3) / 45 | -203 / -177 / 437 | 2 (2) / 175 | 29 (18) | -177 / -77 / 363 / 897 | 7 / 179 / 877 | 17.0 / 17.4 | 25 / 41 |
+| longest quiet run [first start - 1500, first other mid), cut at run hybrid: closed = first loud raw frame; open = run end | 0 (0) / 45 | 223 / 263 / 743 | 0 (0) / 175 | 30 (18) | 17 / 137 / 523 / 903 | 10 / 179 / 956 | 30.4 / 34.2 | 25 / 41 |
+
+All candidates (range starts 300 to 1800 ms before the window, cut positions, earliest-run variants): `caller_to_other_bench` output, section "Cut point (chunk 6e)".

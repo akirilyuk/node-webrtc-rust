@@ -179,3 +179,28 @@ window scores 0.45, 0.53, 0.51, 0.76 (bystander ends at 12.37 s, caller window a
 `s4_test_p147` 0.36, 0.46, 0.40, 0.34, -0.04, 0.56, 0.73.
 
 The same scenes give the 6 paused scenes with leaks in the stage 1 row.
+
+## Chunk 6b: stage 2 moves the cut forward to the gap before the caller
+
+Same 300 + 300 scenes (Tocumen bed -12 dB), stage 1 when its quiet run is at least 500 ms, else the stage-2 candidate. The first `caller` sub-window starts inside the bystander's speech, since it scores `caller` once most of it is caller audio, so a cut at its start (the old `start ±150` refine) leaves bystander words in the caller part. The candidates move the cut forward from that start: `fwd-quiet N` is the end of the longest quiet run (stage 1's rule) within N ms after it, `fwd-min N` the lowest-energy frame within N ms.
+
+**Pick: 1250 ms sub-windows on a 250 ms hop, `fwd-quiet 500`** (`SPLIT_STAGE2_SUB_MS` 1250, `SPLIT_STAGE2_HOP_MS` 250, `SPLIT_STAGE2_FORWARD_MS` 500). It is the variant with 0 caller words cut on both sets (decision h) and the fewest leaked bystander words: 98 (27) on the no-pause set against 167 (80) for the shipped 1000/125 `start ±150`, and 22 (17) against 82 (69) without the gate false accepts. It also needs fewer embeds (p99 8 against 17) and less stage-2 time (p99 116 ms against 185 ms).
+
+cut / leak = words (scenes). `FA` = gate false-accept scenes (first `caller` window more than 800 ms before the bystander's voiced end). split - by end on no-pause non-FA scenes, min / p5 / p50 / p95 / max. Embeds and ms: stage 2 up to the first `caller` sub-window, p50 / p99 / max per scene.
+
+| sub/hop | candidate | paused cut | paused leak | no pause cut | no pause leak | no pause leak, non-FA | split - by end (no pause, non-FA) | split - caller on (both sets, non-FA) p95 / max | embeds | stage 2 ms |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1250/250 | 8 / 8 | 12.1 / 18.9 / 41.4 | 96 / 132 / 161 |
+| 1000/125 | start ±150 | 0 (0) | 73 (6) | 0 (0) | 167 (80) | 82 (69) | -1352 / -473 / -268 / 158 / 243 | -8 / 39 | 10 / 17 / 17 | 101 / 185 / 210 |
+| 1250/250 | start ±150 | 0 (0) | 71 (6) | 0 (0) | 204 (93) | 115 (82) | -897 / -633 / -357 / 123 / 243 | -8 / 39 | 5 / 8 / 8 | 60 / 116 / 119 |
+| 1250/250 | cross ±150 | 0 (0) | 73 (6) | 0 (0) | 259 (111) | 168 (100) | -887 / -758 / -428 / 123 / 243 | -8 / 39 | 5 / 8 / 8 | 60 / 116 / 119 |
+| 1250/250 | fwd-min 250 | 0 (0) | 66 (6) | 0 (0) | 170 (77) | 87 (66) | -917 / -557 / -187 / 153 / 243 | -5 / 39 | 5 / 8 / 8 | 60 / 116 / 119 |
+| 1250/250 | fwd-min 500 | 0 (0) | 63 (6) | 0 (0) | 115 (38) | 38 (28) | -883 / -497 / 3 / 183 / 363 | -5 / 142 | 5 / 8 / 8 | 60 / 116 / 119 |
+| 1250/250 | fwd-min 750 | 1 (1) | 63 (6) | 3 (3) | 92 (25) | 21 (15) | -883 / -387 / 43 / 197 / 533 | 8 / 538 | 5 / 8 / 8 | 60 / 116 / 119 |
+| 1250/250 | fwd-quiet 250 | 0 (0) | 66 (6) | 0 (0) | 145 (67) | 64 (56) | -883 / -473 / -127 / 183 / 243 | -4 / 39 | 5 / 8 / 8 | 60 / 116 / 119 |
+| 1250/250 | fwd-quiet 500 | 0 (0) | 64 (6) | 0 (0) | 98 (27) | 22 (17) | -883 / -393 / 53 / 213 / 243 | 9 / 47 | 5 / 8 / 8 | 60 / 116 / 119 |
+| 1250/250 | fwd-quiet 750 | 0 (0) | 62 (6) | 1 (1) | 84 (18) | 12 (8) | -883 / -343 / 129 / 226 / 643 | 30 / 613 | 5 / 8 / 8 | 60 / 116 / 119 |
+| 1250/250 | fwd-min to last-other-end | 1 (1) | 56 (6) | 13 (11) | 93 (24) | 23 (15) | -917 / -397 / 57 / 523 / 753 | 467 / 569 | 5 / 8 / 8 | 60 / 116 / 119 |
+| 1250/250 | fwd-quiet to last-other-end | 0 (0) | 52 (6) | 7 (5) | 78 (15) | 10 (7) | -883 / -183 / 137 / 243 / 763 | 42 / 637 | 5 / 8 / 8 | 60 / 116 / 119 |
+
+All 70 candidates (sub-window 500 to 1250 ms, hop 50 to 250 ms): `split_point_bench` output, section "Chunk 6b candidates".

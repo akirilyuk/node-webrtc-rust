@@ -111,7 +111,13 @@ pub async fn stun_request(
     let mut next_send = start + rto;
     let mut sends = 1_u32;
 
-    conn.send_to(&request.raw, server_addr).await?;
+    // Bounded like the retransmissions: a socket that never reports writable must not hang
+    // gathering. A send that does not finish counts as a lost datagram; the loop returns at `end`.
+    match tokio::time::timeout_at(end, conn.send_to(&request.raw, server_addr)).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(err)) => return Err(err.into()),
+        Err(_) => {}
+    }
     loop {
         let wake = next_send.min(end);
         match tokio::time::timeout_at(wake, conn.recv_from(&mut bs)).await {

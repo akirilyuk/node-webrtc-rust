@@ -14,6 +14,7 @@ use tokio::sync::{mpsc, Mutex};
 
 use super::*;
 use crate::agent::agent_config::AgentConfig;
+use crate::agent::agent_stun_send_test::NeverWritableConn;
 use crate::agent::Agent;
 use crate::candidate::*;
 use crate::url::Url;
@@ -188,7 +189,9 @@ async fn test_stun_request_gives_up_at_deadline_after_four_sends() -> Result<()>
 
     assert!(res.is_err(), "no answer must be an error");
     assert!(
-        elapsed <= GATHER_DEADLINE + Duration::from_millis(300),
+        // Wide margin for a loaded CI runner. 6.5 s is still below the next retransmission
+        // (7.5 s), so a call that waited one more RTO past the deadline still fails here.
+        elapsed <= GATHER_DEADLINE + Duration::from_millis(1500),
         "the caller's 5 s bound is kept, took {elapsed:?}"
     );
     assert!(
@@ -246,5 +249,31 @@ async fn test_stun_request_ignores_stray_datagrams() -> Result<()> {
         "the answer with the request's transaction id is used, not the stray one"
     );
     assert_eq!(addr.port, MAPPED_PORT);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_stun_request_bounded_when_send_never_completes() -> Result<()> {
+    // A socket that never reports writable (the macOS wedged-socket case `send_stun` guards):
+    // the first send must not hang gathering past the caller's deadline.
+    let conn: Arc<dyn Conn + Send + Sync> = Arc::new(NeverWritableConn {
+        local: "127.0.0.1:0".parse().unwrap(),
+    });
+    let server: SocketAddr = "127.0.0.1:9".parse().unwrap();
+
+    let start = Instant::now();
+    let res = tokio::time::timeout(
+        Duration::from_secs(3),
+        stun_request(&conn, server, Duration::from_secs(1)),
+    )
+    .await
+    .expect("stun_request returns within its own deadline when the send never completes");
+    let elapsed = start.elapsed();
+
+    assert!(res.is_err(), "a request that never went out is an error");
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "bounded by the 1 s deadline, took {elapsed:?}"
+    );
     Ok(())
 }

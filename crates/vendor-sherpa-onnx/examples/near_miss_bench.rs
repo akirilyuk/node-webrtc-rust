@@ -37,7 +37,7 @@
 //!   `other` window 1; variant adds the near-miss confirms. Pairs at or above 5 % pair FAR in
 //!   `FALSE_ACCEPT_BENCH.md` (libritts_r 120) are excluded, as in the roundtrip.
 //! - **Cost**: embeds per re-check and their time against the window's `verify_timeout_ms`
-//!   budget (500 ms minus the window's own embed, as `stage2_split` bounds it). A re-check that
+//!   budget (500 ms minus the window's own embed, as `scan_caller_sub_window` bounds it). A re-check that
 //!   would run past the budget is cut off there and confirms nothing (counted).
 
 use std::fs;
@@ -1666,7 +1666,7 @@ mod straddle {
                         }
                     }
                     if vi == 0 && k >= 1 && utt.wins[k - 1].0 >= PRE_ROLL_MS {
-                        dump_split(p, &utt, k, split, threshold);
+                        dump_split(embedder, p, &utt, k, threshold);
                     }
                 }
                 o
@@ -1674,10 +1674,13 @@ mod straddle {
             .collect()
     }
 
-    /// 6g step 1: `NM_SPLIT_DUMP=<dir>` writes each today-variant confirm as `<n>.pcm` (the scene,
+    /// 6g: `NM_SPLIT_DUMP=<dir>` writes each confirm under today's gate as `<n>.pcm` (the scene,
     /// s16le 16 kHz) plus a line in `index.txt`: `n prev_start cur_start bench_cut threshold
-    /// sub-window scores...`, for the speech crate's parity test against `other_to_caller_split`.
-    fn dump_split(p: &Placed, utt: &Utt, k: usize, split: usize, threshold: f32) {
+    /// sub-window scores...`, for the speech crate's `bench_split_parity` test. The cut and the
+    /// scores are config A's (750/125 sub-windows from the previous window's start, first
+    /// `caller` one minus 300 ms, clamped; the previous window's start without one), the product's
+    /// `other` -> `caller` cut since chunk 6g.
+    fn dump_split(embedder: &Embedder, p: &Placed, utt: &Utt, k: usize, threshold: f32) {
         let Some(dir) = std::env::var_os("NM_SPLIT_DUMP").map(PathBuf::from) else {
             return;
         };
@@ -1689,10 +1692,13 @@ mod straddle {
             .collect();
         let _ = fs::create_dir_all(&dir);
         let _ = fs::write(dir.join(format!("{n}.pcm")), pcm);
-        let scores: Vec<String> = utt.rechecks[k]
-            .as_ref()
-            .map(|rc| rc.subs.iter().map(|(_, s, _)| format!("{s}")).collect())
-            .unwrap_or_default();
+        let lo = utt.wins[k - 1].0;
+        let subs = subs_for(&p.samples, lo, utt.wins[k].0 + WINDOW_MS, (750, 125), embedder, &p.reference);
+        let split = subs
+            .iter()
+            .find(|x| x.1 >= threshold)
+            .map_or(lo, |x| x.0.saturating_sub(300).max(lo));
+        let scores: Vec<String> = subs.iter().map(|(_, s, _)| format!("{s}")).collect();
         let line = format!(
             "{n} {} {} {split} {threshold} {}\n",
             utt.wins[k - 1].0,

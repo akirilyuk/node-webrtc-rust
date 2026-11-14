@@ -9,6 +9,13 @@
 //! with the stage-2 sub-windows (1250 ms on a 250 ms hop); `need` consecutive sub-windows at or
 //! above the threshold count as the confirming `caller` window.
 //!
+//! The description below is the chunk 6f bench as first run (1250/250 sub-windows, stage 1 quiet
+//! run). The product shipped in chunk 6g differs: stage 1 is removed, the sub-windows are
+//! `SPLIT_STAGE2_SUB_MS`/`SPLIT_STAGE2_HOP_MS` (750/125 ms) from the previous window start, the
+//! cut is the first `caller` sub-window start minus `SPLIT_BACKOFF_MS` (config A), and the
+//! near-miss band is `[NEAR_MISS_MIN_SCORE, threshold)` with one sub-window. Config A in
+//! `NEAR_MISS_BENCH.md` (Configs) is the shipped rule.
+//!
 //! ```text
 //! cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example speaker_fixtures -- \
 //!   --models <.models/speaker> --main-tts <.models/vits-piper-en_US-amy-low> \
@@ -306,7 +313,11 @@ fn score_windows(
     while k <= MAX_WINDOWS && u + k * WINDOW_MS <= u_end {
         let start = u + (k - 1) * WINDOW_MS;
         let (s, ms) = embedder
-            .embed(slice(samples, start.saturating_sub(PRE_ROLL_MS), start + WINDOW_MS))
+            .embed(slice(
+                samples,
+                start.saturating_sub(PRE_ROLL_MS),
+                start + WINDOW_MS,
+            ))
             .map_or((0.0, 0.0), |(e, ms)| (cosine(&e, reference), ms));
         out.push((start, s, ms));
         k += 1;
@@ -479,11 +490,7 @@ fn build_utt(
     Utt { wins, rechecks }
 }
 
-fn load_scene(
-    fixtures: &Path,
-    scene: &Json,
-    embedder: &Embedder,
-) -> Result<Option<Scene>, String> {
+fn load_scene(fixtures: &Path, scene: &Json, embedder: &Embedder) -> Result<Option<Scene>, String> {
     let id = text(scene, "id").ok_or("scene id")?;
     let paused = id.starts_with("s4_test_p");
     let segs = match scene.get("segments") {
@@ -584,10 +591,7 @@ fn tap(
             let err: f64 = logged
                 .iter()
                 .enumerate()
-                .map(|(i, l)| {
-                    wins.get(i)
-                        .map_or(1.0, |w| f64::from((w.1 - l).abs()))
-                })
+                .map(|(i, l)| wins.get(i).map_or(1.0, |w| f64::from((w.1 - l).abs())))
                 .sum::<f64>()
                 / logged.len() as f64;
             if best.is_none_or(|b| err < b.0) {
@@ -703,7 +707,11 @@ fn run() -> Result<(), String> {
             "--tap-scores" => {
                 tap_scores = value("--tap-scores")?
                     .split(',')
-                    .map(|s| s.trim().parse::<f32>().map_err(|e| format!("--tap-scores: {e}")))
+                    .map(|s| {
+                        s.trim()
+                            .parse::<f32>()
+                            .map_err(|e| format!("--tap-scores: {e}"))
+                    })
                     .collect::<Result<_, _>>()?
             }
             other => return Err(format!("unknown argument {other}")),
@@ -738,7 +746,13 @@ fn run() -> Result<(), String> {
         md.push_str(&straddle::piper(&embedder, &straddle_piper, threshold)?);
     }
     if let Some(root) = &librispeech {
-        md.push_str(&straddle::librispeech(&embedder, root, bed.as_deref(), ls_callers, threshold)?);
+        md.push_str(&straddle::librispeech(
+            &embedder,
+            root,
+            bed.as_deref(),
+            ls_callers,
+            threshold,
+        )?);
     }
     if !scenes.is_empty() {
         md.push_str(&tables(&scenes, threshold, &embedder));
@@ -804,7 +818,13 @@ fn tables(scenes: &[Scene], threshold: f32, embedder: &Embedder) -> String {
                 if c_cut > 0 {
                     clip += c_cut;
                     clip_s += 1;
-                    eprintln!("clip {} {}: split {split} caller {}-{}", v.name(), s.id, s.caller.on, s.caller.off);
+                    eprintln!(
+                        "clip {} {}: split {split} caller {}-{}",
+                        v.name(),
+                        s.id,
+                        s.caller.on,
+                        s.caller.off
+                    );
                 }
                 if b_leak > 0 {
                     leak += b_leak;
@@ -823,7 +843,11 @@ fn tables(scenes: &[Scene], threshold: f32, embedder: &Embedder) -> String {
     md.push_str(&recovery(&merged_all, "every merged no-pause scene"));
     // 6g decision x: the A measure (STT diff) on the normal other->caller scenes.
     let paused_all: Vec<&Scene> = kept.iter().copied().filter(|s| s.paused).collect();
-    let paused_merged: Vec<&Scene> = paused_all.iter().copied().filter(|s| s.merged.is_some()).collect();
+    let paused_merged: Vec<&Scene> = paused_all
+        .iter()
+        .copied()
+        .filter(|s| s.merged.is_some())
+        .collect();
     md.push_str(&format!(
         "Paused scenes: {} (excluded pairs dropped), VAD-merged with the bystander (an other->caller split can happen): {}.\n\n",
         paused_all.len(),
@@ -855,7 +879,12 @@ fn tables(scenes: &[Scene], threshold: f32, embedder: &Embedder) -> String {
             .collect();
         let today: Vec<bool> = eligible
             .iter()
-            .map(|(u, l)| matches!(run_gate(u, &variants()[0], threshold, *l).0, Confirm::Window { .. }))
+            .map(|(u, l)| {
+                matches!(
+                    run_gate(u, &variants()[0], threshold, *l).0,
+                    Confirm::Window { .. }
+                )
+            })
             .collect();
         for v in variants() {
             let hits: Vec<bool> = eligible
@@ -876,8 +905,16 @@ fn tables(scenes: &[Scene], threshold: f32, embedder: &Embedder) -> String {
         }
     };
     let by_only_l: Vec<(&Utt, usize)> = by_only.iter().map(|u| (*u, usize::MAX)).collect();
-    fa_rows(&mut md, "bystander utterance (paused + no-pause, VAD separate)", &by_only_l);
-    fa_rows(&mut md, "bystander part of merged no-pause utterances", &by_part);
+    fa_rows(
+        &mut md,
+        "bystander utterance (paused + no-pause, VAD separate)",
+        &by_only_l,
+    );
+    fa_rows(
+        &mut md,
+        "bystander part of merged no-pause utterances",
+        &by_part,
+    );
     md.push('\n');
     // Cost.
     let mut win_ms: Vec<f64> = Vec::new();
@@ -985,10 +1022,8 @@ mod straddle {
                     r.decode(&stream);
                 }
             }
-            let tail = vec![
-                0f32;
-                16 * node_webrtc_rust_vendor_sherpa_onnx::FINALIZE_TAIL_PADDING_MS
-            ];
+            let tail =
+                vec![0f32; 16 * node_webrtc_rust_vendor_sherpa_onnx::FINALIZE_TAIL_PADDING_MS];
             stream.accept_waveform(16_000, &tail);
             stream.input_finished();
             while r.is_ready(&stream) {
@@ -1011,7 +1046,12 @@ mod straddle {
             }
             let keep: Vec<bool> = words.iter().map(|w| !w.is_empty()).collect();
             let starts = if starts.len() == words.len() {
-                starts.into_iter().zip(&keep).filter(|(_, k)| **k).map(|(x, _)| x).collect()
+                starts
+                    .into_iter()
+                    .zip(&keep)
+                    .filter(|(_, k)| **k)
+                    .map(|(x, _)| x)
+                    .collect()
             } else {
                 Vec::new()
             };
@@ -1064,7 +1104,9 @@ mod straddle {
     /// A normal fixture scene through [`sweep_scene`]: the caller and bystander pieces are cut
     /// from the scene (they carry its babble bed).
     pub(super) fn sweep_fixture(embedder: &Embedder, sc: &Scene, threshold: f32) {
-        let Some(utt) = sc.merged.as_ref() else { return };
+        let Some(utt) = sc.merged.as_ref() else {
+            return;
+        };
         let p = Placed {
             samples: sc.samples.clone(),
             c_on: sc.caller.on,
@@ -1107,8 +1149,21 @@ mod straddle {
 
     fn cfgs() -> Vec<Cfg> {
         if std::env::var("NM_CFGS").as_deref() == Ok("x") {
-            let c = |s2, s1min, fb, clamp| Cfg { s2, sh: if s2 == 0 { 3 } else { 0 }, s1min, s1s: 1, fb, clamp };
-            return vec![c(0, 1, 0, false), c(4, 3, 1, false), c(3, 3, 1, false), c(4, 1, 1, true), c(3, 1, 1, true)];
+            let c = |s2, s1min, fb, clamp| Cfg {
+                s2,
+                sh: if s2 == 0 { 3 } else { 0 },
+                s1min,
+                s1s: 1,
+                fb,
+                clamp,
+            };
+            return vec![
+                c(0, 1, 0, false),
+                c(4, 3, 1, false),
+                c(3, 3, 1, false),
+                c(4, 1, 1, true),
+                c(3, 1, 1, true),
+            ];
         }
         let mut v = Vec::new();
         for s2 in 0..=MS_BACK.len() {
@@ -1116,7 +1171,14 @@ mod straddle {
                 for s1min in 0..S1MIN.len() {
                     for s1s in 0..S1S.len() {
                         for fb in 0..2 {
-                            v.push(Cfg { s2, sh, s1min, s1s, fb, clamp: false });
+                            v.push(Cfg {
+                                s2,
+                                sh,
+                                s1min,
+                                s1s,
+                                fb,
+                                clamp: false,
+                            });
                         }
                     }
                 }
@@ -1126,8 +1188,16 @@ mod straddle {
     }
 
     fn cfg_name(c: &Cfg) -> String {
-        let s2 = if c.s2 == 0 { "fwd500".to_string() } else { format!("p-{}", MS_BACK[c.s2 - 1]) };
-        let s1 = if S1MIN[c.s1min] == usize::MAX { "off".to_string() } else { S1MIN[c.s1min].to_string() };
+        let s2 = if c.s2 == 0 {
+            "fwd500".to_string()
+        } else {
+            format!("p-{}", MS_BACK[c.s2 - 1])
+        };
+        let s1 = if S1MIN[c.s1min] == usize::MAX {
+            "off".to_string()
+        } else {
+            S1MIN[c.s1min].to_string()
+        };
         format!(
             "s2={s2} sub={}/{} s1min={s1} s1search=+{} fb={}",
             SUBHOP[c.sh].0,
@@ -1202,13 +1272,18 @@ mod straddle {
             Some(p) => (p.saturating_sub(MS_BACK[c.s2 - 1]).max(lo), 1),
             None => (if c.fb == 0 { s1 } else { lo }, 2),
         };
-        if stage1 { (s1.min(cut), 0) } else { (cut, path) }
+        if stage1 {
+            (s1.min(cut), 0)
+        } else {
+            (cut, path)
+        }
     }
 
     fn sweep_scene(embedder: &Embedder, p: &Placed, utt: &Utt, threshold: f32) {
-        let (Some((cref, _)), Some((bref, _))) =
-            (recognize_words(&p.caller_clean), recognize_words(&p.by_clean))
-        else {
+        let (Some((cref, _)), Some((bref, _))) = (
+            recognize_words(&p.caller_clean),
+            recognize_words(&p.by_clean),
+        ) else {
             return;
         };
         let total = p.samples.len() / SAMPLES_PER_MS;
@@ -1257,7 +1332,12 @@ mod straddle {
                 });
                 let (cut, path) = sweep_cut(&p.samples, utt, k, nm_at, c, subs, threshold);
                 let (kept, lk) = a_at(cut);
-                row.push(Some((kept as u16, lk as u16, path, cut as i32 - p.c_on as i32)));
+                row.push(Some((
+                    kept as u16,
+                    lk as u16,
+                    path,
+                    cut as i32 - p.c_on as i32,
+                )));
             }
             if vi == 0 {
                 for (sh, e) in emb.iter_mut().enumerate() {
@@ -1272,7 +1352,12 @@ mod straddle {
             }
             res.push(row);
         }
-        RECS.lock().unwrap().push(SceneRec { floor_kept, today_ok, res, emb });
+        RECS.lock().unwrap().push(SceneRec {
+            floor_kept,
+            today_ok,
+            res,
+            emb,
+        });
     }
 
     /// Drains [`RECS`] into `NM_SWEEP_TSV` (default /tmp/sg-nm-6g-sweep.tsv) for set `title`.
@@ -1281,14 +1366,16 @@ mod straddle {
         if recs.is_empty() {
             return;
         }
-        let path = std::env::var("NM_SWEEP_TSV").unwrap_or_else(|_| "/tmp/sg-nm-6g-sweep.tsv".into());
+        let path =
+            std::env::var("NM_SWEEP_TSV").unwrap_or_else(|_| "/tmp/sg-nm-6g-sweep.tsv".into());
         let mut out = String::new();
         let cs = cfgs();
         let vs = variants();
         let ti = cs.iter().position(is_today).unwrap();
         for (vi, v) in vs.iter().enumerate() {
             for (ci, c) in cs.iter().enumerate() {
-                let (mut lost, mut lost_tc, mut rec_n, mut rec_kept, mut leak) = (0usize, 0usize, 0usize, 0usize, 0usize);
+                let (mut lost, mut lost_tc, mut rec_n, mut rec_kept, mut leak) =
+                    (0usize, 0usize, 0usize, 0usize, 0usize);
                 let mut paths = [0usize; 3];
                 let mut lost_by_path = [0usize; 3];
                 let mut conf = 0usize;
@@ -1326,7 +1413,11 @@ mod straddle {
         let mut attr = std::collections::BTreeMap::<(u8, &str), (usize, usize)>::new();
         for r in recs.iter().filter(|r| r.today_ok) {
             if let Some((kept, _, pa, d)) = r.res[0][ti] {
-                let sign = if d <= 0 { "at/before onset" } else { "after onset" };
+                let sign = if d <= 0 {
+                    "at/before onset"
+                } else {
+                    "after onset"
+                };
                 let e = attr.entry((pa, sign)).or_default();
                 e.0 += 1;
                 e.1 += r.floor_kept.saturating_sub(kept as usize);
@@ -1336,8 +1427,16 @@ mod straddle {
             out.push_str(&format!("attr\t{title}\t{pa}\t{sign}\t{n}\t{l}\n"));
         }
         for sh in 0..SUBHOP.len() {
-            let mut n: Vec<i64> = recs.iter().filter(|r| r.today_ok).map(|r| r.emb[sh].0 as i64).collect();
-            let mut ms: Vec<i64> = recs.iter().filter(|r| r.today_ok).map(|r| r.emb[sh].1.round() as i64).collect();
+            let mut n: Vec<i64> = recs
+                .iter()
+                .filter(|r| r.today_ok)
+                .map(|r| r.emb[sh].0 as i64)
+                .collect();
+            let mut ms: Vec<i64> = recs
+                .iter()
+                .filter(|r| r.today_ok)
+                .map(|r| r.emb[sh].1.round() as i64)
+                .collect();
             out.push_str(&format!(
                 "emb\t{title}\t{}/{}\t{}\t{}\t{}\t{}\n",
                 SUBHOP[sh].0,
@@ -1361,7 +1460,9 @@ mod straddle {
         if n == 0 {
             return None;
         }
-        let raw: Vec<f64> = (0..n).map(|i| frame_power(samples, lo + i * FRAME_MS)).collect();
+        let raw: Vec<f64> = (0..n)
+            .map(|i| frame_power(samples, lo + i * FRAME_MS))
+            .collect();
         let smooth: Vec<f64> = (0..n)
             .map(|i| {
                 let a = i.saturating_sub(SMOOTH_FRAMES / 2);
@@ -1400,26 +1501,41 @@ mod straddle {
 
     /// Candidate cuts 1.. of [`CANDS`] for a confirm at window `k`; stage 1 (run >= 500 ms) is
     /// shared by all. Second value: the cut went to stage 2.
-    fn split_cands(samples: &[f32], utt: &Utt, k: usize, threshold: f32) -> ([usize; NC - 1], bool) {
+    fn split_cands(
+        samples: &[f32],
+        utt: &Utt,
+        k: usize,
+        threshold: f32,
+    ) -> ([usize; NC - 1], bool) {
         let lo = utt.wins[k - 1].0;
         let ws = utt.wins[k].0;
         let (s1, run) = quiet_run(samples, lo, ws + SPLIT_SEARCH_MS);
         if run >= QUIET_RUN_MIN_MS {
             return ([s1; NC - 1], false);
         }
-        let Some(p) = utt.rechecks[k]
-            .as_ref()
-            .and_then(|rc| rc.subs.iter().find(|(_, s, _)| *s >= threshold).map(|x| x.0))
-        else {
+        let Some(p) = utt.rechecks[k].as_ref().and_then(|rc| {
+            rc.subs
+                .iter()
+                .find(|(_, s, _)| *s >= threshold)
+                .map(|x| x.0)
+        }) else {
             return ([s1; NC - 1], true);
         };
         let fwd = |len: usize| {
             let (e, r) = quiet_run(samples, p, p + len);
-            if r > 0 { e } else { p }
+            if r > 0 {
+                e
+            } else {
+                p
+            }
         };
         let back = {
             let (e, r) = quiet_run(samples, p.saturating_sub(500), p);
-            if r > 0 { e } else { p }
+            if r > 0 {
+                e
+            } else {
+                p
+            }
         };
         let raw = raw_cut(samples, p, p + FORWARD_MS).unwrap_or(p);
         ([fwd(FORWARD_MS), p, fwd(250), back, raw], true)
@@ -1510,7 +1626,8 @@ mod straddle {
         if bed.is_empty() {
             return;
         }
-        let rms = (bed.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>() / bed.len() as f64).sqrt();
+        let rms =
+            (bed.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>() / bed.len() as f64).sqrt();
         let g = (10f64.powf((MAIN_DB + BED_DB) / 20.0) / rms.max(1e-9)) as f32;
         for (i, x) in s.iter_mut().enumerate() {
             *x += bed[(off + i) % bed.len()] * g;
@@ -1542,7 +1659,11 @@ mod straddle {
         let mut s = vec![0f32; LEAD_MS * SAMPLES_PER_MS];
         s.extend(ms_to(&by.audio, by.off - len, by.off));
         let c_on = LEAD_MS + len;
-        s.extend(ms_to(&caller.audio, caller.on, caller.audio.len() / SAMPLES_PER_MS));
+        s.extend(ms_to(
+            &caller.audio,
+            caller.on,
+            caller.audio.len() / SAMPLES_PER_MS,
+        ));
         s.extend(vec![0f32; TAIL_MS * SAMPLES_PER_MS]);
         add_bed(&mut s, bed);
         Some((s, c_on, c_on + (caller.off - caller.on), c_on))
@@ -1579,7 +1700,11 @@ mod straddle {
                     u,
                     u_end,
                     reference: reference.to_vec(),
-                    caller_clean: ms_to(&caller.audio, caller.on, caller.audio.len() / SAMPLES_PER_MS),
+                    caller_clean: ms_to(
+                        &caller.audio,
+                        caller.on,
+                        caller.audio.len() / SAMPLES_PER_MS,
+                    ),
                     by_clean: ms_to(&by.audio, by.off - (BY_BASE_MS + extra), by.off),
                 }));
             }
@@ -1633,9 +1758,10 @@ mod straddle {
                         o.first_word_ms = cw.first().map_or(-1, |w| *w as i64);
                     }
                     if vi == 0 && !o.fa && std::env::var_os("NM_AB").is_some() {
-                        if let (Some((cref, cts)), Some((bref, _))) =
-                            (recognize_words(&p.caller_clean), recognize_words(&p.by_clean))
-                        {
+                        if let (Some((cref, cts)), Some((bref, _))) = (
+                            recognize_words(&p.caller_clean),
+                            recognize_words(&p.by_clean),
+                        ) {
                             let (cands, st2) = split_cands(&p.samples, &utt, k, threshold);
                             o.has_cands = true;
                             o.stage2 = st2;
@@ -1646,12 +1772,18 @@ mod straddle {
                                 let (cl, lk) = if let Some(x) = seen.iter().find(|x| x.0 == *cut) {
                                     (x.1, x.2)
                                 } else {
-                                    let (hyp, _) = recognize_words(slice(&p.samples, *cut, p.samples.len() / SAMPLES_PER_MS))
-                                        .unwrap_or_default();
+                                    let (hyp, _) = recognize_words(slice(
+                                        &p.samples,
+                                        *cut,
+                                        p.samples.len() / SAMPLES_PER_MS,
+                                    ))
+                                    .unwrap_or_default();
                                     let (del, ins) = head_align(&cref, &hyp);
                                     let lk = ins
                                         .iter()
-                                        .filter(|j| bref.contains(&hyp[**j]) && !cref.contains(&hyp[**j]))
+                                        .filter(|j| {
+                                            bref.contains(&hyp[**j]) && !cref.contains(&hyp[**j])
+                                        })
                                         .count();
                                     seen.push((*cut, del, lk));
                                     (del, lk)
@@ -1693,7 +1825,14 @@ mod straddle {
         let _ = fs::create_dir_all(&dir);
         let _ = fs::write(dir.join(format!("{n}.pcm")), pcm);
         let lo = utt.wins[k - 1].0;
-        let subs = subs_for(&p.samples, lo, utt.wins[k].0 + WINDOW_MS, (750, 125), embedder, &p.reference);
+        let subs = subs_for(
+            &p.samples,
+            lo,
+            utt.wins[k].0 + WINDOW_MS,
+            (750, 125),
+            embedder,
+            &p.reference,
+        );
         let split = subs
             .iter()
             .find(|x| x.1 >= threshold)
@@ -1706,7 +1845,11 @@ mod straddle {
             scores.join(" ")
         );
         use std::io::Write;
-        if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(dir.join("index.txt")) {
+        if let Ok(mut f) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("index.txt"))
+        {
             let _ = f.write_all(line.as_bytes());
         }
     }
@@ -1721,17 +1864,28 @@ mod straddle {
 
     /// 6g step 3: today's cut (variant 0) in recognizer words.
     fn words_table(title: &str, res: &[Vec<Out>]) -> String {
-        let ok: Vec<&Out> = res.iter().map(|r| &r[0]).filter(|o| o.confirmed && !o.fa).collect();
+        let ok: Vec<&Out> = res
+            .iter()
+            .map(|r| &r[0])
+            .filter(|o| o.confirmed && !o.fa)
+            .collect();
         let w: Vec<&&Out> = ok.iter().filter(|o| o.has_words).collect();
         let mut d: Vec<i64> = ok.iter().map(|o| o.delta_ms).collect();
-        let mut fw: Vec<i64> = w.iter().map(|o| o.first_word_ms).filter(|x| *x >= 0).collect();
+        let mut fw: Vec<i64> = w
+            .iter()
+            .map(|o| o.first_word_ms)
+            .filter(|x| *x >= 0)
+            .collect();
         let clip_sc = w.iter().filter(|o| o.words_real_clip > 0).count();
         let clip_tot: usize = w.iter().map(|o| o.words_real_clip).sum();
         let clip_max = w.iter().map(|o| o.words_real_clip).max().unwrap_or(0);
         let leak_sc = w.iter().filter(|o| o.words_real_leak > 0).count();
         let leak_tot: usize = w.iter().map(|o| o.words_real_leak).sum();
         let over20 = ok.iter().filter(|o| o.delta_ms > 20).count();
-        let over20_nowords = w.iter().filter(|o| o.delta_ms > 20 && o.words_real_clip == 0).count();
+        let over20_nowords = w
+            .iter()
+            .filter(|o| o.delta_ms > 20 && o.words_real_clip == 0)
+            .count();
         let d_max = d.iter().copied().max().unwrap_or(0);
         let d_min = d.iter().copied().min().unwrap_or(0);
         format!(
@@ -1763,7 +1917,10 @@ mod straddle {
             w.len()
         );
         for (c, name) in CANDS.iter().enumerate() {
-            let ex: Vec<usize> = w.iter().map(|o| o.a_clip[c].saturating_sub(o.a_clip[0])).collect();
+            let ex: Vec<usize> = w
+                .iter()
+                .map(|o| o.a_clip[c].saturating_sub(o.a_clip[0]))
+                .collect();
             let ex_sc = ex.iter().filter(|x| **x > 0).count();
             let ex_tot: usize = ex.iter().sum();
             let ex_max = ex.iter().copied().max().unwrap_or(0);
@@ -1772,7 +1929,11 @@ mod straddle {
             let lk: usize = w.iter().map(|o| o.a_leak[c]).sum();
             let b_sc = w.iter().filter(|o| o.b_clip[c] > 0).count();
             let b: usize = w.iter().map(|o| o.b_clip[c]).sum();
-            let agree = w.iter().zip(&ex).filter(|(o, e)| (**e > 0) == (o.b_clip[c] > 0)).count();
+            let agree = w
+                .iter()
+                .zip(&ex)
+                .filter(|(o, e)| (**e > 0) == (o.b_clip[c] > 0))
+                .count();
             let mut d: Vec<i64> = w.iter().map(|o| o.c_delta[c]).collect();
             let dmax = d.iter().copied().max().unwrap_or(0);
             md.push_str(&format!(
@@ -1817,8 +1978,16 @@ mod straddle {
                 .filter(|(r, l)| **l && r[i].confirmed && !r[i].fa)
                 .map(|(r, _)| &r[i])
                 .collect();
-            let rc: Vec<usize> = recs.iter().filter(|o| o.clipped_ms > 20).map(|o| o.clipped_ms).collect();
-            let rl: Vec<usize> = recs.iter().filter(|o| o.leaked_ms > 20).map(|o| o.leaked_ms).collect();
+            let rc: Vec<usize> = recs
+                .iter()
+                .filter(|o| o.clipped_ms > 20)
+                .map(|o| o.clipped_ms)
+                .collect();
+            let rl: Vec<usize> = recs
+                .iter()
+                .filter(|o| o.leaked_ms > 20)
+                .map(|o| o.leaked_ms)
+                .collect();
             let rec_col = format!(
                 "{} ({}) / {} ({})",
                 rc.len(),
@@ -1850,7 +2019,10 @@ mod straddle {
         let n = eligible.len();
         let vs = variants();
         let hit = |v: &Variant, u: &Utt| {
-            matches!(run_gate(u, v, threshold, usize::MAX).0, Confirm::Window { .. })
+            matches!(
+                run_gate(u, v, threshold, usize::MAX).0,
+                Confirm::Window { .. }
+            )
         };
         let today: Vec<bool> = eligible.iter().map(|u| hit(&vs[0], u)).collect();
         let mut md = format!(
@@ -1880,14 +2052,17 @@ mod straddle {
         let mut bys: Vec<(Clip, String)> = Vec::new();
         for dir in dirs {
             let manifest = parse_json(
-                &fs::read_to_string(dir.join("manifest.json")).map_err(|e| format!("manifest: {e}"))?,
+                &fs::read_to_string(dir.join("manifest.json"))
+                    .map_err(|e| format!("manifest: {e}"))?,
             )?;
             let Some(Json::Arr(list)) = manifest.get("scenes") else {
                 return Err("manifest has no scenes".into());
             };
             for scene in list {
                 let id = text(scene, "id").unwrap_or_default();
-                let Some(Json::Arr(segs)) = scene.get("segments") else { continue };
+                let Some(Json::Arr(segs)) = scene.get("segments") else {
+                    continue;
+                };
                 let role = |s: &Json| text(s, "role").unwrap_or_default();
                 let is_enroll = |s: &Json| matches!(s.get("enroll"), Some(Json::Bool(true)));
                 let (Some(e), Some(b), Some(c)) = (
@@ -1939,7 +2114,9 @@ mod straddle {
                 if bid == cid {
                     continue;
                 }
-                let Some(t) = target_t(c.off, i * 3 + r) else { continue };
+                let Some(t) = target_t(c.off, i * 3 + r) else {
+                    continue;
+                };
                 if let Some(p) = place(b, c, t, None, reference)? {
                     res.push(eval(embedder, &p, threshold));
                 }
@@ -2003,7 +2180,11 @@ mod straddle {
                     .chunks_exact(4)
                     .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                     .collect();
-                Some(f.chunks_exact(3).map(|c| (c[0] + c[1] + c[2]) / 3.0).collect())
+                Some(
+                    f.chunks_exact(3)
+                        .map(|c| (c[0] + c[1] + c[2]) / 3.0)
+                        .collect(),
+                )
             }
             None => None,
         };
@@ -2046,7 +2227,9 @@ mod straddle {
                     let bs = (ci + 1 + r * 3) % n;
                     let bf = &files[bs];
                     let ba = load(&bf[(ci + r) % bf.len()])?;
-                    let Some((bon, boff)) = voiced(&ba) else { continue };
+                    let Some((bon, boff)) = voiced(&ba) else {
+                        continue;
+                    };
                     let by = Clip {
                         audio: ba,
                         on: bon,
@@ -2077,8 +2260,15 @@ mod straddle {
                 }
                 eprintln!("librispeech {cname} caller {ci} done");
             }
-            md.push_str(&recovery_table(&format!("LibriSpeech straddle, {cname}"), &res));
-            md.push_str(&far_table(&format!("LibriSpeech bystander-only, {cname}"), &far, threshold));
+            md.push_str(&recovery_table(
+                &format!("LibriSpeech straddle, {cname}"),
+                &res,
+            ));
+            md.push_str(&far_table(
+                &format!("LibriSpeech bystander-only, {cname}"),
+                &far,
+                threshold,
+            ));
         }
         Ok(md)
     }

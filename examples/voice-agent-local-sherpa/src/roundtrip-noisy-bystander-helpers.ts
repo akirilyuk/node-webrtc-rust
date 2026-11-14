@@ -262,7 +262,9 @@ export function utteranceEndMs(utteranceId: string, seen: Seen[]): number | unde
  * to-utterance (U2), by utteranceId: its `user_speaking_start`, final and barge-in. Other→caller
  * links are followed in a chain; a caller→other link ends it (the caller part stays on the last
  * caller to-utterance). U1's text is never credited to the turn. `followed` maps the turn index to
- * the cut utterance's id.
+ * the cut utterance's id. A followed U2 is paired with that turn only: when U2's
+ * `user_speaking_start` also fell into a later turn's slot, that turn takes the next unpaired start
+ * in its slot instead (or none), so no U2 is judged for two turns.
  */
 export function pairTurnUtterances(
   turns: Turn[],
@@ -357,6 +359,14 @@ export function pairTurnUtterances(
     if (u2Start == null) return
     followed.set(i, start.utteranceId)
     starts[i] = u2Start
+    pairedIds.add(cur)
+    starts.forEach((other, k) => {
+      if (k === i || other?.utteranceId !== cur) return
+      starts[k] = allStarts.find(
+        (e) => !pairedIds.has(e.utteranceId!) && e.atMs >= boundary(k) && e.atMs < boundary(k + 1),
+      )
+      if (starts[k] != null) pairedIds.add(starts[k]!.utteranceId!)
+    })
   })
   return { starts, merged, followed }
 }

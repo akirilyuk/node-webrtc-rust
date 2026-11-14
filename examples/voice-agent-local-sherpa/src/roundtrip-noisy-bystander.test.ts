@@ -1436,6 +1436,24 @@ describe('other→caller split: the caller turn is judged on U2 by utteranceId',
     )
   })
 
+  it('judges a followed U2 once when its start also falls into the next turn slot', () => {
+    // U2 (utt-10) starts at 60306 ms, past the 60252 ms midpoint between turn 6 and turn 7, so
+    // slot matching gives it to turn 7 too. Turn 6 follows the split to it; turn 7 then takes its
+    // own utterance (utt-11).
+    const late = 2_100
+    const seen = events('I booked a table for four people')
+      .map((e) =>
+        e.utteranceId === 'utt-10' || e.type === 'user_utterance_split'
+          ? { ...e, atMs: e.atMs + late }
+          : e,
+      )
+      .sort((a, b) => a.atMs - b.atMs)
+    const { starts, followed } = pairTurnUtterances(SCENE, seen)
+    expect(starts.map((s) => s?.utteranceId)).toEqual(['utt-6', 'utt-10', 'utt-11'])
+    expect(starts.filter((s) => s?.utteranceId === 'utt-10')).toHaveLength(1)
+    expect([...followed]).toEqual([[1, 'utt-8']])
+  })
+
   it('does not follow a caller→other split (the caller turn keeps its own utterance)', () => {
     const seen = events('I booked a table for four people').map((e) =>
       e.type === 'user_utterance_split' ? { ...e, from: 'caller', to: 'other' } : e,

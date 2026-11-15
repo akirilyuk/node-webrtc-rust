@@ -241,13 +241,17 @@ jobs:
       - uses: ./.github/actions/ram-target-dir
 
       - name: Alpine onnxruntime version
-        run: apk info -v onnxruntime
+        run: |
+          apk info -v onnxruntime
+          apk list --installed 2>/dev/null | grep onnxruntime
 
       - name: Ensure Sherpa ONNX musl shared libs
         run: bash scripts/ci/build-sherpa-onnx-musl-libs.sh
 
       - name: Ensure Sherpa models (Whisper tiny LID)
         run: |
+          # ci-step.sh uses GNU `timeout --foreground`; BusyBox timeout has no such option.
+          apk add --no-cache coreutils >/dev/null
           bash scripts/ci/ensure-sherpa-models.sh
           echo "SHERPA_LID_MODEL_PATH=$GITHUB_WORKSPACE/examples/voice-agent-local-sherpa/.models/sherpa-onnx-whisper-tiny" >> "$GITHUB_ENV"
 

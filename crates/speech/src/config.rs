@@ -297,6 +297,9 @@ pub struct SpeakerGateConfig {
     ///   the next speaker's first loud frame, an open run at its end but no later than
     ///   `speaker_gate::CALLER_TO_OTHER_OPEN_CUT_MAX_MS` (450 ms) after the first `other` window's
     ///   start. Without a quiet run, the lowest-energy frame near that window's start.
+    ///   On a split-born second part, a window whose middle lies before its caller floor (the
+    ///   end of the first `caller` sub-window) is no evidence for this change and resets the
+    ///   run like a `caller` window (decision jj); if the utterance ends first it stays `caller`.
     /// - `other` -> `caller` after one `caller` window
     ///   (`speaker_gate::OTHER_TO_CALLER_CONFIRM_WINDOWS`), only when one `other` window of the
     ///   utterance scored below `speaker_gate::CONFIDENT_OTHER_MAX_SCORE` (0.20; otherwise the

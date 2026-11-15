@@ -351,38 +351,38 @@ cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example near_miss_b
 
 Result: the bar of decision jj holds. On the tail scenes, caller words cut out of U2 go from 3 (1 scene, LibriSpeech test-clean, the n03 shape) to 0: that U2 is not split and stays `caller` whole. The held-out dev-clean tail sets have no caller->other split under any rule (0 -> 0). On the takeover sets jj cuts fewer caller words in every set (29 -> 28, 61 -> 57, 25 -> 24, 61 -> 57, 18 -> 17, 62 -> 58), leaves at most one more bystander-2 word (133 -> 134, 123 -> 124) and splits 1-4 takeovers one window later; no takeover goes unsplit. Option 2 removes no tail cut (3 -> 3) and helps takeovers less, so it is not shipped.
 
-| set | rule | U2s | caller -> other splits | caller words cut out of U2 (scenes) | bystander-2 words left in U2 / total | split later than today / not split |
-|---|---|---|---|---|---|---|
-| Piper straddle | today | 398 | 0 | 0 (0) | - / - | 0 / 0 |
-| Piper straddle | jj: pre-floor windows reset the run | 398 | 0 | 0 (0) | - / - | 0 / 0 |
-| Piper straddle | option 2: forward to the next closed quiet run | 398 | 0 | 0 (0) | - / - | 0 / 0 |
-| test-clean LibriSpeech straddle, Tocumen bed -12 dB | today | 75 | 0 | 0 (0) | - / - | 0 / 0 |
-| test-clean LibriSpeech straddle, Tocumen bed -12 dB | jj: pre-floor windows reset the run | 75 | 0 | 0 (0) | - / - | 0 / 0 |
-| test-clean LibriSpeech straddle, Tocumen bed -12 dB | option 2: forward to the next closed quiet run | 75 | 0 | 0 (0) | - / - | 0 / 0 |
-| test-clean LibriSpeech straddle, clean | today | 109 | 1 | 3 (1) | - / - | 0 / 0 |
-| test-clean LibriSpeech straddle, clean | jj: pre-floor windows reset the run | 109 | 0 | 0 (0) | - / - | 0 / 1 |
-| test-clean LibriSpeech straddle, clean | option 2: forward to the next closed quiet run | 109 | 1 | 3 (1) | - / - | 0 / 0 |
-| dev-clean (held out) LibriSpeech straddle, Tocumen bed -12 dB | today | 67 | 0 | 0 (0) | - / - | 0 / 0 |
-| dev-clean (held out) LibriSpeech straddle, Tocumen bed -12 dB | jj: pre-floor windows reset the run | 67 | 0 | 0 (0) | - / - | 0 / 0 |
-| dev-clean (held out) LibriSpeech straddle, Tocumen bed -12 dB | option 2: forward to the next closed quiet run | 67 | 0 | 0 (0) | - / - | 0 / 0 |
-| dev-clean (held out) LibriSpeech straddle, clean | today | 109 | 0 | 0 (0) | - / - | 0 / 0 |
-| dev-clean (held out) LibriSpeech straddle, clean | jj: pre-floor windows reset the run | 109 | 0 | 0 (0) | - / - | 0 / 0 |
-| dev-clean (held out) LibriSpeech straddle, clean | option 2: forward to the next closed quiet run | 109 | 0 | 0 (0) | - / - | 0 / 0 |
-| takeover 0 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | today | 63 | 56 | 29 (23) | 92 / 480 | 0 / 0 |
-| takeover 0 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | jj: pre-floor windows reset the run | 63 | 56 | 28 (22) | 92 / 480 | 1 / 0 |
-| takeover 0 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | option 2: forward to the next closed quiet run | 63 | 56 | 28 (22) | 92 / 480 | 1 / 0 |
-| takeover 0 dB, test-clean LibriSpeech straddle, clean | today | 94 | 79 | 61 (38) | 133 / 728 | 0 / 0 |
-| takeover 0 dB, test-clean LibriSpeech straddle, clean | jj: pre-floor windows reset the run | 94 | 79 | 57 (36) | 134 / 728 | 4 / 0 |
-| takeover 0 dB, test-clean LibriSpeech straddle, clean | option 2: forward to the next closed quiet run | 94 | 79 | 60 (37) | 134 / 728 | 3 / 0 |
-| takeover -3 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | today | 65 | 53 | 25 (19) | 97 / 492 | 0 / 0 |
-| takeover -3 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | jj: pre-floor windows reset the run | 65 | 53 | 24 (18) | 97 / 492 | 1 / 0 |
-| takeover -3 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | option 2: forward to the next closed quiet run | 65 | 53 | 24 (18) | 97 / 492 | 1 / 0 |
-| takeover -3 dB, test-clean LibriSpeech straddle, clean | today | 93 | 79 | 61 (37) | 123 / 717 | 0 / 0 |
-| takeover -3 dB, test-clean LibriSpeech straddle, clean | jj: pre-floor windows reset the run | 93 | 79 | 57 (35) | 124 / 717 | 4 / 0 |
-| takeover -3 dB, test-clean LibriSpeech straddle, clean | option 2: forward to the next closed quiet run | 93 | 79 | 60 (36) | 124 / 717 | 3 / 0 |
-| takeover -6 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | today | 66 | 45 | 18 (15) | 118 / 497 | 0 / 0 |
-| takeover -6 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | jj: pre-floor windows reset the run | 66 | 45 | 17 (14) | 118 / 497 | 1 / 0 |
-| takeover -6 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | option 2: forward to the next closed quiet run | 66 | 45 | 17 (14) | 118 / 497 | 1 / 0 |
-| takeover -6 dB, test-clean LibriSpeech straddle, clean | today | 94 | 78 | 62 (36) | 130 / 719 | 0 / 0 |
-| takeover -6 dB, test-clean LibriSpeech straddle, clean | jj: pre-floor windows reset the run | 94 | 78 | 58 (34) | 130 / 719 | 4 / 0 |
-| takeover -6 dB, test-clean LibriSpeech straddle, clean | option 2: forward to the next closed quiet run | 94 | 78 | 61 (35) | 130 / 719 | 3 / 0 |
+| set                                                                 | rule                                           | U2s | caller -> other splits | caller words cut out of U2 (scenes) | bystander-2 words left in U2 / total | split later than today / not split |
+| ------------------------------------------------------------------- | ---------------------------------------------- | --- | ---------------------- | ----------------------------------- | ------------------------------------ | ---------------------------------- |
+| Piper straddle                                                      | today                                          | 398 | 0                      | 0 (0)                               | - / -                                | 0 / 0                              |
+| Piper straddle                                                      | jj: pre-floor windows reset the run            | 398 | 0                      | 0 (0)                               | - / -                                | 0 / 0                              |
+| Piper straddle                                                      | option 2: forward to the next closed quiet run | 398 | 0                      | 0 (0)                               | - / -                                | 0 / 0                              |
+| test-clean LibriSpeech straddle, Tocumen bed -12 dB                 | today                                          | 75  | 0                      | 0 (0)                               | - / -                                | 0 / 0                              |
+| test-clean LibriSpeech straddle, Tocumen bed -12 dB                 | jj: pre-floor windows reset the run            | 75  | 0                      | 0 (0)                               | - / -                                | 0 / 0                              |
+| test-clean LibriSpeech straddle, Tocumen bed -12 dB                 | option 2: forward to the next closed quiet run | 75  | 0                      | 0 (0)                               | - / -                                | 0 / 0                              |
+| test-clean LibriSpeech straddle, clean                              | today                                          | 109 | 1                      | 3 (1)                               | - / -                                | 0 / 0                              |
+| test-clean LibriSpeech straddle, clean                              | jj: pre-floor windows reset the run            | 109 | 0                      | 0 (0)                               | - / -                                | 0 / 1                              |
+| test-clean LibriSpeech straddle, clean                              | option 2: forward to the next closed quiet run | 109 | 1                      | 3 (1)                               | - / -                                | 0 / 0                              |
+| dev-clean (held out) LibriSpeech straddle, Tocumen bed -12 dB       | today                                          | 67  | 0                      | 0 (0)                               | - / -                                | 0 / 0                              |
+| dev-clean (held out) LibriSpeech straddle, Tocumen bed -12 dB       | jj: pre-floor windows reset the run            | 67  | 0                      | 0 (0)                               | - / -                                | 0 / 0                              |
+| dev-clean (held out) LibriSpeech straddle, Tocumen bed -12 dB       | option 2: forward to the next closed quiet run | 67  | 0                      | 0 (0)                               | - / -                                | 0 / 0                              |
+| dev-clean (held out) LibriSpeech straddle, clean                    | today                                          | 109 | 0                      | 0 (0)                               | - / -                                | 0 / 0                              |
+| dev-clean (held out) LibriSpeech straddle, clean                    | jj: pre-floor windows reset the run            | 109 | 0                      | 0 (0)                               | - / -                                | 0 / 0                              |
+| dev-clean (held out) LibriSpeech straddle, clean                    | option 2: forward to the next closed quiet run | 109 | 0                      | 0 (0)                               | - / -                                | 0 / 0                              |
+| takeover 0 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB  | today                                          | 63  | 56                     | 29 (23)                             | 92 / 480                             | 0 / 0                              |
+| takeover 0 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB  | jj: pre-floor windows reset the run            | 63  | 56                     | 28 (22)                             | 92 / 480                             | 1 / 0                              |
+| takeover 0 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB  | option 2: forward to the next closed quiet run | 63  | 56                     | 28 (22)                             | 92 / 480                             | 1 / 0                              |
+| takeover 0 dB, test-clean LibriSpeech straddle, clean               | today                                          | 94  | 79                     | 61 (38)                             | 133 / 728                            | 0 / 0                              |
+| takeover 0 dB, test-clean LibriSpeech straddle, clean               | jj: pre-floor windows reset the run            | 94  | 79                     | 57 (36)                             | 134 / 728                            | 4 / 0                              |
+| takeover 0 dB, test-clean LibriSpeech straddle, clean               | option 2: forward to the next closed quiet run | 94  | 79                     | 60 (37)                             | 134 / 728                            | 3 / 0                              |
+| takeover -3 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | today                                          | 65  | 53                     | 25 (19)                             | 97 / 492                             | 0 / 0                              |
+| takeover -3 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | jj: pre-floor windows reset the run            | 65  | 53                     | 24 (18)                             | 97 / 492                             | 1 / 0                              |
+| takeover -3 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | option 2: forward to the next closed quiet run | 65  | 53                     | 24 (18)                             | 97 / 492                             | 1 / 0                              |
+| takeover -3 dB, test-clean LibriSpeech straddle, clean              | today                                          | 93  | 79                     | 61 (37)                             | 123 / 717                            | 0 / 0                              |
+| takeover -3 dB, test-clean LibriSpeech straddle, clean              | jj: pre-floor windows reset the run            | 93  | 79                     | 57 (35)                             | 124 / 717                            | 4 / 0                              |
+| takeover -3 dB, test-clean LibriSpeech straddle, clean              | option 2: forward to the next closed quiet run | 93  | 79                     | 60 (36)                             | 124 / 717                            | 3 / 0                              |
+| takeover -6 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | today                                          | 66  | 45                     | 18 (15)                             | 118 / 497                            | 0 / 0                              |
+| takeover -6 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | jj: pre-floor windows reset the run            | 66  | 45                     | 17 (14)                             | 118 / 497                            | 1 / 0                              |
+| takeover -6 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | option 2: forward to the next closed quiet run | 66  | 45                     | 17 (14)                             | 118 / 497                            | 1 / 0                              |
+| takeover -6 dB, test-clean LibriSpeech straddle, clean              | today                                          | 94  | 78                     | 62 (36)                             | 130 / 719                            | 0 / 0                              |
+| takeover -6 dB, test-clean LibriSpeech straddle, clean              | jj: pre-floor windows reset the run            | 94  | 78                     | 58 (34)                             | 130 / 719                            | 4 / 0                              |
+| takeover -6 dB, test-clean LibriSpeech straddle, clean              | option 2: forward to the next closed quiet run | 94  | 78                     | 61 (35)                             | 130 / 719                            | 3 / 0                              |

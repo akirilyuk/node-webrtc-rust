@@ -2060,7 +2060,14 @@ fn watch_step(
     if w.done {
         return None;
     }
-    if !scored || outcome == w.label {
+    // Decision jj (chunk 7h): on a split-born U2, a window whose middle lies before the caller
+    // floor is mostly proven-caller audio (plus U1's tail before the back-off), so it is no
+    // caller -> other evidence: it resets the run like a `caller` window. The first `other` window
+    // then lies mostly after the floor, and a second one must confirm.
+    let pre_floor = w.label == Outcome::Caller
+        && w.floor
+            .is_some_and(|f| span.0 + span.1.saturating_sub(span.0) / 2 < f);
+    if !scored || outcome == w.label || pre_floor {
         w.run = 0;
         w.first = None;
         if scored {
@@ -3556,14 +3563,102 @@ mod tests {
         assert_eq!(caller_floor(0, None), SPLIT_BACKOFF_MS);
     }
 
-    /// Floor at or past the range end (window 2 itself scores `other`, so the range ends at 750):
-    /// the cut is the floor, so the proven `caller` sub-window stays whole in U2.
+    /// Floor at or past the range end: the cut is the floor, so the proven `caller` sub-window
+    /// stays whole in U2. Since decision jj the watch never reports a first `other` window whose
+    /// middle is before the floor, so this branch is reached only at middle == floor; the cut
+    /// function itself still holds the rule.
     #[test]
     fn split_born_u2_empty_range_cuts_at_the_floor() {
         let pcm = parts_pcm(&[(725, 9000, false), (200, 300, true), (3875, 9000, false)]);
-        let c = c2o_windows_u2(&pcm, &[Outcome::Other, Outcome::Other], Some(N05_FLOOR))
-            .expect("change");
-        assert_eq!(c.split_at_ms, N05_FLOOR);
+        let first = (0, 1500, pcm[..1800 * BYTES_PER_MS].to_vec());
+        assert_eq!(
+            caller_to_other_split(None, first, Some(N05_FLOOR)),
+            N05_FLOOR
+        );
+    }
+
+    /// Feeds `(span, outcome)` windows of `pcm` (starting at -300 ms; clips carry 300 ms of
+    /// pre-roll) through a U2 watch armed with `floor`; returns the change.
+    fn c2o_spans_u2(
+        pcm: &[u8],
+        wins: &[((u32, u32), Outcome)],
+        floor: Option<u32>,
+    ) -> Option<SpeakerChange> {
+        let mut armed = Watch::armed(Outcome::Caller, None);
+        armed.floor = floor;
+        let mut w = VecDeque::from(vec![(1_u64, armed)]);
+        let mut change = None;
+        for ((start, end), o) in wins {
+            let clip =
+                pcm[*start as usize * BYTES_PER_MS..(*end as usize + 300) * BYTES_PER_MS].to_vec();
+            if let Some(c) = watch_step(&mut w, 1, *o, None, true, (*start, *end), clip) {
+                change = Some(c);
+            }
+        }
+        change
+    }
+
+    /// The n03 shape (eu-load 43752352272, chunk 7h, decision jj): U2 starts 263 ms before the
+    /// caller's "bravo four five six" (the back-off holds the bystander's last 200 ms), the phrase
+    /// is loud to ~1800 ms, then bed. The seed window [0, 1700) scores `other` (0.447, bystander
+    /// tail) and [1300, 3000) `other` (0.369, phrase tail + bed). The seed window's middle (850) is
+    /// before the floor (1065): it is mostly proven-caller audio, so it is no caller -> other
+    /// evidence. One post-floor `other` window confirms nothing (on eeb195b4 the two windows cut at
+    /// the floor, inside "four"); a second one does, and the cut lands after the phrase.
+    #[test]
+    fn split_born_u2_pre_floor_window_is_no_caller_to_other_evidence_n03() {
+        // -300 .. 0 pre-roll, the bystander's last 200 ms, a 60 ms gap, the caller to 1800, bed.
+        let pcm = parts_pcm(&[
+            (300, 300, true),
+            (200, 9000, false),
+            (60, 300, true),
+            (1540, 9000, false),
+            (3000, 300, true),
+        ]);
+        let seed = ((0, 1700), Outcome::Other);
+        let next = ((1300, 3000), Outcome::Other);
+        assert!(
+            c2o_spans_u2(&pcm, &[seed, next], Some(N05_FLOOR)).is_none(),
+            "one post-floor `other` window confirms nothing"
+        );
+        let c = c2o_spans_u2(
+            &pcm,
+            &[seed, next, ((3000, 4500), Outcome::Other)],
+            Some(N05_FLOOR),
+        )
+        .expect("change");
+        assert!(
+            (1800 - SPLIT_FRAME_MS as u32..=1800 + CALLER_TO_OTHER_OPEN_CUT_MAX_MS)
+                .contains(&c.split_at_ms),
+            "the cut lands after the phrase end (1800): {c:?}"
+        );
+        // Keys without a floor are unchanged: the same two windows confirm.
+        assert!(c2o_spans_u2(&pcm, &[seed, next], None).is_some());
+    }
+
+    /// A real takeover right after a short caller phrase on a split-born U2 (decision jj's cost):
+    /// the caller is loud to 1800 ms, a 150 ms pause, then B. The pre-floor seed window does not
+    /// count; the two post-floor `other` windows confirm and the cut lands in the pause.
+    #[test]
+    fn split_born_u2_takeover_after_the_floor_splits_on_two_post_floor_windows() {
+        let pcm = parts_pcm(&[
+            (300, 300, true),
+            (200, 9000, false),
+            (60, 300, true),
+            (1540, 9000, false),
+            (150, 300, true),
+            (2850, 4000, false),
+        ]);
+        let wins = [
+            ((0, 1700), Outcome::Other),
+            ((1300, 3000), Outcome::Other),
+            ((3000, 4500), Outcome::Other),
+        ];
+        let c = c2o_spans_u2(&pcm, &wins, Some(N05_FLOOR)).expect("change");
+        assert!(
+            (1800..=1950 + SPLIT_FRAME_MS as u32).contains(&c.split_at_ms),
+            "inside the pause before B: {c:?}"
+        );
     }
 
     /// Keys that are not split-born carry no floor: the n05 audio through a watch armed by a first

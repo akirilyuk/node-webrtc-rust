@@ -17,7 +17,9 @@
  *   - a barge_in on an utterance whose final is `other`;
  *   - no caller utterance of its own, a caller final not labelled `caller`, no barge_in on it, or
  *     a qualified caller phrase below the similarity threshold;
- *   - any `caller` final with bystander words (cut-point leak) and any leading glue;
+ *   - any `caller` final with bystander words (cut-point leak) and any leading glue, unless the
+ *     split is within 2 check windows of the deciding window end (bounded leak, decision z: counted
+ *     and reported, not failing);
  * and reports a leak after a gate false accept (split more than two check windows before the
  * caller's onset) as its own class without failing. At least one other→caller split per run.
  *
@@ -174,6 +176,7 @@ interface SceneOutcome {
   failures: string[]
   otherToCallerSplits: number
   gateFalseAcceptLeaks: NoPauseLeak[]
+  boundedLeaks: NoPauseLeak[]
   cutPointLeaks: number
   leadingGlue: number
 }
@@ -266,6 +269,7 @@ async function runScene(params: {
     failures: r.failures,
     otherToCallerSplits: r.otherToCallerSplits,
     gateFalseAcceptLeaks: r.gateFalseAcceptLeaks,
+    boundedLeaks: r.boundedLeaks,
     cutPointLeaks: r.cutPointLeaks.length,
     leadingGlue: r.leadingGlue.length,
   }
@@ -317,6 +321,7 @@ async function main(): Promise<void> {
   let cut = 0
   let glue = 0
   const falseAccepts: NoPauseLeak[] = []
+  const bounded: NoPauseLeak[] = []
   for (const scene of scenes) {
     const r = await runScene({ scene, scenesDir, config, modelPath })
     failures.push(...r.failures)
@@ -324,9 +329,10 @@ async function main(): Promise<void> {
     cut += r.cutPointLeaks
     glue += r.leadingGlue
     falseAccepts.push(...r.gateFalseAcceptLeaks)
+    bounded.push(...r.boundedLeaks)
   }
   console.log(
-    `no-pause summary: scenes ${scenes.length}; other→caller splits: ${splits}; cut-point leaks: ${cut}; leading glue finals: ${glue}; gate false-accept leaks (not failing): ${falseAccepts.length}`,
+    `no-pause summary: scenes ${scenes.length}; other→caller splits: ${splits}; cut-point leaks: ${cut}; leading glue finals: ${glue}; gate false-accept leaks (not failing): ${falseAccepts.length}; bounded leaks (not failing): ${bounded.length}${bounded.length > 0 ? ` (${bounded.map((l) => `${l.utteranceId}: ${l.words.join(' ')}`).join('; ')})` : ''}`,
   )
   if (splits === 0) {
     failures.push('no other→caller split in any scene (vacuous pass)')

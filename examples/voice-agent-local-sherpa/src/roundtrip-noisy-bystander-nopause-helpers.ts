@@ -14,7 +14,9 @@
  *   adjacency or arrival order (rule oracle-relies-only-on-promised-order);
  * - a `caller` final with bystander words fails (cut-point leak), and so does any leading glue
  *   (a word before the caller phrase that ends the bystander sentence). There is no "credited to
- *   the caller turn" exception;
+ *   the caller turn" exception, except decision z: a leak or glue whose split is not earlier than
+ *   the deciding window end minus {@link BOUNDED_LEAK_CHECK_WINDOWS} check windows is a bounded
+ *   leak (the back-off or the fallback window), counted and reported, not failing;
  * - a leak caused by a gate false accept (the other→caller split lies so far before the caller's
  *   voiced onset that no window holding caller speech can have confirmed it) is reported as its
  *   own class and does not fail the pass;
@@ -27,11 +29,23 @@ import { SPEECH_EVENT_TYPE } from '@node-webrtc-rust/sdk/voice'
 import { DEFAULT_BARGE_PHRASE_MIN_SIMILARITY } from './roundtrip-barge-in-helpers.js'
 import { normalizeForCompare, wordSimilarity } from './roundtrip-counting.js'
 import {
+  CHECK_SPEECH_MS,
   callerWindowSimilarity,
   splitDecidingWindowEndSceneMs,
   splitSceneMs,
   type Seen,
 } from './roundtrip-noisy-bystander-helpers.js'
+
+/**
+ * Decision z (plan 2026-11-13-speaker-split-other-to-caller): the split may sit at most this many
+ * check windows before the deciding window's end. The fallback cut (the previous window start) is
+ * 2 windows back. One window is the product's 1.5 s speaker check window
+ * (`SpeakerGateConfig::default().check_speech_ms` in `crates/speech/src/config.rs`, mirrored by
+ * `CHECK_SPEECH_MS`).
+ */
+export const BOUNDED_LEAK_CHECK_WINDOWS = 2
+/** A split earlier than the deciding window end minus this is an unbounded leak (fails). */
+export const BOUNDED_LEAK_MAX_BEFORE_DECIDING_END_MS = BOUNDED_LEAK_CHECK_WINDOWS * CHECK_SPEECH_MS
 
 /** The scenes' caller voice, as `FALSE_ACCEPT_BENCH.md` names it. */
 export const CALLER_BENCH_LABEL = 'amy-low'
@@ -143,6 +157,11 @@ export interface NoPauseSceneResult {
   leadingGlue: NoPauseLeak[]
   /** Leaks after a gate false accept (reported, not failing). */
   gateFalseAcceptLeaks: NoPauseLeak[]
+  /**
+   * Cut-point leaks and leading glue whose split is >= deciding window end - 2 check windows
+   * (decision z; reported, not failing). They are not in `cutPointLeaks` or `leadingGlue`.
+   */
+  boundedLeaks: NoPauseLeak[]
 }
 
 /**
@@ -159,6 +178,7 @@ export function evaluateNoPauseScene(
   const cutPointLeaks: NoPauseLeak[] = []
   const leadingGlue: NoPauseLeak[] = []
   const gateFalseAcceptLeaks: NoPauseLeak[] = []
+  const boundedLeaks: NoPauseLeak[] = []
   const enroll = segments.find((s) => s.role === 'main' && s.enroll === true)
   const bystander = segments.find((s) => s.role === 'bystander')
   const caller = segments.find((s) => s.role === 'main' && s.enroll !== true)
@@ -169,6 +189,7 @@ export function evaluateNoPauseScene(
       cutPointLeaks,
       leadingGlue,
       gateFalseAcceptLeaks,
+      boundedLeaks,
     }
   }
 
@@ -294,6 +315,14 @@ export function evaluateNoPauseScene(
     }
   }
 
+  // Decision z: a split not earlier than deciding window end - 2 check windows leaks only audio
+  // from just before the caller onset. A missing split or window end is unbounded (fail closed).
+  const isBounded = (s: Seen | undefined): boolean => {
+    const split = sceneSplitOf(s)
+    const end = decidingWindowEndSceneMs(s)
+    return split != null && end != null && split >= end - BOUNDED_LEAK_MAX_BEFORE_DECIDING_END_MS
+  }
+
   // Bystander words: long words of the bystander sentence that no caller sentence has.
   const callerWords = new Set([...words(enroll.text), ...words(caller.text)])
   const bystanderOnly = new Set(
@@ -314,6 +343,11 @@ export function evaluateNoPauseScene(
       gateFalseAcceptLeaks.push(leak)
       console.log(
         `${label}: gate false-accept leak in ${f.utteranceId} (split at ${String(fa.sceneSplitMs)} ms, deciding window ends ${String(fa.windowEndMs)} ms, caller onset ${callerOnsetMs} ms): ${leaked.join(' ')}: "${leak.text}"`,
+      )
+    } else if (isBounded(otherToCaller.find((x) => x.toUtteranceId === f.utteranceId))) {
+      boundedLeaks.push(leak)
+      console.log(
+        `${label}: bounded leak in ${f.utteranceId} (split at ${String(fa.sceneSplitMs)} ms, deciding window ends ${String(fa.windowEndMs)} ms, caller onset ${callerOnsetMs} ms): ${leaked.join(' ')}: "${leak.text}"`,
       )
     } else {
       cutPointLeaks.push(leak)
@@ -342,15 +376,28 @@ export function evaluateNoPauseScene(
       const tail = words(bystander.text).slice(-LEADING_GLUE_TAIL_WORDS)
       const glued = fw.slice(0, bestK).filter((w) => tail.includes(w))
       if (glued.length > 0) {
-        leadingGlue.push({
+        const glue: NoPauseLeak = {
           utteranceId: callerId,
           text: callerFinal.text ?? '',
           words: glued,
           sceneSplitMs: sceneSplitOf(callerSplit),
-        })
-        failures.push(
-          `${tag}: leading glue (${glued.join(' ')}) from the bystander's last words in ${callerId}: "${callerFinal.text ?? ''}"`,
-        )
+        }
+        if (isBounded(callerSplit)) {
+          // Words already reported as a bounded leak of this final are not counted twice.
+          const seenWords = new Set(
+            boundedLeaks.filter((l) => l.utteranceId === callerId).flatMap((l) => l.words),
+          )
+          glue.words = glued.filter((w) => !seenWords.has(w))
+          if (glue.words.length > 0) boundedLeaks.push(glue)
+          console.log(
+            `${tag}: bounded leading glue (${glued.join(' ')}) in ${callerId}, split at ${String(glue.sceneSplitMs)} ms, deciding window ends ${String(decidingWindowEndSceneMs(callerSplit))} ms: "${glue.text}"`,
+          )
+        } else {
+          leadingGlue.push(glue)
+          failures.push(
+            `${tag}: leading glue (${glued.join(' ')}) from the bystander's last words in ${callerId}: "${callerFinal.text ?? ''}"`,
+          )
+        }
       }
     }
   }
@@ -371,6 +418,7 @@ export function evaluateNoPauseScene(
     cutPointLeaks,
     leadingGlue,
     gateFalseAcceptLeaks,
+    boundedLeaks,
   }
 }
 

@@ -709,12 +709,12 @@ WEBRTC_INCLUDE_LOOPBACK_CANDIDATES=1 npm run start:roundtrip-noisy-bystander-nop
 
 The oracle ([`src/roundtrip-noisy-bystander-nopause-helpers.ts`](./src/roundtrip-noisy-bystander-nopause-helpers.ts), Vitest, no models) pairs splits and finals by `utteranceId` only. The caller's utterance is the to-utterance of an other→caller split with no later other→caller split on its chain. A scene fails when:
 
-- a caller-labelled final holds bystander words (cut-point leak), with no allowance;
-- the caller's final starts with one of the bystander's last three words (leading glue);
+- a caller-labelled final holds bystander words (cut-point leak), unless it is a bounded leak (below);
+- the caller's final starts with one of the bystander's last three words (leading glue), unless it is a bounded leak (below);
 - the caller has no utterance of its own, no final, a final labelled other, no barge-in, or a qualified phrase below the similarity threshold;
 - a barge-in lands on a bystander utterance.
 
-A leak counts as a gate false accept, reported in its own class and not failing, only when the window that decided the split ended at or before the caller's voiced onset. That window ends at the cut utterance's `fromStartMs` + `speakerCheckWindows` × 1500 ms; the count includes the deciding window (scene `s4_test_n02`: window 3 scored 0.470 on bystander audio and ended at 13.2 s, the caller started at 14.8 s). A cut utterance without `speakerCheckWindows` fails. The run also fails when no scene produced an other→caller split.
+A leak counts as a gate false accept, reported in its own class and not failing, only when the window that decided the split ended at or before the caller's voiced onset. That window ends at the cut utterance's `fromStartMs` + `speakerCheckWindows` × 1500 ms; the count includes the deciding window (scene `s4_test_n02`: window 3 scored 0.470 on bystander audio and ended at 13.2 s, the caller started at 14.8 s). A cut utterance without `speakerCheckWindows` fails. A cut-point leak or leading glue is a bounded leak, counted and reported in the summary line (count and words) and not failing, when the split is at or after the deciding window end minus 2 × 1500 ms (two check windows: the back-off and the fallback to the previous window start; `SpeakerGateConfig::default().check_speech_ms` in `crates/speech/src/config.rs`, mirrored by `CHECK_SPEECH_MS`). A split earlier than that bound fails. Lost caller words, a missing other→caller split and a caller final with no caller words still fail. The run also fails when no scene produced an other→caller split.
 
 Bystander voices whose pair false-accept rate against the caller voice is 5 % or more in [`FALSE_ACCEPT_BENCH.md`](../../crates/vendor-sherpa-onnx/examples/FALSE_ACCEPT_BENCH.md) are skipped (today `libritts_r 120`, 51.5 %); a Vitest lockstep test parses the bench. `SHERPA_NOPAUSE_ONLY=s4_test_n02,...` plays only the listed scenes (debugging). Env: `SHERPA_SPEAKER_NOPAUSE_SCENES_DIR`, `SHERPA_SPEAKER_MODEL_PATH`. CI generates the scenes with `ensure_speaker_fixtures nopause` ([`scripts/ci/ensure-speaker-fixtures.sh`](../../scripts/ci/ensure-speaker-fixtures.sh)).
 

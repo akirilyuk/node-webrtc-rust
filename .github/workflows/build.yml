@@ -282,6 +282,60 @@ jobs:
             echo "--- $so OrtGetApiBase"; nm -D "$so" | grep OrtGetApiBase || echo none
           done
 
+      # Which libonnxruntime.so.1 the job loads: the copy installed into /opt/sherpa-musl/lib or
+      # Alpine's /usr/lib one sherpa was compiled against (headers in /usr/include/onnxruntime).
+      - name: (diag) onnxruntime copies and versions
+        if: always()
+        run: |
+          ls -l /opt/sherpa-musl/lib/libonnxruntime* /usr/lib/libonnxruntime* || true
+          for so in /opt/sherpa-musl/lib/libonnxruntime.so.1 /usr/lib/libonnxruntime.so.1; do
+            echo "--- $so"; readlink -f "$so" || true
+            readelf -d "$so" | grep SONAME || true
+            nm -D "$so" | grep OrtGetApiBase || echo "no OrtGetApiBase"
+            strings "$so" | grep -m3 -E '^1\.[0-9]+\.[0-9]+$' || true
+          done
+          cmp /opt/sherpa-musl/lib/libonnxruntime.so.1 /usr/lib/libonnxruntime.so.1 && echo "cmp: identical" || echo "cmp: differ"
+          grep -n 'define ORT_API_VERSION' /usr/include/onnxruntime/onnxruntime_c_api.h || true
+          apk info -v onnxruntime onnxruntime-dev || true
+
+      - name: (diag) control, release, LD_LIBRARY_PATH=/usr/lib first
+        if: always()
+        env:
+          LD_LIBRARY_PATH: /usr/lib:/opt/sherpa-musl/lib
+        run: |
+          ldd "$LID_CONTROL_BIN" | grep -E 'onnxruntime|sherpa'
+          "$LID_CONTROL_BIN" --ignored --nocapture --test-threads=1
+
+      - name: (diag) b and c, release, LD_LIBRARY_PATH=/usr/lib first
+        if: always()
+        env:
+          LD_LIBRARY_PATH: /usr/lib:/opt/sherpa-musl/lib
+        run: |
+          cargo test -p node-webrtc-rust-vendor-sherpa-onnx --release --test lid_allowed_set_test -- \
+            --ignored --nocapture --test-threads=1
+          cargo test -p node-webrtc-rust-vendor-sherpa-onnx --release --lib lid::tests -- \
+            --ignored --nocapture --test-threads=1
+
+      # The shipped musl .node (as the runner image installs it from npm) and this branch's build:
+      # which libonnxruntime they need and whether they import or define OrtGetApiBase.
+      - name: (diag) shipped and branch musl .node linkage
+        if: always()
+        run: |
+          mkdir -p /tmp/shipped && cd /tmp/shipped
+          npm pack @node-webrtc-rust/bindings-linux-x64-musl@latest >/dev/null 2>&1 && tar xzf ./*.tgz
+          node_file=$(find /tmp/shipped -name '*.node' | head -1)
+          echo "--- shipped: $node_file"
+          readelf -d "$node_file" | grep -E 'NEEDED|RPATH|RUNPATH' || true
+          ldd "$node_file" | grep -E 'onnxruntime|sherpa' || true
+          nm -D "$node_file" | grep -E ' Ort' || echo "no Ort symbols"
+          cd "$GITHUB_WORKSPACE"
+          cargo build -p node-webrtc-rust-bindings --release --features silero-vad
+          so=$(ls target/release/libnode_webrtc_rust_bindings.so)
+          echo "--- branch: $so"
+          readelf -d "$so" | grep -E 'NEEDED|RPATH|RUNPATH' || true
+          ldd "$so" | grep -E 'onnxruntime|sherpa' || true
+          nm -D "$so" | grep -E ' Ort' || echo "no Ort symbols"
+
       - name: (a) control, release, under gdb
         if: always()
         run: |

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   callerWindowSimilarity,
@@ -881,9 +881,11 @@ describe('check windows of a re-checked final (speakerCheckWindows)', () => {
     const seen = [...u1({ bargeAt: 107_650 }), ...tail()].sort((a, b) => a.atMs - b.atMs)
     const scene = [t0, late, t2]
     expect([...pairTurnUtterances(scene, seen).merged]).toEqual([])
-    // Decision ee: caller final holding the caller sentence, barge after the caller onset.
-    expect(evaluateTurns(scene, seen, 'p')).toEqual([])
-    expect(unscoredBystanderLeaks(scene, seen)).toHaveLength(1)
+    // 7.6 s of bystander speech before the caller: the gate scored it, so not an unscored leak.
+    expect(evaluateTurns(scene, seen, 'p').join('\n')).toMatch(
+      /turn 0 .*barge_in for the bystander utterance u1/,
+    )
+    expect(unscoredBystanderLeaks(scene, seen)).toEqual([])
   })
 
   it('fails a re-checked final without speakerCheckWindows and never defaults it', () => {
@@ -1603,7 +1605,9 @@ describe('unscored-bystander leak (decision ee; iteration-20 shape)', () => {
   const b1: Turn = {
     role: 'bystander',
     startMs: 10_000,
-    endMs: 12_000,
+    // Iteration 20 (eu-load 43698709106): the bystander was voiced ~600 ms after the utterance
+    // start (10 100) before the caller onset (see ROUNDTRIP.md).
+    endMs: 10_700,
     text: 'Basil and crustones',
     kind: 'background',
   }
@@ -1645,7 +1649,33 @@ describe('unscored-bystander leak (decision ee; iteration-20 shape)', () => {
     const leaks = unscoredBystanderLeaks(T, leakSeen())
     expect(leaks).toHaveLength(1)
     expect(leaks[0]!.words.join(' ')).toBe('basil and crustones')
-    expect(evaluateTurns(T, leakSeen(), 'p')).toEqual([])
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      expect(evaluateTurns(T, leakSeen(), 'p')).toEqual([])
+      expect(log.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(
+        /unscored-bystander leaks: 1 \(u1: basil and crustones\)/,
+      )
+    } finally {
+      log.mockRestore()
+    }
+  })
+
+  it('is not a leak when a full check window of bystander speech precedes the caller', () => {
+    const turns = [{ ...b1, endMs: 11_600 }, c1, b2]
+    expect(unscoredBystanderLeaks(turns, leakSeen())).toEqual([])
+    expect(evaluateTurns(turns, leakSeen(), 'p').join('\n')).toMatch(
+      /barge_in for the bystander utterance u1/,
+    )
+  })
+
+  it('fails when another caller final already holds the caller sentence', () => {
+    const seen = leakSeen().map((e) =>
+      e.type === 'user_speech_final' && e.utteranceId === 'u2'
+        ? { ...e, text: 'charlie one two three', speaker: 'caller', speakerCheckWindows: 1 }
+        : e,
+    )
+    expect(unscoredBystanderLeaks(T, seen)).toEqual([])
+    expect(evaluateTurns(T, seen, 'p').length).toBeGreaterThan(0)
   })
 
   it('fails a barge 1 ms before the caller scene start', () => {

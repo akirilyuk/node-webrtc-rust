@@ -669,6 +669,11 @@ export function exactThresholdCount(sims: number[]): number {
  * Also required (keeps the zero-gap merge guard): the utterance's speech end is strictly after the
  * caller turn's scene start.
  *
+ * And the gate cannot have scored it: the manifest's voiced time from the utterance start to the
+ * caller onset is under {@link CHECK_SPEECH_MS} (the product's 1500 ms `minCheckSpeechMs` check
+ * window). A full window of bystander speech before the caller means the gate scored the
+ * bystander, so a `caller` label there is a real failure, not the unscored `short` shape.
+ *
  * Anything else keeps failing (barge before the caller onset, sentence missing, a bystander-only
  * `caller` final, a second caller utterance). Pairing is by utteranceId.
  */
@@ -719,6 +724,10 @@ export function unscoredBystanderLeaks(
     // at or before it holds no caller audio, so the caller sentence in its text is not from it.
     const endMs = utteranceEndMs(id, seen)
     if (endMs == null || !(endMs > caller.startMs)) return
+    // A full check window of manifest speech between the utterance start and the caller onset
+    // means the gate scored it (`CHECK_SPEECH_MS` is the product's 1500 ms `minCheckSpeechMs`
+    // window): a bystander verdict, not the unscored `short` shape.
+    if (voicedMsBetween(turns, starts[i]!.atMs, caller.startMs) >= CHECK_SPEECH_MS) return
     const own = barges.filter((b) => b.utteranceId === id)
     if (own.length === 0 || own.some((b) => b.atMs < caller.startMs)) return
     const elsewhere = finals.some(
@@ -987,7 +996,7 @@ export function evaluateTurns(
   const distMax = distances.length > 0 ? Math.max(...distances.map((d) => d.distanceMs)) : undefined
   const glue = glueCounts(turns, seen)
   console.log(
-    `${label}: user_utterance_split events: ${splits.length}; merged caller finals: ${mergedFinals.length}; near misses (similarity <= ${NEAR_MISS_SIMILARITY.toFixed(2)}): ${nearMissCount}; min similarity: ${minSimilarity == null ? 'n/a' : minSimilarity.toFixed(2)}; sceneStartMediaMs=${opts.sceneStartMediaMs ?? 'n/a'}; split distance ms min/max: ${distMin ?? 'n/a'}/${distMax ?? 'n/a'}; trailing glue finals: ${glue.trailing}; leading glue finals: ${glue.leading}; exact-threshold (0.75) finals: ${exactThresholdCount(sims)}`,
+    `${label}: user_utterance_split events: ${splits.length}; merged caller finals: ${mergedFinals.length}; near misses (similarity <= ${NEAR_MISS_SIMILARITY.toFixed(2)}): ${nearMissCount}; min similarity: ${minSimilarity == null ? 'n/a' : minSimilarity.toFixed(2)}; sceneStartMediaMs=${opts.sceneStartMediaMs ?? 'n/a'}; split distance ms min/max: ${distMin ?? 'n/a'}/${distMax ?? 'n/a'}; trailing glue finals: ${glue.trailing}; leading glue finals: ${glue.leading}; exact-threshold (0.75) finals: ${exactThresholdCount(sims)}; unscored-bystander leaks: ${leaks.length}${leaks.length > 0 ? ` (${leaks.map((l) => `${l.utteranceId}: ${l.words.join(' ')}`).join('; ')})` : ''}`,
   )
   for (const m of mergedFinals) {
     failures.push(

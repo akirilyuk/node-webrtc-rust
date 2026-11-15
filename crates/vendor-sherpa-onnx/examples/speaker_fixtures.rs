@@ -363,15 +363,6 @@ impl Synth {
         )
     }
 
-    /// A fresh Piper roll of `text` in `voice`: the cached clip is dropped and synthesized again
-    /// (the new roll replaces it in the cache).
-    fn reroll_clip(&mut self, voice: &Voice, text: &str) -> Result<Vec<f32>, String> {
-        let name = Self::cache_name(voice, text);
-        self.clips.remove(&name);
-        let _ = fs::remove_file(self.cache_dir.join(&name));
-        self.clip(voice, text)
-    }
-
     /// 16 kHz mono clip of `text` in `voice` (synthesized once, then read from the cache).
     fn clip(&mut self, voice: &Voice, text: &str) -> Result<Vec<f32>, String> {
         let name = Self::cache_name(voice, text);
@@ -605,85 +596,6 @@ fn babble(
     Ok((mix, segments))
 }
 
-/// A bystander frame counts as audible when its RMS is this far above the babble's voiced level.
-const BYSTANDER_AUDIBLE_OVER_DB: f32 = 3.0;
-/// Least audible bystander speech (ms of 20 ms frames at least [`BYSTANDER_AUDIBLE_OVER_DB`] above
-/// the babble) an S3 bystander turn needs. Measured 2026-11-15 on 120 short bystander turns of 20
-/// fresh Piper rolls of `s3_test_m15` (-15 dB bystander over -15 dB babble): 360-740 ms, median
-/// 620, 5th percentile 460. 300 ms sits under the lowest of them, so today's rolls all pass, and
-/// above the few-frame tail a VAD cannot open on (eu-load 43698709106, turn 7: only the tail of
-/// the bystander was caught). Plan 2026-11-13-speaker-split-other-to-caller, chunk 7b.
-const BYSTANDER_MIN_AUDIBLE_MS: usize = 300;
-/// Redraws (fresh Piper rolls of the same text and voice) per S3 bystander turn before the scene
-/// fails with `bystander_inaudible`.
-const BYSTANDER_MAX_REDRAWS: usize = 8;
-
-/// How audible an S3 bystander clip is over the babble.
-#[derive(Clone, Copy, Debug)]
-struct BystanderMargin {
-    /// ms of 20 ms frames at least [`BYSTANDER_AUDIBLE_OVER_DB`] above the babble's voiced level.
-    audible_ms: usize,
-    /// 90th percentile of the clip's 20 ms frame levels (frames above -55 dBFS) re the babble.
-    p90_db: f32,
-    /// Fresh rolls it took beyond the first.
-    redraws: usize,
-}
-
-fn bystander_margin(clip: &[f32], babble_db: f32) -> BystanderMargin {
-    let frame = SR as usize / 50;
-    let mut levels: Vec<f32> = clip
-        .chunks_exact(frame)
-        .map(|c| {
-            10.0 * (c.iter().map(|x| x * x).sum::<f32>() / frame as f32)
-                .max(1e-12)
-                .log10()
-        })
-        .filter(|db| *db > -55.0)
-        .collect();
-    levels.sort_by(|a, b| a.total_cmp(b));
-    let audible = levels
-        .iter()
-        .filter(|db| **db >= babble_db + BYSTANDER_AUDIBLE_OVER_DB)
-        .count();
-    let p90_db = levels
-        .get(((levels.len().max(1) - 1) as f32 * 0.9) as usize)
-        .map_or(f32::NEG_INFINITY, |db| db - babble_db);
-    BystanderMargin {
-        audible_ms: audible * 20,
-        p90_db,
-        redraws: 0,
-    }
-}
-
-/// Draws a bystander clip until it is audible over the babble (`draw(n)` is the n-th roll, 0 first).
-/// Fails with a `bystander_inaudible` error after [`BYSTANDER_MAX_REDRAWS`] redraws.
-fn draw_audible_bystander<F>(
-    mut draw: F,
-    babble_db: f32,
-) -> Result<(Vec<f32>, BystanderMargin), String>
-where
-    F: FnMut(usize) -> Result<Vec<f32>, String>,
-{
-    let mut worst = 0usize;
-    for attempt in 0..=BYSTANDER_MAX_REDRAWS {
-        let clip = draw(attempt)?;
-        let mut margin = bystander_margin(&clip, babble_db);
-        if margin.audible_ms >= BYSTANDER_MIN_AUDIBLE_MS {
-            margin.redraws = attempt;
-            return Ok((clip, margin));
-        }
-        eprintln!(
-            "bystander-redraw: roll {attempt} audible {} ms (< {BYSTANDER_MIN_AUDIBLE_MS}), p90 {:.1} dB re babble",
-            margin.audible_ms, margin.p90_db
-        );
-        worst = worst.max(margin.audible_ms);
-    }
-    Err(format!(
-        "bystander_inaudible: {} rolls, none with {BYSTANDER_MIN_AUDIBLE_MS} ms of speech {BYSTANDER_AUDIBLE_OVER_DB} dB over the babble (best {worst} ms)",
-        BYSTANDER_MAX_REDRAWS + 1
-    ))
-}
-
 /// Babble scaled so its voiced level is `target_db`.
 fn scale_babble(babble: &mut [f32], target_db: f32) {
     let current = rms_voiced_db(babble, SR);
@@ -713,8 +625,6 @@ struct Scene {
     limiter_max_gr_db: f32,
     /// Voiced RMS in dBFS of the main voice after the limiter; `None` without main speech.
     effective_main_db: Option<f32>,
-    /// Audibility of each S3 bystander turn over the babble (empty for other scenes).
-    bystander_margins: Vec<BystanderMargin>,
     sha256_16k: String,
     sha256_48k: String,
 }
@@ -728,8 +638,6 @@ struct Ctx {
     longs: Vec<String>,
     out: PathBuf,
     scenes: Vec<Scene>,
-    /// Margins of the S3 bystander turns of the scene being built; `finish` moves them to it.
-    bystander_margins: Vec<BystanderMargin>,
     /// `--min-turn-gap-ms`: floor of every S3 turn gap (0 keeps the drawn gap).
     min_turn_gap_ms: usize,
     /// `--only`: scene id prefixes to generate; empty generates every scene.
@@ -832,7 +740,6 @@ impl Ctx {
             segments,
             limiter_max_gr_db,
             effective_main_db,
-            bystander_margins: std::mem::take(&mut self.bystander_margins),
             sha256_16k,
             sha256_48k,
         });
@@ -1283,20 +1190,10 @@ impl Ctx {
                     self.long_bystander_db,
                 );
                 bystander_index += 1;
-                let target_db = bystander_level_db(main_db, rel_db);
-                let synth = &mut self.synth;
-                let (clip, margin) = draw_audible_bystander(
-                    |attempt| {
-                        let raw = if attempt == 0 {
-                            synth.clip(&bystander, &text)?
-                        } else {
-                            synth.reroll_clip(&bystander, &text)?
-                        };
-                        Ok(normalize_to(&raw, target_db))
-                    },
-                    (main_db + level_db) as f32,
-                )?;
-                self.bystander_margins.push(margin);
+                let clip = normalize_to(
+                    &self.synth.clip(&bystander, &text)?,
+                    bystander_level_db(main_db, rel_db),
+                );
                 let seg = segment("bystander", &bystander, &text, pos, clip.len(), false);
                 let start = pos;
                 pos += clip.len() + ms(self.turn_gap_ms(&mut rng));
@@ -1504,22 +1401,6 @@ fn manifest_json(scenes: &[Scene]) -> String {
         match scene.effective_main_db {
             Some(v) => out.push_str(&format!("      \"effective_main_db\": {v:.2},\n")),
             None => out.push_str("      \"effective_main_db\": null,\n"),
-        }
-        if !scene.bystander_margins.is_empty() {
-            let rows: Vec<String> = scene
-                .bystander_margins
-                .iter()
-                .map(|m| {
-                    format!(
-                        "{{\"audible_ms\": {}, \"p90_db\": {:.1}, \"redraws\": {}}}",
-                        m.audible_ms, m.p90_db, m.redraws
-                    )
-                })
-                .collect();
-            out.push_str(&format!(
-                "      \"bystander_margins\": [{}],\n",
-                rows.join(", ")
-            ));
         }
         out.push_str(&format!(
             "      \"wav48\": \"scenes/{}.wav\",\n",
@@ -1789,7 +1670,6 @@ fn run() -> Result<(), String> {
         longs: lines_of(LONG),
         out: args.out.clone(),
         scenes: Vec::new(),
-        bystander_margins: Vec::new(),
         min_turn_gap_ms: args.min_turn_gap_ms,
         only: args.only.clone(),
         bystander_db: args.bystander_db,
@@ -1930,52 +1810,6 @@ mod tests {
         (0..n)
             .map(|i| amp * (2.0 * std::f32::consts::PI * freq * i as f32 / SR as f32).sin())
             .collect()
-    }
-
-    /// 1 s of 440 Hz at `db` dBFS RMS.
-    fn tone_at(db: f32) -> Vec<f32> {
-        sine(SR as usize, 10f32.powf(db / 20.0) * 2f32.sqrt(), 440.0)
-    }
-
-    #[test]
-    fn quiet_bystander_is_redrawn_and_a_normal_one_kept() {
-        // Babble at -41 dBFS. First roll 10 dB under it (no audible frame), second 9 dB over it.
-        let babble = -41.0;
-        let mut rolls = 0;
-        let (clip, margin) = draw_audible_bystander(
-            |n| {
-                rolls += 1;
-                Ok(if n == 0 {
-                    tone_at(-51.0)
-                } else {
-                    tone_at(-32.0)
-                })
-            },
-            babble,
-        )
-        .unwrap();
-        assert_eq!(rolls, 2);
-        assert_eq!(margin.redraws, 1);
-        assert_eq!(margin.audible_ms, 1000);
-        assert!(!clip.is_empty());
-        // A normal first roll is kept without a redraw.
-        let (_, kept) = draw_audible_bystander(|_| Ok(tone_at(-32.0)), babble).unwrap();
-        assert_eq!(kept.redraws, 0);
-    }
-
-    #[test]
-    fn bystander_never_audible_fails_with_a_named_error() {
-        let mut rolls = 0;
-        let err = draw_audible_bystander(
-            |_| {
-                rolls += 1;
-                Ok(tone_at(-50.0))
-            },
-            -41.0,
-        )
-        .unwrap_err();
-        assert!(err.starts_with("bystander_inaudible"), "{err}");
-        assert_eq!(rolls, BYSTANDER_MAX_REDRAWS + 1);
     }
 
     #[test]
@@ -2437,7 +2271,6 @@ mod tests {
             ],
             limiter_max_gr_db: 0.0,
             effective_main_db: Some(-20.0),
-            bystander_margins: Vec::new(),
             sha256_16k: "a".into(),
             sha256_48k: "b".into(),
         };

@@ -256,36 +256,46 @@ jobs:
           echo "SHERPA_LID_MODEL_PATH=$GITHUB_WORKSPACE/examples/voice-agent-local-sherpa/.models/sherpa-onnx-whisper-tiny" >> "$GITHUB_ENV"
 
       - name: Install gdb (native stack on a crash)
-        run: apk add --no-cache gdb >/dev/null && gdb --version | head -1
+        run: apk add --no-cache gdb binutils >/dev/null && gdb --version | head -1
 
-      - name: Build LID test binaries (debug + release)
+      - name: Build LID test binaries (release)
         run: |
-          for profile in "" "--release"; do
-            cargo test -p node-webrtc-rust-vendor-sherpa-onnx $profile --no-run --message-format=json \
-              --test lid_shared_model_test --test lid_allowed_set_test --lib \
-              | grep -o '"executable":"[^"]*"' | sed 's/"executable":"\(.*\)"/\1/'
-          done | tee lid-test-bins.txt
-          echo "LID_CONTROL_DEBUG_BIN=$(grep '/debug/deps/lid_shared_model_test-' lid-test-bins.txt | tail -1)" >> "$GITHUB_ENV"
+          cargo test -p node-webrtc-rust-vendor-sherpa-onnx --release --no-run --message-format=json \
+            --test lid_shared_model_test --test lid_allowed_set_test --lib \
+            | grep -o '"executable":"[^"]*"' | sed 's/"executable":"\(.*\)"/\1/' > lid-test-bins.txt
+          cat lid-test-bins.txt
+          echo "LID_CONTROL_BIN=$(grep '/release/deps/lid_shared_model_test-' lid-test-bins.txt | tail -1)" >> "$GITHUB_ENV"
 
-      - name: (a1) control, debug, under gdb
+      # Confirm step: which ONNX Runtime symbols the test binary defines or imports, and where the
+      # dynamic loader binds OrtGetApiBase. An Ort* symbol defined in the executable interposes the
+      # one in libonnxruntime.so that libsherpa-onnx-c-api.so uses.
+      - name: (diag) Ort symbols in the control binary
         if: always()
         run: |
-          gdb -batch -ex run -ex bt -ex 'info threads' -ex 'thread apply all bt 25' \
-            -return-child-result \
-            --args "$LID_CONTROL_DEBUG_BIN" --ignored --nocapture --test-threads=1
+          echo "--- nm -D --defined-only | Ort"; nm -D --defined-only "$LID_CONTROL_BIN" | grep -i ' Ort' || echo none
+          echo "--- nm (all) | OrtGetApiBase"; nm "$LID_CONTROL_BIN" | grep -i 'OrtGetApiBase' || echo none
+          echo "--- nm -D --undefined-only | Ort"; nm -D --undefined-only "$LID_CONTROL_BIN" | grep -i ' Ort' || echo none
+          echo "--- NEEDED"; readelf -d "$LID_CONTROL_BIN" | grep NEEDED || true
+          echo "--- ldd"; ldd "$LID_CONTROL_BIN" || true
+          for so in /opt/sherpa-musl/lib/libsherpa-onnx-c-api.so /usr/lib/libonnxruntime.so.1; do
+            echo "--- $so NEEDED"; readelf -d "$so" | grep NEEDED || true
+            echo "--- $so OrtGetApiBase"; nm -D "$so" | grep OrtGetApiBase || echo none
+          done
 
-      - name: (a2) control, release
+      - name: (a) control, release, under gdb
         if: always()
         run: |
+          gdb -batch -ex run -ex bt -ex 'info sharedlibrary' -return-child-result \
+            --args "$LID_CONTROL_BIN" --ignored --nocapture --test-threads=1
+
+      # Confirm step: the same control on origin/main crates (no ort alternative-backend in the graph).
+      - name: (diag) control on origin/main crates, release
+        if: always()
+        run: |
+          git fetch --no-tags --depth=1 origin main
+          git worktree add --detach /tmp/nwr-main origin/main
+          cd /tmp/nwr-main
           cargo test -p node-webrtc-rust-vendor-sherpa-onnx --release --test lid_shared_model_test -- \
-            --ignored --nocapture --test-threads=1
-
-      - name: (a3) control, debug, RUST_MIN_STACK=16 MiB
-        if: always()
-        env:
-          RUST_MIN_STACK: '16777216'
-        run: |
-          cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test lid_shared_model_test -- \
             --ignored --nocapture --test-threads=1
 
       - name: (b) allowed-set scorer on fixtures, release
@@ -294,26 +304,10 @@ jobs:
           cargo test -p node-webrtc-rust-vendor-sherpa-onnx --release --test lid_allowed_set_test -- \
             --ignored --nocapture --test-threads=1
 
-      - name: (b) allowed-set scorer on fixtures, debug, RUST_MIN_STACK=16 MiB
-        if: always()
-        env:
-          RUST_MIN_STACK: '16777216'
-        run: |
-          cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test lid_allowed_set_test -- \
-            --ignored --nocapture --test-threads=1
-
       - name: (c) scorer failure falls back to sherpa, release
         if: always()
         run: |
           cargo test -p node-webrtc-rust-vendor-sherpa-onnx --release --lib lid::tests -- \
-            --ignored --nocapture --test-threads=1
-
-      - name: (c) scorer failure falls back to sherpa, debug, RUST_MIN_STACK=16 MiB
-        if: always()
-        env:
-          RUST_MIN_STACK: '16777216'
-        run: |
-          cargo test -p node-webrtc-rust-vendor-sherpa-onnx --lib lid::tests -- \
             --ignored --nocapture --test-threads=1
 
   integration-test:

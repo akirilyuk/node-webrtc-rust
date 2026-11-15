@@ -35,6 +35,15 @@ pub struct AgentInternal {
     pub(crate) chan_candidate_tx: ChanCandidateTx,
     pub(crate) chan_candidate_pair_tx: Mutex<Option<mpsc::Sender<()>>>,
     pub(crate) chan_state_tx: Mutex<Option<mpsc::Sender<ConnectionState>>>,
+    /// Connection states queued for the state-change handler (incremented before the send).
+    pub(crate) states_sent: AtomicU64,
+    /// Connection states the notifier has handed to the handler (or dropped: no handler, closed).
+    pub(crate) states_delivered: AtomicU64,
+    pub(crate) states_delivered_notify: tokio::sync::Notify,
+    /// Test hook: when set, the state notifier takes one permit after `recv()` and before it calls
+    /// the handler, so a test can hold delivery of a received state. Not compiled outside tests.
+    #[cfg(test)]
+    pub(crate) state_notifier_gate: ArcSwapOption<tokio::sync::Semaphore>,
 
     pub(crate) on_connection_state_change_hdlr: ArcSwapOption<Mutex<OnConnectionStateChangeHdlrFn>>,
     pub(crate) on_selected_candidate_pair_change_hdlr:
@@ -109,6 +118,11 @@ impl AgentInternal {
             chan_candidate_tx: Arc::new(Mutex::new(Some(chan_candidate_tx))),
             chan_candidate_pair_tx: Mutex::new(Some(chan_candidate_pair_tx)),
             chan_state_tx: Mutex::new(Some(chan_state_tx)),
+            states_sent: AtomicU64::new(0),
+            states_delivered: AtomicU64::new(0),
+            states_delivered_notify: tokio::sync::Notify::new(),
+            #[cfg(test)]
+            state_notifier_gate: ArcSwapOption::empty(),
 
             on_connection_state_change_hdlr: ArcSwapOption::empty(),
             on_selected_candidate_pair_change_hdlr: ArcSwapOption::empty(),
@@ -322,7 +336,11 @@ impl AgentInternal {
             {
                 let chan_state_tx = self.chan_state_tx.lock().await;
                 if let Some(tx) = &*chan_state_tx {
-                    let _ = tx.send(new_state).await;
+                    self.states_sent.fetch_add(1, Ordering::SeqCst);
+                    if tx.send(new_state).await.is_err() {
+                        // The notifier is gone: nothing will deliver this state, do not wait for it.
+                        self.mark_state_delivered();
+                    }
                 }
             }
         }
@@ -1070,6 +1088,64 @@ impl AgentInternal {
         }
     }
 
+    /// Calls the state-change handler with one received state, then counts it as delivered.
+    async fn deliver_state(&self, s: ConnectionState) {
+        #[cfg(test)]
+        if let Some(gate) = &*self.state_notifier_gate.load() {
+            if let Ok(permit) = gate.acquire().await {
+                permit.forget();
+            }
+        }
+        if let Some(handler) = &*self.on_connection_state_change_hdlr.load() {
+            let mut f = handler.lock().await;
+            f(s).await;
+        }
+        self.mark_state_delivered();
+    }
+
+    pub(crate) fn mark_state_delivered(&self) {
+        self.states_delivered.fetch_add(1, Ordering::SeqCst);
+        self.states_delivered_notify.notify_waiters();
+    }
+
+    /// Waits (bounded by `STATE_DELIVERY_TIMEOUT`) until the handler has been called with every
+    /// state queued so far. Called by `dial()` / `accept()` after the pair is selected, so a caller
+    /// that reads a state mirrored by the handler (webrtc `RTCIceTransport::state`) sees it.
+    /// On timeout it logs and returns: the connect goes on exactly as before this wait existed.
+    /// Returns `Err(ErrCanceledByCaller)` when `cancel_rx` fires (or its sender is dropped) during
+    /// the wait, like the `on_connected` wait in `dial()` / `accept()`.
+    pub(crate) async fn wait_states_delivered(
+        &self,
+        cancel_rx: &mut mpsc::Receiver<()>,
+    ) -> Result<()> {
+        let target = self.states_sent.load(Ordering::SeqCst);
+        let started = Instant::now();
+        let deadline = started + STATE_DELIVERY_TIMEOUT;
+        loop {
+            let notified = self.states_delivered_notify.notified();
+            tokio::pin!(notified);
+            // Register before checking, so a delivery between the check and the await is not lost.
+            notified.as_mut().enable();
+            if self.states_delivered.load(Ordering::SeqCst) >= target {
+                return Ok(());
+            }
+            let timed_out = tokio::select! {
+                r = tokio::time::timeout_at(deadline, notified) => r.is_err(),
+                _ = cancel_rx.recv() => return Err(Error::ErrCanceledByCaller),
+            };
+            if timed_out {
+                log::warn!(
+                    "[{}]: ICE state delivery timed out: handler not called for {} queued state(s) within {:?} (waitedMs={})",
+                    self.get_name(),
+                    target.saturating_sub(self.states_delivered.load(Ordering::SeqCst)),
+                    STATE_DELIVERY_TIMEOUT,
+                    started.elapsed().as_millis()
+                );
+                return Ok(());
+            }
+        }
+    }
+
     pub(super) fn start_on_connection_state_change_routine(
         self: &Arc<Self>,
         mut chan_state_rx: mpsc::Receiver<ConnectionState>,
@@ -1097,10 +1173,7 @@ impl AgentInternal {
                 tokio::select! {
                     opt_state = chan_state_rx.recv() => {
                         if let Some(s) = opt_state {
-                            if let Some(handler) = &*ai.on_connection_state_change_hdlr.load() {
-                                let mut f = handler.lock().await;
-                                f(s).await;
-                            }
+                            ai.deliver_state(s).await;
                         } else {
                             while let Some(c) = chan_candidate_rx.recv().await {
                                 if let Some(handler) = &*ai.on_candidate_hdlr.load() {
@@ -1119,10 +1192,7 @@ impl AgentInternal {
                             }
                         } else {
                             while let Some(s) = chan_state_rx.recv().await {
-                                if let Some(handler) = &*ai.on_connection_state_change_hdlr.load() {
-                                    let mut f = handler.lock().await;
-                                    f(s).await;
-                                }
+                                ai.deliver_state(s).await;
                             }
                             break;
                         }

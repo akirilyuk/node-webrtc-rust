@@ -134,6 +134,8 @@ pub struct SharedSttRecognizer {
     recognizer: Mutex<OnlineRecognizer>,
     pub(crate) active_sessions: Arc<AtomicUsize>,
     batcher: std::sync::OnceLock<crate::stt_batch::DecodeBatcher>,
+    /// Chunk grid of this model, probed once on first finalize (`finalize_flush`).
+    chunk_geometry: std::sync::OnceLock<Option<crate::finalize_flush::ChunkGeometry>>,
 }
 
 /// Shared offline TTS engine (one slot in a [`TtsEnginePool`]).
@@ -467,7 +469,20 @@ impl SharedSttRecognizer {
             recognizer: Mutex::new(recognizer),
             active_sessions: Arc::new(AtomicUsize::new(0)),
             batcher: std::sync::OnceLock::new(),
+            chunk_geometry: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Chunk grid of this model. `recognizer` is the one this value guards (the caller holds it).
+    pub(crate) fn chunk_geometry(
+        &self,
+        recognizer: &OnlineRecognizer,
+    ) -> Option<crate::finalize_flush::ChunkGeometry> {
+        *self.chunk_geometry.get_or_init(|| {
+            let geometry = crate::finalize_flush::probe_chunk_geometry(recognizer);
+            crate::loader::voice_debug(format!("sherpa stt chunk geometry {geometry:?}"));
+            geometry
+        })
     }
 
     /// The decode thread of this model, started on first use.

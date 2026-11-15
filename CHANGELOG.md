@@ -13,6 +13,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **speech, sdk:** behaviour change for projects that already set `speakerGate.splitOnSpeakerChange: true`. The option now splits in both directions. Before, someone else followed by the caller upgraded the whole utterance to `caller` and released the barge-in, so the other voice's words ended up in the caller's final. Now that change splits the utterance: the first part stays `other` (never barges in, ignored with `onMismatch: 'drop'`), the second part is `caller` and its barge-in fires on the confirming window. The cut goes back to the end of the longest quiet stretch before the caller's first word; when the voices run together, shorter sub-windows locate the change, bounded by `verifyTimeoutMs`. Other-to-caller confirms on one `caller` window, caller-to-other still on two. An other-to-caller split also needs one `other` window that scored under 0.20 before the caller's; when every `other` window was close to the threshold, the whole utterance is upgraded to `caller` instead, so the caller's own words are not cut. With the option off nothing changes.
 - **speech:** when an other-to-caller split is skipped (`not_speaking`, `replay_overflow`, `replay_not_aligned`, `no_replay_pcm`, `split_out_of_range`, `stt_unavailable`), the utterance falls back to `caller` with the other voice's words in it, the held barge-in is released, and that utterance is not split again. With `onMismatch: 'drop'` it gives a `caller` final, never `user_speech_ignored`.
 - **sdk:** `user_utterance_split` `from` and `to` can be either label (`caller` to `other`, or `other` to `caller`); they are no longer fixed to `caller` and `other`.
+- **speech:** `splitOnSpeakerChange: true` now implies the re-check hold (`recheckOnOther`). With the split on and `recheckOnOther: false`, an `other` first window used to suppress the barge-in for good, so an utterance that fell back to `caller` after a skipped split never barged in.
 
 ### Added
 
@@ -22,6 +23,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **speech:** a split change for an utterance that is no longer live is counted as stale before any STT check, so a stale other-to-caller change can no longer upgrade the gate.
+- **ice:** a fast local connect could leave a peer stuck in `connecting` until the connect-stall watchdog closed it: ICE `dial()`/`accept()` returned before the connection state reached the transport, so DTLS never started. They now wait (bounded at 2 s, warned with `waitedMs`) until the state is delivered, and a cancel during that wait still returns at once.
+- **sherpa stt:** a final no longer drops up to ~0.8 s of trailing speech. `finalize_utterance` now feeds zeros after the 640 ms tail padding until every sample of the utterance has gone through a decode step. Before, the Kroko English model ("delta seven eight nine" came out as "Delta seven") lost the words after its last full 1.28 s chunk. The added padding is capped by `FINALIZE_MAX_EXTRA_PADDING_MS`.
 
 ## [0.18.5] - 2026-11-14
 

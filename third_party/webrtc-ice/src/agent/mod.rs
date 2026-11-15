@@ -3,6 +3,8 @@ mod agent_failover_test;
 #[cfg(test)]
 mod agent_gather_test;
 #[cfg(test)]
+mod agent_state_delivery_test;
+#[cfg(test)]
 pub(crate) mod agent_stun_send_test;
 #[cfg(test)]
 mod agent_test;

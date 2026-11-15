@@ -414,6 +414,37 @@ describe('evaluateNoPauseScene', () => {
     expect(r.failures.some((f) => f.includes('no barge_in on caller utterance u3'))).toBe(true)
   })
 
+  it('names a missing caller barge-in as a harness failure when the reply started after the qualifying partial (decision ii)', () => {
+    const partial: Seen = {
+      type: 'user_speech_partial',
+      atMs: 13_000,
+      utteranceId: 'u3',
+      text: 'please check',
+    }
+    const noBarge = clean().filter((e) => e.type !== 'barge_in')
+    const late = [
+      ...noBarge,
+      partial,
+      { type: 'agent_speaking_start', atMs: 13_500 },
+      { type: 'agent_speaking_end', atMs: 30_000 },
+    ].sort((a, b) => a.atMs - b.atMs)
+    const lateOut = evaluateNoPauseScene(segments, late, 's', MEDIA0).failures.join('\n')
+    expect(lateOut).toMatch(
+      /harness: no reply playing at the qualifying partial at 13000 ms \(reply started at 13500 ms\)/,
+    )
+    expect(lateOut).not.toMatch(/no barge_in/)
+    // Reply playing at the partial and no barge-in: a real miss.
+    const playing = [
+      ...noBarge,
+      { type: 'agent_speaking_start', atMs: 7_500 },
+      partial,
+      { type: 'agent_speaking_end', atMs: 30_000 },
+    ].sort((a, b) => a.atMs - b.atMs)
+    const playingOut = evaluateNoPauseScene(segments, playing, 's', MEDIA0).failures.join('\n')
+    expect(playingOut).toMatch(/no barge_in on caller utterance u3/)
+    expect(playingOut).not.toMatch(/harness/)
+  })
+
   it('follows a re-cut chain to the caller utterance that ends in a final', () => {
     const seen: Seen[] = [
       start('u1', 350),

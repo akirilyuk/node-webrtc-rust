@@ -23,6 +23,7 @@ import {
   voicedMsBetween,
   warmReplyPath,
   WARM_REPLY_PHRASE,
+  WarmReplySendError,
   WarmReplyTimeoutError,
   type Seen,
   type Turn,
@@ -430,6 +431,20 @@ describe('evaluateTurns', () => {
     expect(replyStartedAfterQualifyingPartial({ utteranceId: 'u1' }, playing)).toBeUndefined()
     // No reply at all in the pass: stays a real miss.
     expect(replyStartedAfterQualifyingPartial({ utteranceId: 'u1' }, noBarge)).toBeUndefined()
+  })
+
+  it('a qualifying partial during the late reply stays a real no barge_in', () => {
+    const noBarge = healthy().filter((e) => e.type !== 'barge_in')
+    const seen = [
+      ...noBarge,
+      ev('agent_speaking_start', 11_971),
+      ev('user_speech_partial', 12_200, { utteranceId: 'u1', text: 'please check my' }),
+      ev('agent_speaking_end', 30_000),
+    ].sort((a, b) => a.atMs - b.atMs)
+    const out = evaluateTurns(TURNS, seen, 'p').join('\n')
+    expect(out).toMatch(/no barge_in/)
+    expect(out).not.toMatch(/harness/)
+    expect(replyStartedAfterQualifyingPartial({ utteranceId: 'u1' }, seen)).toBeUndefined()
   })
 
   it('reports the first reply latency from the first final to the next agent_speaking_start', () => {
@@ -1793,6 +1808,22 @@ describe('warm reply path before the scene anchor (decision ii)', () => {
     await expect(
       warmReplyPath({ send: () => Promise.resolve(), latch, timeoutMs: 20 }),
     ).rejects.toBeInstanceOf(WarmReplyTimeoutError)
+  })
+
+  it('fails at once with the cause when the warm-up send rejects', async () => {
+    const latch = new AgentSpeakingEndLatch()
+    const cause = new Error('tts engine failed to load')
+    const startedAt = Date.now()
+    const err = await warmReplyPath({
+      send: () => Promise.reject(cause),
+      latch,
+      timeoutMs: 10_000,
+    }).catch((e: unknown) => e)
+    expect(Date.now() - startedAt).toBeLessThan(1_000)
+    expect(err).toBeInstanceOf(WarmReplySendError)
+    expect(err).not.toBeInstanceOf(WarmReplyTimeoutError)
+    expect((err as Error).cause).toBe(cause)
+    expect((err as Error).message).toMatch(/tts engine failed to load/)
   })
 
   it('test hook delays only the first send of a pass, and is a pass-through when unset', async () => {

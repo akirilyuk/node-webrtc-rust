@@ -208,7 +208,21 @@ export function replyStartedAfterQualifyingPartial(
   const late = seen.find(
     (e) => e.atMs > partial.atMs && e.type === SPEECH_EVENT_TYPE.agentSpeakingStart,
   )
-  return late != null ? { partialAtMs: partial.atMs, replyStartAtMs: late.atMs } : undefined
+  if (late == null) return undefined
+  // A later qualifying partial of the same utterance while that reply played was a chance to
+  // barge in: a real miss, not a harness one.
+  const lateEnd =
+    seen.find((e) => e.atMs > late.atMs && e.type === SPEECH_EVENT_TYPE.agentSpeakingEnd)?.atMs ??
+    Number.POSITIVE_INFINITY
+  const partialDuringReply = seen.some(
+    (e) =>
+      e.type === SPEECH_EVENT_TYPE.userSpeechPartial &&
+      e.utteranceId === start.utteranceId &&
+      sttPartialTokenCount(e.text ?? '') >= MIN_STT_PARTIAL_TOKENS &&
+      e.atMs >= late.atMs &&
+      e.atMs <= lateEnd,
+  )
+  return partialDuringReply ? undefined : { partialAtMs: partial.atMs, replyStartAtMs: late.atMs }
 }
 
 /** Named harness failure for a caller turn whose qualifying partial came before the reply started. */
@@ -254,6 +268,19 @@ export class WarmReplyTimeoutError extends Error {
   }
 }
 
+export class WarmReplySendError extends Error {
+  constructor(
+    readonly waitedMs: number,
+    cause: unknown,
+  ) {
+    super(
+      `harness: warm-up reply sendTextToTTS failed (waitedMs=${waitedMs}): ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    )
+    this.name = 'WarmReplySendError'
+  }
+}
+
 /**
  * Synthesizes one short reply through `send` (the agent's `sendTextToTTS`) and waits for its
  * `agent_speaking_end` on `latch`, bounded by `timeoutMs`. Ends on the event, never on a sleep.
@@ -266,13 +293,21 @@ export async function warmReplyPath(params: {
 }): Promise<number> {
   const startedAt = Date.now()
   const baseline = params.latch.endEventsSeen()
-  const ended = params.latch.waitAfterCount(baseline, params.timeoutMs ?? WARM_REPLY_TIMEOUT_MS)
-  void params.send(WARM_REPLY_PHRASE).catch(() => undefined)
-  try {
-    await ended
-  } catch {
-    throw new WarmReplyTimeoutError(Date.now() - startedAt)
-  }
+  const ended = params.latch
+    .waitAfterCount(baseline, params.timeoutMs ?? WARM_REPLY_TIMEOUT_MS)
+    .catch(() => {
+      throw new WarmReplyTimeoutError(Date.now() - startedAt)
+    })
+  // A rejected send fails at once with its cause, never after the timeout.
+  const sendFailed = new Promise<never>((_, reject) => {
+    params.send(WARM_REPLY_PHRASE).catch((cause: unknown) => {
+      reject(new WarmReplySendError(Date.now() - startedAt, cause))
+    })
+  })
+  // Neither loser of the race may surface later as an unhandled rejection.
+  ended.catch(() => undefined)
+  sendFailed.catch(() => undefined)
+  await Promise.race([ended, sendFailed])
   return Date.now() - startedAt
 }
 

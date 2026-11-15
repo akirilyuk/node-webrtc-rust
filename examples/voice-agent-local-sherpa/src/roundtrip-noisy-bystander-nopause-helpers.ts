@@ -402,6 +402,28 @@ export function evaluateNoPauseScene(
     }
   }
 
+  // A bounded leak means the cut was early, so it can only have removed the caller's head, never
+  // mid-sentence words. Check that on the caller final (also for `long` callers), without an exact
+  // every-word match (one STT substitution must not fail the scene).
+  const callerBounded = boundedLeaks.filter((l) => l.utteranceId === callerId)
+  if (callerId != null && callerFinal != null && callerBounded.length > 0) {
+    const leakWords = new Set(callerBounded.flatMap((l) => l.words))
+    const fw = words(callerFinal.text ?? '')
+    const head = words(caller.text).slice(0, 2)
+    if (head.length > 0 && !head.some((w) => fw.includes(w))) {
+      failures.push(
+        `${tag}: bounded leak with lost caller head (${head.join(' ')}): "${callerFinal.text ?? ''}"`,
+      )
+    }
+    const kept = fw.filter((w) => !leakWords.has(w)).join(' ')
+    const sim = callerWindowSimilarity(caller.text, kept)
+    if (sim < DEFAULT_BARGE_PHRASE_MIN_SIMILARITY) {
+      failures.push(
+        `${tag}: bounded leak with lost caller words (similarity ${sim.toFixed(2)}): "${callerFinal.text ?? ''}"`,
+      )
+    }
+  }
+
   for (const f of finals.values()) {
     console.log(
       `${label}: final ${String(f.utteranceId)} speaker=${String(f.speaker)} rechecked=${String(f.speakerRechecked)} speakerCheckWindows=${String(f.speakerCheckWindows)}`,

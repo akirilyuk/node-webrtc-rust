@@ -303,6 +303,39 @@ describe('evaluateNoPauseScene', () => {
       expect(bad.failures.some((f) => f.includes('leading glue'))).toBe(true)
     })
 
+    it('bounded leak with both head words lost fails on the head check', () => {
+      const r = evaluateNoPauseScene(segments, bounded(11_664, 'madrid my order'), 's', MEDIA0)
+      expect(
+        r.failures.some((f) => f.includes('bounded leak with lost caller head (please check)')),
+      ).toBe(true)
+    })
+
+    const longSegs = segments.map((s) =>
+      s.role === 'main' && !s.enroll
+        ? {
+            ...s,
+            kind: 'long' as const,
+            text: 'please check my broken order from yesterday evening',
+          }
+        : s,
+    )
+    it('long caller with a bounded leak and no caller words fails', () => {
+      const r = evaluateNoPauseScene(longSegs, bounded(11_664, 'madrid tonight'), 's', MEDIA0)
+      expect(r.failures.some((f) => f.includes('lost caller head'))).toBe(true)
+      expect(r.failures.some((f) => f.includes('lost caller words'))).toBe(true)
+    })
+
+    it('long caller with a bounded leak and one STT substitution passes', () => {
+      const r = evaluateNoPauseScene(
+        longSegs,
+        bounded(11_664, 'madrid please check my broke order from yesterday evening'),
+        's',
+        MEDIA0,
+      )
+      expect(r.boundedLeaks.map((l) => l.words)).toEqual([['madrid']])
+      expect(r.failures).toEqual([])
+    })
+
     it('a lost caller word still fails with a bounded split', () => {
       const r = evaluateNoPauseScene(segments, bounded(11_664, 'please'), 's', MEDIA0)
       expect(r.failures.some((f) => f.includes('similarity'))).toBe(true)

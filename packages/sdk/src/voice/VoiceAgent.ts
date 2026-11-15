@@ -451,7 +451,9 @@ function jsEventTypeToString(eventType: JsSpeechEventType): SpeechEventType {
 export function languageIdAllowlistMaxGap(value: number | undefined): number | undefined {
   if (value === undefined) return undefined
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
-    throw new TypeError(`languageId.allowlistMaxGap must be a finite number >= 0, got ${String(value)}`)
+    throw new TypeError(
+      `languageId.allowlistMaxGap must be a finite number >= 0, got ${String(value)}`,
+    )
   }
   return value
 }

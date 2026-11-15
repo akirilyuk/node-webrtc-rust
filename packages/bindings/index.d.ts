@@ -428,6 +428,8 @@ export interface JsLanguageIdConfig {
   enabled?: boolean
   modelPath?: string
   allowlist?: Array<string>
+  /** Max Whisper logit gap for choosing an allowlisted language over an out-of-list top pick. */
+  allowlistMaxGap?: number
   minSpeechMs?: number
   continuous?: boolean
   timing?: string

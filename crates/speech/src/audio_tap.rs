@@ -8,6 +8,8 @@
 //!   as `inbound-<pid>-a<agent>-seg<NNNN>.wav` (a segment per VAD speech end, or every 10 s).
 //! - [`UtteranceTap`]: the PCM the STT actor pushes to the provider, written as
 //!   `stt-in-<pid>-a<agent>-utt<key>.wav` (one file per utterance).
+//! - [`write_lid_in`]: the exact mono 16 kHz clip handed to the LID provider, written as
+//!   `lid-in-<pid>-a<agent>-utt<key>-p<pass>.wav` (one file per identify call).
 //! - [`TtsOutTap`]: the stereo 48 kHz frames the TTS drain writes to the outbound track, written
 //!   as `tts-out-<pid>-a<agent>-utt<NNNN>[-cut].wav` (one file per utterance; `-cut` when a
 //!   barge-in or stop ended it). Post-utterance silence is not included. Capped like other
@@ -83,6 +85,22 @@ fn write_file_async(path: PathBuf, bytes: Vec<u8>) {
             eprintln!("[speech] audio tap write failed: {}: {err}", path.display());
         }
     });
+}
+
+/// Writes the clip passed to `LanguageIdProvider::identify` for record `key`, pass `pass`
+/// (1 = first identify, 2 = second pass), as `lid-in-<pid>-a<agent>-utt<key>-p<pass>.wav`.
+pub fn write_lid_in(dir: &Path, agent_id: u64, key: u64, pass: u32, mono16k: &[u8]) {
+    if mono16k.is_empty() {
+        return;
+    }
+    let name = format!(
+        "lid-in-{}-a{}-utt{}-p{}.wav",
+        std::process::id(),
+        agent_id,
+        key,
+        pass
+    );
+    write_file_async(dir.join(name), wav_bytes(mono16k, 16_000, 1));
 }
 
 /// Collects the PCM of one utterance and writes it as one WAV on [`UtteranceTap::flush`].
@@ -267,6 +285,22 @@ mod tests {
             u32::from_le_bytes([wav[40], wav[41], wav[42], wav[43]]),
             640
         );
+    }
+
+    #[test]
+    fn lid_in_tap_writes_one_named_wav() {
+        let dir = unique_dir("lid-in");
+        super::write_lid_in(dir, 7, 3, 2, &[1u8; 640]);
+        super::write_lid_in(dir, 7, 4, 1, &[]);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let files = wav_files(dir);
+        assert_eq!(files.len(), 1, "{files:?}");
+        let name = files[0].file_name().unwrap().to_string_lossy().to_string();
+        assert!(
+            name.starts_with("lid-in-") && name.ends_with("-a7-utt3-p2.wav"),
+            "{name}"
+        );
+        assert_eq!(std::fs::metadata(&files[0]).unwrap().len(), 44 + 640);
     }
 
     #[test]

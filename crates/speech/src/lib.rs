@@ -53,6 +53,8 @@ pub mod config;
 pub mod error;
 pub mod events;
 pub mod inbound_pump;
+#[cfg(any(feature = "silero-vad", feature = "ort-shared-backend"))]
+pub mod ort_backend;
 pub mod otel;
 pub mod pcm;
 pub mod pipeline;

@@ -8,8 +8,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **lid:** with a `languageId.allowlist`, language ID now decides among the allowed languages. The Whisper language logits are scored in-process (same model files, same ONNX Runtime as sherpa-onnx): when the top language is outside the allowlist but within `languageId.allowlistMaxGap` (default 3.0 logits) of the best allowed one, the allowed one is reported. Beyond the gap the result stays "not allowed" (`language_id_skipped` `undetermined`). With `timing: early`, an out-of-set pick beyond the gap runs one more identify on the end-of-utterance clip (capped at `lidMaxClipMs`, inside the `lidGateMaxWaitMs` bound) before giving up. `LanguageIdResult` carries `raw_language` and `gap`; a `voice_debug` line logs raw, decided and gap. Without an allowlist nothing changes.
+
 ### Fixed
 
+- **lid:** the language-ID clip now starts on the same sample as the STT stream. Since language ID was added, its buffer started at VAD speech start, after the STT pre-roll (lookback, held onset, ring) and the onset frame, so with `timing: early` the 1.5 s clip began about 200–300 ms into the first word. Whisper's pick on such a clip depends heavily on where it starts (a Spanish test phrase came back `el` in 19 of 100 runs). The clip is now seeded with the audio STT got before speech start. Only voiced frames count toward `minSpeechMs`, and the `lidMaxClipMs` cap still cuts the tail, never the head.
 - **ice:** a fast local connect could leave a peer stuck in `connecting` until the connect-stall watchdog closed it: ICE `dial()`/`accept()` returned before the connection state reached the transport, so DTLS never started. They now wait (bounded at 2 s, warned with `waitedMs`) until the state is delivered, and a cancel during that wait still returns at once.
 - **sherpa stt:** a final no longer drops up to ~0.8 s of trailing speech. `finalize_utterance` now feeds zeros after the 640 ms tail padding until every sample of the utterance has gone through a decode step. Before, the Kroko English model ("delta seven eight nine" came out as "Delta seven") lost the words after its last full 1.28 s chunk. The added padding is capped by `FINALIZE_MAX_EXTRA_PADDING_MS`.
 

@@ -95,6 +95,7 @@ pub fn runner_staging_config_with_lid(
             enabled: None,
             model_path: Some(dir.to_string_lossy().into_owned()),
             allowlist: None,
+            allowlist_max_gap: None,
             min_speech_ms: None,
             continuous: None,
             timing: Some(LanguageIdTiming::Early),

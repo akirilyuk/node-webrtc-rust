@@ -395,3 +395,251 @@ async fn tts_out_tap_writes_the_frames_sent_to_the_outbound_writer() {
 
     let _ = agent.stop().await;
 }
+
+// --- LID clip alignment with the STT stream (plan 2026-11-15-lid-spanish-clip-greek) ---
+
+struct CountingLid(Arc<AtomicU64>);
+
+#[async_trait]
+impl node_webrtc_rust_speech::pipeline::LanguageIdProvider for CountingLid {
+    async fn identify(
+        &self,
+        _pcm: Bytes,
+        _sample_rate: u32,
+    ) -> SpeechResult<Option<node_webrtc_rust_speech::pipeline::LanguageIdResult>> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(Some(
+            node_webrtc_rust_speech::pipeline::LanguageIdResult::new("en"),
+        ))
+    }
+}
+
+struct LidStt(Arc<AtomicU64>);
+
+impl VendorFactory for LidStt {
+    fn create_stt(&self, _config: &SttConfig) -> SpeechResult<Box<dyn SttProvider>> {
+        Ok(Box::new(SilentStt))
+    }
+    fn create_tts(
+        &self,
+        config: &TtsConfig,
+    ) -> SpeechResult<Box<dyn node_webrtc_rust_speech::TtsProvider>> {
+        MockFactory.create_tts(config)
+    }
+    fn create_language_id(
+        &self,
+        _config: &node_webrtc_rust_speech::config::LanguageIdConfig,
+    ) -> SpeechResult<Option<Box<dyn node_webrtc_rust_speech::pipeline::LanguageIdProvider>>> {
+        Ok(Some(Box::new(CountingLid(Arc::clone(&self.0)))))
+    }
+}
+
+async fn lid_tap_agent(
+    dir: &'static Path,
+    timing: Option<node_webrtc_rust_speech::config::LanguageIdTiming>,
+    min_speech_ms: u32,
+    lid_calls: Arc<AtomicU64>,
+) -> Arc<VoiceAgent> {
+    let factory = Arc::new(LidStt(lid_calls));
+    let mut registry = VendorRegistry::new();
+    registry.register_stt(
+        SttVendor::Mock,
+        Arc::clone(&factory) as Arc<dyn VendorFactory>,
+    );
+    registry.register_stt(
+        SttVendor::LocalSherpa,
+        Arc::clone(&factory) as Arc<dyn VendorFactory>,
+    );
+    registry.register_tts(TtsVendor::Mock, factory);
+    let mut vad = VadConfig {
+        enabled: true,
+        provider: "energy".into(),
+        threshold: 0.05,
+        min_speech_duration_ms: 200,
+        min_silence_duration_ms: 300,
+        speech_pad_ms: 200,
+        gate_stt: true,
+        stt_gate_hold_ms: 100,
+        ..Default::default()
+    };
+    vad.barge_in.enabled = false;
+    let config = VoiceAgentConfig {
+        stt: Some(SttConfig {
+            provider: SttVendor::Mock,
+            model: None,
+            model_path: None,
+            language: Some("en".into()),
+            api_key: None,
+            endpoint: None,
+            transport: None,
+        }),
+        tts: Some(TtsConfig {
+            provider: TtsVendor::Mock,
+            model: None,
+            model_path: None,
+            voice: None,
+            api_key: None,
+            endpoint: None,
+            sentence_case: Default::default(),
+            transport: None,
+        }),
+        language_id: Some(node_webrtc_rust_speech::config::LanguageIdConfig {
+            enabled: Some(true),
+            model_path: Some("/fake/lid-model".into()),
+            allowlist: None,
+            allowlist_max_gap: None,
+            min_speech_ms: Some(min_speech_ms),
+            continuous: None,
+            lid_max_clip_ms: None,
+            lid_gate_max_wait_ms: None,
+            timing,
+            tts_exclusion: Some(true),
+        }),
+        vad,
+        ..Default::default()
+    };
+    let agent = VoiceAgent::new(config, Arc::new(registry)).unwrap();
+    let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.set_audio_tap_dir_for_test(dir).await;
+    agent.start(None).await.unwrap();
+    agent
+}
+
+/// Quiet lead-in, then `loud` voiced frames whose level differs per frame (so any frame
+/// offset between two clips shows), then silence until the utterance closes.
+async fn drive_ramp_utterance(agent: &VoiceAgent, lead: usize, loud: usize) {
+    for _ in 0..lead {
+        agent
+            .process_inbound_pcm(stereo_frame(0), 20)
+            .await
+            .unwrap();
+    }
+    for i in 0..loud {
+        let level = 6000 + 37 * i as i16;
+        agent
+            .process_inbound_pcm(stereo_frame(level), 20)
+            .await
+            .unwrap();
+    }
+    for _ in 0..80 {
+        agent
+            .process_inbound_pcm(stereo_frame(0), 20)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+}
+
+fn wav_data(path: &Path) -> Vec<u8> {
+    std::fs::read(path).unwrap()[44..].to_vec()
+}
+
+async fn assert_lid_clip_starts_with_stt_stream(
+    timing: Option<node_webrtc_rust_speech::config::LanguageIdTiming>,
+    label: &str,
+) {
+    let dir = unique_dir(label);
+    let calls = Arc::new(AtomicU64::new(0));
+    let agent = lid_tap_agent(dir, timing, 300, Arc::clone(&calls)).await;
+    drive_ramp_utterance(&agent, 15, 60).await;
+    let files = wait_files(dir, |f| {
+        f.iter().any(|p| name_of(p).starts_with("lid-in-"))
+            && f.iter().any(|p| name_of(p).starts_with("stt-in-"))
+    })
+    .await;
+    let lid = files
+        .iter()
+        .find(|p| name_of(p).starts_with("lid-in-") && name_of(p).ends_with("-p1.wav"))
+        .unwrap_or_else(|| panic!("no lid-in: {files:?}"));
+    let key = name_of(lid)
+        .split("-utt")
+        .nth(1)
+        .unwrap()
+        .trim_end_matches("-p1.wav")
+        .to_string();
+    let stt = files
+        .iter()
+        .find(|p| {
+            name_of(p).starts_with("stt-in-") && name_of(p).ends_with(&format!("-utt{key}.wav"))
+        })
+        .unwrap_or_else(|| panic!("no stt-in for utt{key}: {files:?}"));
+    let (lid, stt) = (wav_data(lid), wav_data(stt));
+    let n = lid.len().min(stt.len());
+    assert!(
+        n >= 300 * 32,
+        "clips too short: lid {} stt {}",
+        lid.len(),
+        stt.len()
+    );
+    // Offset 0: the LID clip is the head of the STT stream, sample for sample.
+    if lid[..n] != stt[..n] {
+        let first_diff = (0..n).find(|&k| lid[k] != stt[k]).unwrap();
+        let nz = |b: &[u8]| b.chunks(2).position(|c| c != [0, 0]).map(|p| p * 2);
+        panic!(
+            "lid-in is not the head of stt-in ({label}): lid {} B, stt {} B, first diff at byte {first_diff}, first non-zero lid {:?} stt {:?}",
+            lid.len(),
+            stt.len(),
+            nz(&lid),
+            nz(&stt)
+        );
+    }
+    assert!(calls.load(Ordering::SeqCst) >= 1);
+    let _ = agent.stop().await;
+}
+
+#[tokio::test]
+async fn lid_clip_starts_on_the_stt_streams_first_sample_early_timing() {
+    assert_lid_clip_starts_with_stt_stream(
+        Some(node_webrtc_rust_speech::config::LanguageIdTiming::Early),
+        "lid-early",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn lid_clip_starts_on_the_stt_streams_first_sample_end_of_utterance() {
+    assert_lid_clip_starts_with_stt_stream(None, "lid-eou").await;
+}
+
+#[tokio::test]
+async fn lid_min_speech_counts_voiced_audio_only_with_pre_roll_seed() {
+    // minSpeechMs 600 with a 15-frame quiet lead-in: the seed adds pre-roll silence and pad to
+    // the buffer, but only voiced frames count. 25 voiced frames (500 ms) → no identify.
+    let dir = unique_dir("lid-min-short");
+    let calls = Arc::new(AtomicU64::new(0));
+    let agent = lid_tap_agent(
+        dir,
+        Some(node_webrtc_rust_speech::config::LanguageIdTiming::Early),
+        600,
+        Arc::clone(&calls),
+    )
+    .await;
+    drive_ramp_utterance(&agent, 15, 25).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "500 ms voiced < minSpeechMs 600"
+    );
+    let _ = agent.stop().await;
+
+    // 40 voiced frames (800 ms) → one identify.
+    let dir = unique_dir("lid-min-long");
+    let calls = Arc::new(AtomicU64::new(0));
+    let agent = lid_tap_agent(
+        dir,
+        Some(node_webrtc_rust_speech::config::LanguageIdTiming::Early),
+        600,
+        Arc::clone(&calls),
+    )
+    .await;
+    drive_ramp_utterance(&agent, 15, 40).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "800 ms voiced >= minSpeechMs 600"
+    );
+    let _ = agent.stop().await;
+}

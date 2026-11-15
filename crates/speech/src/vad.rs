@@ -237,6 +237,7 @@ pub struct SileroVad {
 impl SileroVad {
     pub fn new(threshold: f32, sample_rate: crate::config::VadSampleRate) -> SpeechResult<Self> {
         let sample_rate = sample_rate.as_u32();
+        crate::ort_backend::ensure_ort_api().map_err(crate::error::SpeechError::Vad)?;
         let model = silero_vad_rust::load_silero_vad()
             .map_err(|e| crate::error::SpeechError::Vad(e.to_string()))?;
         Ok(Self {

@@ -9,7 +9,9 @@ description = "Local Sherpa ONNX streaming STT and offline TTS vendor adapter"
 [dependencies]
 async-trait = "0.1"
 bytes = { workspace = true }
-node-webrtc-rust-speech = { path = "../speech" }
+node-webrtc-rust-speech = { path = "../speech", features = ["ort-shared-backend"] }
+# Whisper LID language scores on the ONNX Runtime sherpa-onnx already links (no second runtime).
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "alternative-backend"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 

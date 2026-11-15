@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use node_webrtc_rust_speech::config::LanguageIdConfig;
+use node_webrtc_rust_speech::config::{decide_language_among_allowed, LanguageIdConfig};
 use node_webrtc_rust_speech::error::{SpeechError, SpeechResult};
 use node_webrtc_rust_speech::pcm::mono_s16le_bytes_to_f32;
 use node_webrtc_rust_speech::pipeline::{LanguageIdProvider, LanguageIdResult};
@@ -60,6 +60,26 @@ impl SherpaLanguageId {
         let shared = pool.get_or_create_lid(config)?;
         let model_wait_ms = started.elapsed().as_millis();
         let samples = mono_s16le_bytes_to_f32(pcm.as_ref());
+        if allowlist_set(config) {
+            let scorer = shared.scorer(config)?;
+            let scores = {
+                let _native = NativeCallGuard::enter();
+                scorer.language_scores(&samples)?
+            };
+            if let Some(result) =
+                decide_language_among_allowed(config, &scores.codes, &scores.logits)
+            {
+                voice_debug(format!(
+                    "LID raw={} decided={} gap={:.2} samples={} total_ms={}",
+                    result.raw_language.as_deref().unwrap_or(""),
+                    result.language,
+                    result.gap.unwrap_or(0.0),
+                    samples.len(),
+                    started.elapsed().as_millis()
+                ));
+                return Ok(Some(result));
+            }
+        }
         let lang = shared.identify_samples(&samples)?;
         voice_debug(format!(
             "LID identify: samples={} model_wait_ms={} (pool_entries_before={}) total_ms={}",
@@ -68,7 +88,7 @@ impl SherpaLanguageId {
             loaded_before,
             started.elapsed().as_millis()
         ));
-        Ok(lang.map(|language| LanguageIdResult { language }))
+        Ok(lang.map(LanguageIdResult::new))
     }
 }
 
@@ -101,7 +121,33 @@ impl LanguageIdProvider for SherpaLanguageId {
     }
 }
 
+/// True when `config` names at least one allowlisted language (decide among them).
+pub(crate) fn allowlist_set(config: &LanguageIdConfig) -> bool {
+    config
+        .allowlist
+        .as_ref()
+        .is_some_and(|list| list.iter().any(|c| !c.trim().is_empty()))
+}
+
 impl SharedLidRecognizer {
+    /// Whisper language scorer on the same model files (loaded once, shared).
+    pub(crate) fn scorer(
+        &self,
+        config: &LanguageIdConfig,
+    ) -> SpeechResult<Arc<crate::whisper_lang::WhisperLanguageScorer>> {
+        self.scorer
+            .get_or_init(|| {
+                crate::whisper_lang::WhisperLanguageScorer::load_for_config(config)
+                    .map(Arc::new)
+                    .map_err(|e| e.to_string())
+            })
+            .clone()
+            .map_err(|message| SpeechError::Vendor {
+                vendor: "local-sherpa".into(),
+                message,
+            })
+    }
+
     pub(crate) fn identify_samples(&self, samples: &[f32]) -> SpeechResult<Option<String>> {
         let _native = NativeCallGuard::enter();
         let lock_started = Instant::now();

@@ -114,6 +114,8 @@ const UNQUALIFIED_PHRASES: Record<string, string> = {
     'agent speech that barge-in cuts off; judged by playback duration ratios, its transcript is not compared',
   'The quick brown fox jumps over the lazy dog and then keeps on talking about the weather in the valley. ':
     'noisy-bystander agent reply (first part of a concatenation); only its playback span is used, its transcript is never compared',
+  'Hello, I am ready to help.':
+    'noisy-bystander warm-up reply (WARM_REPLY_PHRASE, decision ii): agent TTS before the scene anchor; only its agent_speaking_end is awaited, its transcript is never recognized or compared',
 }
 
 interface PhraseConstant {

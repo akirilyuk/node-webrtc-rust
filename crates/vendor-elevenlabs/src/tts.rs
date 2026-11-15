@@ -253,10 +253,10 @@ impl ElevenLabsTts {
 
         let mut stream = response.bytes_stream();
         let mut mono = Vec::new();
-        let mut carry: Option<u8> = None;
+        let mut framer = WholeMsFramer::default();
         let mut cancelled = false;
         loop {
-            let next = if mono.is_empty() {
+            let next = if mono.is_empty() && framer.is_empty() {
                 tokio::time::timeout_at(first_audio_deadline, stream.next())
                     .await
                     .map_err(|_| first_audio_timed_out())?
@@ -276,25 +276,23 @@ impl ElevenLabsTts {
             }
             let Some(item) = next else { break };
             let chunk = item.map_err(|err| vendor_error(err.to_string()))?;
-            // An odd trailing byte is the first half of the next sample: carry it over, or
-            // every later sample would shift by one byte.
-            let mut bytes = chunk.to_vec();
-            if let Some(first) = carry.take() {
-                bytes.insert(0, first);
-            }
-            if bytes.len() % 2 == 1 {
-                carry = bytes.pop();
-            }
-            if bytes.is_empty() {
+            let Some(bytes) = framer.push(&chunk) else {
                 continue;
-            }
+            };
             mono.extend_from_slice(&bytes);
             if let Some(s) = sink.as_ref() {
                 let audio = pcm_chunk_from_mono(&bytes);
                 let _ = s.send(audio);
             }
         }
-        if carry.is_some() && !cancelled {
+        let (tail, odd_byte) = framer.finish();
+        if !cancelled && !tail.is_empty() {
+            mono.extend_from_slice(&tail);
+            if let Some(s) = sink.as_ref() {
+                let _ = s.send(pcm_chunk_from_mono(&tail));
+            }
+        }
+        if odd_byte && !cancelled {
             // A stream that ends mid-sample: the half sample cannot be played.
             if std::env::var("VOICE_DEBUG")
                 .is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes"))
@@ -463,6 +461,52 @@ fn http_status_message(status: u16, body: &str) -> String {
     format!("{status}: {body}")
 }
 
+/// Mono s16le bytes in one millisecond at [`WEBRTC_PCM_SAMPLE_RATE`] (48 samples of 2 bytes).
+const MONO_BYTES_PER_MS: usize = (WEBRTC_PCM_SAMPLE_RATE as usize / 1000) * 2;
+
+/// Cuts the HTTP body into whole milliseconds of audio before it becomes sink chunks.
+///
+/// The body arrives in network-sized pieces of any length. A [`TtsAudioChunk`] declares whole
+/// milliseconds (`duration_ms_from_mono_s16le` rounds down), so a piece of 1.9 ms declared 1 ms:
+/// over a stream of small pieces the declared durations fell short of the audio by several
+/// percent (catalog `audio.sample-rate-mismatch`). Emitting only whole milliseconds and carrying
+/// the rest makes every chunk's `duration_ms` exact; only the final tail can be under 1 ms.
+/// An odd byte is the first half of the next sample and is carried the same way.
+#[derive(Default)]
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+struct WholeMsFramer {
+    pending: Vec<u8>,
+}
+
+#[cfg_attr(not(feature = "live"), allow(dead_code))]
+impl WholeMsFramer {
+    fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    /// Adds one body piece; returns the whole milliseconds now available, if any.
+    fn push(&mut self, piece: &[u8]) -> Option<Vec<u8>> {
+        self.pending.extend_from_slice(piece);
+        let whole = self.pending.len() - self.pending.len() % MONO_BYTES_PER_MS;
+        if whole == 0 {
+            return None;
+        }
+        let rest = self.pending.split_off(whole);
+        Some(std::mem::replace(&mut self.pending, rest))
+    }
+
+    /// End of stream: the remaining whole samples (under 1 ms), and whether an odd byte (half a
+    /// sample, unplayable) was dropped.
+    fn finish(self) -> (Vec<u8>, bool) {
+        let mut tail = self.pending;
+        let odd_byte = tail.len() % 2 == 1;
+        if odd_byte {
+            tail.pop();
+        }
+        (tail, odd_byte)
+    }
+}
+
 fn pcm_chunk_from_mono(mono: &[u8]) -> TtsAudioChunk {
     let duration_ms = duration_ms_from_mono_s16le(mono.len(), WEBRTC_PCM_SAMPLE_RATE);
     let pcm = mono_s16le_to_stereo(mono);
@@ -483,6 +527,81 @@ fn emit_chunks(sink: Option<&TtsProgressiveSink>, chunks: &[TtsAudioChunk]) {
 mod tests {
     use super::*;
     use node_webrtc_rust_speech::config::TtsVendor;
+
+    /// Splits `total` mono bytes into the uneven network pieces of a streamed HTTP body.
+    fn uneven_pieces(total: usize) -> Vec<Vec<u8>> {
+        // 14-16 ms pieces that end just short of a whole millisecond (one odd-length).
+        let sizes = [1438usize, 1342, 1534, 1247, 1439];
+        let mut pieces = Vec::new();
+        let mut sent = 0;
+        let mut i = 0;
+        while sent < total {
+            let n = sizes[i % sizes.len()].min(total - sent);
+            pieces.push(vec![(i % 251) as u8; n]);
+            sent += n;
+            i += 1;
+        }
+        pieces
+    }
+
+    /// The live failure: 793564 stereo bytes (4133 ms) declared 4046 ms because each network
+    /// piece rounded its duration down. Through the framer the declared sum matches the bytes.
+    #[test]
+    fn uneven_http_pieces_declare_the_duration_of_their_bytes() {
+        let total_mono = 793_564 / 2;
+        let pieces = uneven_pieces(total_mono);
+
+        // Before: one chunk per network piece.
+        let naive: u64 = pieces
+            .iter()
+            .map(|p| u64::from(pcm_chunk_from_mono(&p[..p.len() - p.len() % 2]).duration_ms))
+            .sum();
+        assert!(
+            (naive as f64 - 4133.0).abs() > 4133.0 * 0.02,
+            "the repro must reproduce the > 2 % shortfall, got {naive} ms"
+        );
+
+        let mut framer = WholeMsFramer::default();
+        let mut chunks = Vec::new();
+        for piece in &pieces {
+            if let Some(bytes) = framer.push(piece) {
+                assert_eq!(bytes.len() % MONO_BYTES_PER_MS, 0);
+                chunks.push(pcm_chunk_from_mono(&bytes));
+            }
+        }
+        let (tail, odd) = framer.finish();
+        assert!(!odd);
+        if !tail.is_empty() {
+            assert!(tail.len() < MONO_BYTES_PER_MS);
+            chunks.push(pcm_chunk_from_mono(&tail));
+        }
+        let declared: u64 = chunks.iter().map(|c| u64::from(c.duration_ms)).sum();
+        let bytes: usize = chunks.iter().map(|c| c.pcm.len()).sum();
+        assert_eq!(bytes, 793_564, "no audio lost or duplicated");
+        let from_bytes = bytes as f64 / 192.0;
+        assert!(
+            (declared as f64 - from_bytes).abs() <= 1.0,
+            "declared {declared} ms vs {from_bytes:.1} ms of bytes"
+        );
+    }
+
+    #[test]
+    fn framer_carries_an_odd_byte_and_drops_it_only_at_the_end() {
+        let mut framer = WholeMsFramer::default();
+        assert_eq!(framer.push(&[1u8; 95]), None);
+        let out = framer.push(&[2u8; 2]).expect("one whole ms");
+        assert_eq!(out.len(), MONO_BYTES_PER_MS);
+        assert_eq!(&out[94..], &[1, 2], "the odd byte stays in sample order");
+        let (tail, odd) = framer.finish();
+        assert!(tail.is_empty());
+        assert!(odd, "a stream ending mid-sample drops one byte");
+
+        let mut framer = WholeMsFramer::default();
+        assert_eq!(framer.push(&[3u8; 40]), None);
+        let (tail, odd) = framer.finish();
+        assert_eq!(tail.len(), 40, "a sub-ms tail is still emitted");
+        assert!(!odd);
+    }
 
     #[test]
     fn resolves_default_voice_id() {

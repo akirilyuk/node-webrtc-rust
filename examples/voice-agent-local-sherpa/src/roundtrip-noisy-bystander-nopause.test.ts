@@ -383,17 +383,167 @@ describe('evaluateNoPauseScene', () => {
     })
   })
 
-  it('fails the upgrade fallback: no split, the bystander utterance ends as caller', () => {
+  it('fails the upgrade fallback when the barge is before the caller onset (decision ll keeps the timing gate)', () => {
     const seen: Seen[] = [
       start('u1', 350),
       final('u1', 7000, 'caller', 'the enrollment sentence is read out slowly'),
       start('u2', 7350),
-      barge('u2', 14_000),
+      barge('u2', 12_000),
       final('u2', 15_500, 'caller', 'the delayed flight to madrid tonight please check my order'),
     ]
     const r = evaluateNoPauseScene(segments, seen, 's', MEDIA0)
     expect(r.cutPointLeaks).toHaveLength(1)
+    expect(r.upgradeLeaks).toHaveLength(0)
     expect(r.failures.some((f) => f.includes('holds bystander words'))).toBe(true)
+  })
+
+  describe('whole-utterance upgrade leak (decision ll, eu-load 43759349585 n01 shape)', () => {
+    // No split: the bystander's utterance u2 is upgraded to caller and holds the bystander
+    // sentence plus the caller's. Caller onset is 12300 (segments).
+    const upgraded = (
+      o: { bargeAt?: number | null; text?: string; speaker?: string; extra?: Seen[] } = {},
+    ): Seen[] => [
+      start('u1', 350),
+      final('u1', 7000, 'caller', 'the enrollment sentence is read out slowly'),
+      start('u2', 7350),
+      ...(o.bargeAt === null ? [] : [barge('u2', o.bargeAt ?? 12_400)]),
+      {
+        ...final(
+          'u2',
+          15_500,
+          o.speaker ?? 'caller',
+          o.text ??
+            'a passenger asked about the delayed flight to madrid tonight please check my order',
+        ),
+        speakerCheckWindows: 6,
+      },
+      ...(o.extra ?? []),
+    ]
+
+    it('counts it: caller final holds both sentences, barge after the onset -> no failure', () => {
+      const r = evaluateNoPauseScene(segments, upgraded(), 's', MEDIA0)
+      expect(r.failures).toEqual([])
+      expect(r.upgradeLeaks).toHaveLength(1)
+      expect(r.upgradeLeaks[0]!.utteranceId).toBe('u2')
+      expect(r.upgradeLeaks[0]!.words).toEqual(
+        expect.arrayContaining(['delayed', 'flight', 'madrid']),
+      )
+      expect(r.cutPointLeaks).toHaveLength(0)
+      expect(r.leadingGlue).toHaveLength(0)
+    })
+
+    it('accepts a barge exactly at the caller onset', () => {
+      const r = evaluateNoPauseScene(segments, upgraded({ bargeAt: 12_300 }), 's', MEDIA0)
+      expect(r.failures).toEqual([])
+      expect(r.upgradeLeaks).toHaveLength(1)
+    })
+
+    it('fails when the barge is 1 ms before the caller onset', () => {
+      const r = evaluateNoPauseScene(segments, upgraded({ bargeAt: 12_299 }), 's', MEDIA0)
+      expect(r.upgradeLeaks).toHaveLength(0)
+      expect(r.failures.some((f) => f.includes('holds bystander words'))).toBe(true)
+    })
+
+    it('fails when any one of several barges is before the onset', () => {
+      const r = evaluateNoPauseScene(
+        segments,
+        upgraded({ extra: [barge('u2', 9_000)] }),
+        's',
+        MEDIA0,
+      )
+      expect(r.upgradeLeaks).toHaveLength(0)
+      expect(r.failures.length).toBeGreaterThan(0)
+    })
+
+    it('fails closed with no barge event', () => {
+      const r = evaluateNoPauseScene(segments, upgraded({ bargeAt: null }), 's', MEDIA0)
+      expect(r.upgradeLeaks).toHaveLength(0)
+      expect(r.failures.some((f) => f.includes('no barge_in on caller utterance u2'))).toBe(true)
+    })
+
+    it('fails when the caller sentence is missing from the final', () => {
+      const r = evaluateNoPauseScene(
+        segments,
+        upgraded({ text: 'a passenger asked about the delayed flight to madrid tonight' }),
+        's',
+        MEDIA0,
+      )
+      expect(r.upgradeLeaks).toHaveLength(0)
+      expect(r.failures.length).toBeGreaterThan(0)
+    })
+
+    it('fails when the caller sentence is below 0.75 similarity', () => {
+      const r = evaluateNoPauseScene(
+        segments,
+        upgraded({ text: 'a passenger asked about the delayed flight to madrid please sheck' }),
+        's',
+        MEDIA0,
+      )
+      expect(r.upgradeLeaks).toHaveLength(0)
+      expect(r.failures.length).toBeGreaterThan(0)
+    })
+
+    it('fails a caller final with only bystander words', () => {
+      const r = evaluateNoPauseScene(
+        segments,
+        upgraded({ text: 'a passenger asked about the delayed flight to madrid tonight' }),
+        's',
+        MEDIA0,
+      )
+      expect(r.upgradeLeaks).toHaveLength(0)
+      expect(r.cutPointLeaks).toHaveLength(1)
+      expect(r.failures.some((f) => f.includes('holds bystander words'))).toBe(true)
+    })
+
+    it('fails when another final also holds the caller sentence', () => {
+      const r = evaluateNoPauseScene(
+        segments,
+        upgraded({ extra: [final('u9', 16_000, 'caller', 'please check my order')] }),
+        's',
+        MEDIA0,
+      )
+      expect(r.upgradeLeaks).toHaveLength(0)
+      expect(r.failures.length).toBeGreaterThan(0)
+    })
+
+    it('fails when the upgraded final is not labelled caller', () => {
+      const r = evaluateNoPauseScene(segments, upgraded({ speaker: 'other' }), 's', MEDIA0)
+      expect(r.upgradeLeaks).toHaveLength(0)
+      expect(r.failures.length).toBeGreaterThan(0)
+    })
+
+    it('does not apply when an other→caller split exists: an out-of-bound leak still fails', () => {
+      // Split 3001 ms before the deciding window end minus the bound: unchanged unbounded leak.
+      const seen = [
+        start('u1', 350),
+        final('u1', 7000, 'caller', 'the enrollment sentence is read out slowly'),
+        start('u2', 7575),
+        split('u2', 'u3', 7575, 8000 - 7575, ['other', 'caller']),
+        barge('u3', 14_000),
+        { ...final('u2', 14_100, 'other', 'a passenger asked'), speakerCheckWindows: 4 },
+        final('u3', 15_500, 'caller', 'madrid please check my order'),
+      ]
+      const r = evaluateNoPauseScene(segments, seen, 's', MEDIA0)
+      expect(r.upgradeLeaks).toHaveLength(0)
+      expect(r.cutPointLeaks).toHaveLength(1)
+      expect(r.failures.some((f) => f.includes('holds bystander words'))).toBe(true)
+    })
+
+    it('a bounded leak is unchanged and not an upgrade leak', () => {
+      const seen = [
+        start('u1', 350),
+        final('u1', 7000, 'caller', 'the enrollment sentence is read out slowly'),
+        start('u2', 7575),
+        split('u2', 'u3', 7575, 11_664 - 7575, ['other', 'caller']),
+        barge('u3', 14_000),
+        { ...final('u2', 14_100, 'other', 'a passenger asked'), speakerCheckWindows: 4 },
+        final('u3', 15_500, 'caller', 'madrid please check my order'),
+      ]
+      const r = evaluateNoPauseScene(segments, seen, 's', MEDIA0)
+      expect(r.failures).toEqual([])
+      expect(r.boundedLeaks).toHaveLength(1)
+      expect(r.upgradeLeaks).toHaveLength(0)
+    })
   })
 
   it('fails when the caller gets no utterance of its own', () => {

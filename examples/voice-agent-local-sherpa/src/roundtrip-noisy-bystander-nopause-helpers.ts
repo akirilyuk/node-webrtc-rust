@@ -17,6 +17,11 @@
  *   the caller turn" exception, except decision z: a leak or glue whose split is not earlier than
  *   the deciding window end minus {@link BOUNDED_LEAK_CHECK_WINDOWS} check windows is a bounded
  *   leak (the back-off or the fallback window), counted and reported, not failing;
+ * - decision ll: a scene with no other→caller split whose caller final holds the whole bystander
+ *   sentence plus the caller's sentence is a reported, non-failing "upgrade leak" when the caller's
+ *   sentence is in that final (similarity >= 0.75 on the best caller-length window), no other final
+ *   holds it, and every barge_in on that utterance is at or after the caller's onset (a missing
+ *   barge fails closed). Anything else keeps failing;
  * - a leak caused by a gate false accept (the other→caller split lies so far before the caller's
  *   voiced onset that no window holding caller speech can have confirmed it) is reported as its
  *   own class and does not fail the pass;
@@ -164,6 +169,33 @@ export interface NoPauseSceneResult {
    * (decision z; reported, not failing). They are not in `cutPointLeaks` or `leadingGlue`.
    */
   boundedLeaks: NoPauseLeak[]
+  /**
+   * Decision ll: no other→caller split, the caller's final holds the whole bystander sentence and
+   * the caller's sentence (reported, not failing). Not in `cutPointLeaks` or `leadingGlue`.
+   */
+  upgradeLeaks: NoPauseLeak[]
+}
+
+/**
+ * Words of `finalText` before its best caller-length window (per `callerText`) that are one of the
+ * bystander's last {@link LEADING_GLUE_TAIL_WORDS} words.
+ */
+function leadingGlueWords(callerText: string, bystanderText: string, finalText: string): string[] {
+  const cw = words(callerText)
+  const fw = words(finalText)
+  const n = cw.length
+  if (n === 0 || fw.length <= n) return []
+  let bestK = 0
+  let best = -1
+  for (let k = 0; k + n <= fw.length; k += 1) {
+    const sim = wordSimilarity(callerText, fw.slice(k, k + n).join(' '))
+    if (sim > best) {
+      best = sim
+      bestK = k
+    }
+  }
+  const tail = words(bystanderText).slice(-LEADING_GLUE_TAIL_WORDS)
+  return fw.slice(0, bestK).filter((w) => tail.includes(w))
 }
 
 /**
@@ -181,6 +213,7 @@ export function evaluateNoPauseScene(
   const leadingGlue: NoPauseLeak[] = []
   const gateFalseAcceptLeaks: NoPauseLeak[] = []
   const boundedLeaks: NoPauseLeak[] = []
+  const upgradeLeaks: NoPauseLeak[] = []
   const enroll = segments.find((s) => s.role === 'main' && s.enroll === true)
   const bystander = segments.find((s) => s.role === 'bystander')
   const caller = segments.find((s) => s.role === 'main' && s.enroll !== true)
@@ -192,6 +225,7 @@ export function evaluateNoPauseScene(
       leadingGlue,
       gateFalseAcceptLeaks,
       boundedLeaks,
+      upgradeLeaks,
     }
   }
 
@@ -335,8 +369,43 @@ export function evaluateNoPauseScene(
   const bystanderOnly = new Set(
     words(bystander.text).filter((w) => w.length >= LEAK_MIN_WORD_LENGTH && !callerWords.has(w)),
   )
+
+  // Decision ll: no other→caller split and the caller's final holds the bystander sentence and the
+  // caller's sentence. Every condition is checked here; a missing one leaves the assertions below
+  // to fail the scene as before. Barge times are scene time, like `callerOnsetMs`.
+  if (otherToCaller.length === 0 && callerId != null && callerFinal?.speaker === 'caller') {
+    const text = callerFinal.text ?? ''
+    const upgradeWords = [
+      ...new Set([
+        ...words(text).filter((w) => bystanderOnly.has(w)),
+        ...leadingGlueWords(caller.text, bystander.text, text),
+      ]),
+    ]
+    const callerBarges = barges.filter((b) => b.utteranceId === callerId)
+    const heldElsewhere = [...finals.values()].some(
+      (f) =>
+        f.utteranceId !== callerId &&
+        callerWindowSimilarity(caller.text, f.text ?? '') >= DEFAULT_BARGE_PHRASE_MIN_SIMILARITY,
+    )
+    if (
+      upgradeWords.length > 0 &&
+      callerWindowSimilarity(caller.text, text) >= DEFAULT_BARGE_PHRASE_MIN_SIMILARITY &&
+      !heldElsewhere &&
+      Number.isFinite(callerOnsetMs) &&
+      callerBarges.length > 0 &&
+      callerBarges.every((b) => b.atMs >= callerOnsetMs)
+    ) {
+      const leak: NoPauseLeak = { utteranceId: callerId, text, words: upgradeWords }
+      upgradeLeaks.push(leak)
+      console.log(
+        `${label}: upgrade leak in ${callerId} (no other→caller split, speakerCheckWindows ${String(callerFinal.speakerCheckWindows)}, caller onset ${callerOnsetMs} ms, barge at ${callerBarges.map((b) => b.atMs).join('/')} ms): ${upgradeWords.join(' ')}: "${text}"`,
+      )
+    }
+  }
+  const isUpgradeLeak = (id: string): boolean => upgradeLeaks.some((l) => l.utteranceId === id)
+
   for (const f of finals.values()) {
-    if (f.speaker !== 'caller' || f.utteranceId == null) continue
+    if (f.speaker !== 'caller' || f.utteranceId == null || isUpgradeLeak(f.utteranceId)) continue
     const leaked = [...new Set(words(f.text ?? ''))].filter((w) => bystanderOnly.has(w))
     if (leaked.length === 0) continue
     const fa = isFalseAccept(f.utteranceId)
@@ -366,45 +435,35 @@ export function evaluateNoPauseScene(
 
   // Leading glue on the caller's own final: a word before its best caller-length window that is
   // one of the bystander's last words.
-  if (callerId != null && callerFinal?.speaker === 'caller' && !isFalseAccept(callerId).yes) {
-    const cw = words(caller.text)
-    const fw = words(callerFinal.text ?? '')
-    const n = cw.length
-    if (n > 0 && fw.length > n) {
-      let bestK = 0
-      let best = -1
-      for (let k = 0; k + n <= fw.length; k += 1) {
-        const sim = wordSimilarity(caller.text, fw.slice(k, k + n).join(' '))
-        if (sim > best) {
-          best = sim
-          bestK = k
-        }
+  if (
+    callerId != null &&
+    callerFinal?.speaker === 'caller' &&
+    !isFalseAccept(callerId).yes &&
+    !isUpgradeLeak(callerId)
+  ) {
+    const glued = leadingGlueWords(caller.text, bystander.text, callerFinal.text ?? '')
+    if (glued.length > 0) {
+      const glue: NoPauseLeak = {
+        utteranceId: callerId,
+        text: callerFinal.text ?? '',
+        words: glued,
+        sceneSplitMs: sceneSplitOf(callerSplit),
       }
-      const tail = words(bystander.text).slice(-LEADING_GLUE_TAIL_WORDS)
-      const glued = fw.slice(0, bestK).filter((w) => tail.includes(w))
-      if (glued.length > 0) {
-        const glue: NoPauseLeak = {
-          utteranceId: callerId,
-          text: callerFinal.text ?? '',
-          words: glued,
-          sceneSplitMs: sceneSplitOf(callerSplit),
-        }
-        if (isBounded(callerSplit)) {
-          // Words already reported as a bounded leak of this final are not counted twice.
-          const seenWords = new Set(
-            boundedLeaks.filter((l) => l.utteranceId === callerId).flatMap((l) => l.words),
-          )
-          glue.words = glued.filter((w) => !seenWords.has(w))
-          if (glue.words.length > 0) boundedLeaks.push(glue)
-          console.log(
-            `${tag}: bounded leading glue (${glued.join(' ')}) in ${callerId}, split at ${String(glue.sceneSplitMs)} ms, deciding window ends ${String(decidingWindowEndSceneMs(callerSplit))} ms: "${glue.text}"`,
-          )
-        } else {
-          leadingGlue.push(glue)
-          failures.push(
-            `${tag}: leading glue (${glued.join(' ')}) from the bystander's last words in ${callerId}: "${callerFinal.text ?? ''}"`,
-          )
-        }
+      if (isBounded(callerSplit)) {
+        // Words already reported as a bounded leak of this final are not counted twice.
+        const seenWords = new Set(
+          boundedLeaks.filter((l) => l.utteranceId === callerId).flatMap((l) => l.words),
+        )
+        glue.words = glued.filter((w) => !seenWords.has(w))
+        if (glue.words.length > 0) boundedLeaks.push(glue)
+        console.log(
+          `${tag}: bounded leading glue (${glued.join(' ')}) in ${callerId}, split at ${String(glue.sceneSplitMs)} ms, deciding window ends ${String(decidingWindowEndSceneMs(callerSplit))} ms: "${glue.text}"`,
+        )
+      } else {
+        leadingGlue.push(glue)
+        failures.push(
+          `${tag}: leading glue (${glued.join(' ')}) from the bystander's last words in ${callerId}: "${callerFinal.text ?? ''}"`,
+        )
       }
     }
   }
@@ -454,6 +513,7 @@ export function evaluateNoPauseScene(
     leadingGlue,
     gateFalseAcceptLeaks,
     boundedLeaks,
+    upgradeLeaks,
   }
 }
 

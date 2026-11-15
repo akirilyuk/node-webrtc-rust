@@ -1317,31 +1317,54 @@ mod straddle {
         };
         let floor_kept = a_at(p.c_on).0;
         if EVIDENCE.get().is_some() {
-            // 6j: the product gate's other -> caller confirm and cut (config A), and U1's scores.
-            let rec = match product_o2c(&p.samples, utt, embedder, &p.reference, threshold) {
-                Some((_, cut, u1)) => {
-                    let (kept, lk) = a_at(cut);
-                    EvRec {
-                        set: String::new(),
-                        caller_only: false,
-                        u1,
-                        split: Some((floor_kept.saturating_sub(kept), lk)),
-                        upgrade_leak: bref.len(),
-                        nosplit_lost: 0,
-                        ref_words: cref.len(),
-                        floor_gap: cref.len().saturating_sub(floor_kept),
+            // 6j: the product gate's other -> caller confirm and cut (config A), and U1's scores;
+            // 7f: the same per veto mode.
+            let mut cache = SubCache::default();
+            let modes: Vec<ModeRec> = (0..O2C_MODES.len())
+                .map(|m| {
+                    let (o, st) = product_o2c(
+                        &p.samples,
+                        utt,
+                        embedder,
+                        &p.reference,
+                        threshold,
+                        m,
+                        &mut cache,
+                    );
+                    match o {
+                        Some((k, cut, u1)) => {
+                            let (kept, lk) = a_at(cut);
+                            ModeRec {
+                                k: Some(k),
+                                split: Some((floor_kept.saturating_sub(kept), lk)),
+                                u1,
+                                nosplit_lost: 0,
+                                early: cut + 1500 < p.c_on,
+                                st,
+                            }
+                        }
+                        None => ModeRec {
+                            k: None,
+                            split: None,
+                            u1: Vec::new(),
+                            nosplit_lost: floor_kept,
+                            early: false,
+                            st,
+                        },
                     }
-                }
-                None => EvRec {
-                    set: String::new(),
-                    caller_only: false,
-                    u1: Vec::new(),
-                    split: None,
-                    upgrade_leak: 0,
-                    nosplit_lost: floor_kept,
-                    ref_words: cref.len(),
-                    floor_gap: cref.len().saturating_sub(floor_kept),
-                },
+                })
+                .collect();
+            let m0 = modes[0].clone();
+            let rec = EvRec {
+                set: String::new(),
+                caller_only: false,
+                u1: m0.u1,
+                split: m0.split,
+                upgrade_leak: if m0.split.is_some() { bref.len() } else { 0 },
+                nosplit_lost: m0.nosplit_lost,
+                ref_words: cref.len(),
+                floor_gap: cref.len().saturating_sub(floor_kept),
+                modes,
             };
             EV_PENDING.lock().unwrap().push(rec);
             return;
@@ -2128,25 +2151,170 @@ mod straddle {
         /// the caller onset (bystander->caller) or at U1's start (caller-only), no gate.
         ref_words: usize,
         floor_gap: usize,
+        /// 7f: one entry per [`O2C_MODES`] (index 0 = today, the fields above).
+        modes: Vec<ModeRec>,
+    }
+
+    /// 7f: LibriSpeech bystander-only utterances (set, eligible = window 1 `other` and 2+
+    /// windows, product other -> caller confirms per mode).
+    static FAR_O2C: std::sync::Mutex<Vec<(String, usize, [usize; 3])>> =
+        std::sync::Mutex::new(Vec::new());
+
+    fn far_o2c(
+        set: &str,
+        samples: &[f32],
+        utt: &Utt,
+        embedder: &Embedder,
+        reference: &[f32],
+        threshold: f32,
+    ) {
+        if utt.wins.len() < 2 || utt.wins[0].1 >= threshold {
+            return;
+        }
+        let mut cache = SubCache::default();
+        let mut hit = [0usize; 3];
+        for (m, h) in hit.iter_mut().enumerate() {
+            let (o, _) = product_o2c(samples, utt, embedder, reference, threshold, m, &mut cache);
+            *h = usize::from(o.is_some());
+        }
+        let mut far = FAR_O2C.lock().unwrap();
+        let set = format!("LS bystander-only {set}");
+        if let Some(e) = far.iter_mut().find(|e| e.0 == set) {
+            e.1 += 1;
+            for (acc, h) in e.2.iter_mut().zip(hit) {
+                *acc += h;
+            }
+        } else {
+            far.push((set, 1, hit));
+        }
+    }
+
+    /// 7f table (decision gg): today vs the veto modes under the shipped split rule (decision bb,
+    /// a U1 window below 0.20 splits, else the change upgrades). Lost = split lost above the floor
+    /// plus words of utterances that no longer confirm; leaked = split leak, or every bystander
+    /// word on an upgrade. Confirms under a veto mode are a subset of today's (a veto only skips a
+    /// window), so today's `upgrade_leak` applies.
+    fn veto_table(recs: &[EvRec], sets: &[(String, bool)]) -> String {
+        let bb = |u: &[f32]| u.iter().any(|x| *x < 0.20);
+        let mut md = String::from(
+            "## Scan-miss veto for other -> caller (chunk 7f, decision gg)\n\nShipped split rule (decision bb). Per set and mode: lost caller words above the floor (measure A: split loss + no-confirm loss) / leaked bystander words; confirms at today's window / at a later window (delayed by 1 / by 2+) / no longer confirmed; rule outcome changed (split -> upgrade / upgrade -> split); caller-only false splits; confirms more than 1500 ms before the caller onset (bystander-only window, the n02 shape); scans / sub-window embeds / total ms / longest scan ms.\n\n| set | mode | lost (A) | leaked | same window | delayed 1 / 2+ | no confirm | split->upgrade / upgrade->split | caller-only false splits | early confirms | scans / embeds / ms / max ms |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
+        );
+        for (set, co) in sets {
+            let rs: Vec<&EvRec> = recs.iter().filter(|r| r.set == *set).collect();
+            for (m, name) in O2C_MODES.iter().enumerate() {
+                let (mut lost, mut leak, mut same, mut d1, mut d2, mut gone) = (0, 0, 0, 0, 0, 0);
+                let (mut s2u, mut u2s, mut cofs, mut early) = (0, 0, 0, 0);
+                let (mut scans, mut embeds, mut ms, mut max_ms) = (0, 0, 0.0, 0f64);
+                for r in &rs {
+                    let (t, x) = (&r.modes[0], &r.modes[m]);
+                    lost += x.nosplit_lost;
+                    if let Some((l, k)) = x.split {
+                        if bb(&x.u1) {
+                            lost += l;
+                            leak += k;
+                            cofs += usize::from(*co);
+                        } else {
+                            leak += r.upgrade_leak;
+                        }
+                        early += usize::from(x.early);
+                    }
+                    match (t.k, x.k) {
+                        (Some(a), Some(b)) if a == b => same += 1,
+                        (Some(a), Some(b)) if b == a + 1 => d1 += 1,
+                        (Some(_), Some(_)) => d2 += 1,
+                        (Some(_), None) => gone += 1,
+                        _ => {}
+                    }
+                    if t.split.is_some() && x.split.is_some() {
+                        match (bb(&t.u1), bb(&x.u1)) {
+                            (true, false) => s2u += 1,
+                            (false, true) => u2s += 1,
+                            _ => {}
+                        }
+                    }
+                    scans += x.st.scans;
+                    embeds += x.st.embeds;
+                    ms += x.st.ms;
+                    max_ms = max_ms.max(x.st.max_ms);
+                }
+                md.push_str(&format!(
+                    "| {set} | {name} | {lost} | {leak} | {same} | {d1} / {d2} | {gone} | {s2u} / {u2s} | {} | {early} | {scans} / {embeds} / {ms:.0} / {max_ms:.0} |\n",
+                    if *co { cofs.to_string() } else { "-".into() }
+                ));
+            }
+        }
+        let far = FAR_O2C.lock().unwrap();
+        if !far.is_empty() {
+            md.push_str("\n### Bystander-only false splits (LibriSpeech bystander-only utterances, window 1 `other`, 2+ windows)\n\n| set | eligible |");
+            for n in O2C_MODES {
+                md.push_str(&format!(" {n} |"));
+            }
+            md.push_str("\n| --- | --- | --- | --- | --- |\n");
+            for (set, n, h) in far.iter() {
+                md.push_str(&format!(
+                    "| {set} | {n} | {} | {} | {} |\n",
+                    h[0], h[1], h[2]
+                ));
+            }
+        }
+        md.push('\n');
+        md
     }
 
     static EV_PENDING: std::sync::Mutex<Vec<EvRec>> = std::sync::Mutex::new(Vec::new());
     static EV: std::sync::Mutex<Vec<EvRec>> = std::sync::Mutex::new(Vec::new());
 
+    /// 7f (decision gg) modes of [`product_o2c`]: 0 today; 1 veto: a `caller` window whose scan
+    /// completes (no budget stop) with no `caller` sub-window does not confirm, the window counts
+    /// as `other` and the watch stays open; 2 narrow veto: the same, only when the window scored
+    /// below threshold + [`NARROW_VETO_MARGIN`].
+    pub(super) const O2C_MODES: [&str; 3] = ["today", "veto", "narrow veto (< thr + 0.05)"];
+    const NARROW_VETO_MARGIN: f32 = 0.05;
+
+    /// Split-scan cost of one utterance under one mode: scans run, sub-window embeds the product
+    /// would run (budget-bounded), their total ms and the longest scan's ms.
+    #[derive(Default, Clone, Copy)]
+    struct ScanStat {
+        scans: usize,
+        embeds: usize,
+        ms: f64,
+        max_ms: f64,
+    }
+
+    /// One mode's outcome for one utterance (7f): the confirming window `k`, the split's (lost,
+    /// leaked) at the cut, U1's scores, the words lost with no confirm, whether the cut lands more
+    /// than 1500 ms before the caller onset (a confirm on bystander-only audio, the n02 shape),
+    /// and the scan cost.
+    #[derive(Clone)]
+    struct ModeRec {
+        k: Option<usize>,
+        split: Option<(usize, usize)>,
+        u1: Vec<f32>,
+        nosplit_lost: usize,
+        early: bool,
+        st: ScanStat,
+    }
+
+    type SubCache = std::collections::HashMap<usize, Vec<(usize, f32, f64)>>;
+
     /// The product gate with the watch on (chunk 6g): window 1 `other`, then the first window
     /// `k >= 2` scoring `caller`, or a near-miss window (`[0.30, thr)`) whose 750/125 scan finds a
     /// `caller` sub-window within the window's remaining verify budget. The cut is that
     /// sub-window's start minus 300 ms, never before the previous window's start (config A).
-    /// Returns (k, cut, U1 window scores = windows 1..k).
+    /// `mode` (7f): see [`O2C_MODES`]. Returns (k, cut, U1 window scores = windows 1..k) and the
+    /// scan cost; `cache` shares the sub-window scores of window `k` between modes.
     fn product_o2c(
         samples: &[f32],
         utt: &Utt,
         embedder: &Embedder,
         reference: &[f32],
         threshold: f32,
-    ) -> Option<(usize, usize, Vec<f32>)> {
-        if utt.wins.first()?.1 >= threshold {
-            return None;
+        mode: usize,
+        cache: &mut SubCache,
+    ) -> (Option<(usize, usize, Vec<f32>)>, ScanStat) {
+        let mut st = ScanStat::default();
+        if utt.wins.first().is_none_or(|w| w.1 >= threshold) {
+            return (None, st);
         }
         for k in 1..utt.wins.len() {
             let (start, s, ms) = utt.wins[k];
@@ -2155,33 +2323,52 @@ mod straddle {
             if s < threshold && !near {
                 continue;
             }
-            let subs = subs_for(
-                samples,
-                lo,
-                start + WINDOW_MS,
-                (P_SUB, P_HOP),
-                embedder,
-                reference,
-            );
+            let subs = cache.entry(k).or_insert_with(|| {
+                subs_for(
+                    samples,
+                    lo,
+                    start + WINDOW_MS,
+                    (P_SUB, P_HOP),
+                    embedder,
+                    reference,
+                )
+            });
             let budget = VERIFY_MS - ms;
-            let (mut spent, mut first) = (0.0, None);
-            for (t, sc, ems) in &subs {
-                spent += ems;
-                if spent > budget {
+            let (mut spent, mut first, mut stopped, mut n) = (0.0, None, false, 0);
+            for (t, sc, ems) in subs.iter() {
+                if spent + ems > budget {
+                    stopped = true;
                     break;
                 }
+                spent += ems;
+                n += 1;
                 if *sc >= threshold {
                     first = Some(*t);
                     break;
                 }
             }
+            st.scans += 1;
+            st.embeds += n;
+            st.ms += spent;
+            st.max_ms = st.max_ms.max(spent);
             if near && first.is_none() {
                 continue;
             }
+            let veto = match mode {
+                1 => true,
+                2 => s < threshold + NARROW_VETO_MARGIN,
+                _ => false,
+            };
+            if veto && first.is_none() && !stopped {
+                continue;
+            }
             let cut = first.map_or(lo, |p| p.saturating_sub(P_BACK).max(lo));
-            return Some((k, cut, utt.wins[..k].iter().map(|w| w.1).collect()));
+            return (
+                Some((k, cut, utt.wins[..k].iter().map(|w| w.1).collect())),
+                st,
+            );
         }
-        None
+        (None, st)
     }
 
     /// A caller-only utterance `[u, ue)` of `samples` (`clean` = the same timeline without the
@@ -2210,25 +2397,48 @@ mod straddle {
             cref.len() - del.min(cref.len())
         };
         let floor_kept = kept(u);
-        let (split, u1, nosplit_lost) =
-            match product_o2c(samples, &utt, embedder, reference, threshold) {
-                Some((_, cut, u1)) => (Some((floor_kept.saturating_sub(kept(cut)), 0)), u1, 0),
-                // Window 1 `other` and no `caller` window: the whole utterance is dropped under
-                // every rule (a gate false reject, not this chunk's change), counted above the floor.
-                None if utt.wins.first().is_some_and(|w| w.1 < threshold) => {
-                    (None, Vec::new(), floor_kept)
+        let mut cache = SubCache::default();
+        let modes: Vec<ModeRec> = (0..O2C_MODES.len())
+            .map(|m| {
+                let (o, st) =
+                    product_o2c(samples, &utt, embedder, reference, threshold, m, &mut cache);
+                match o {
+                    Some((k, cut, u1)) => ModeRec {
+                        k: Some(k),
+                        split: Some((floor_kept.saturating_sub(kept(cut)), 0)),
+                        u1,
+                        nosplit_lost: 0,
+                        early: false,
+                        st,
+                    },
+                    // Window 1 `other` and no `caller` window: the whole utterance is dropped
+                    // (a gate false reject under today's rule), counted above the floor.
+                    None => ModeRec {
+                        k: None,
+                        split: None,
+                        u1: Vec::new(),
+                        nosplit_lost: if utt.wins.first().is_some_and(|w| w.1 < threshold) {
+                            floor_kept
+                        } else {
+                            0
+                        },
+                        early: false,
+                        st,
+                    },
                 }
-                None => (None, Vec::new(), 0),
-            };
+            })
+            .collect();
+        let m0 = modes[0].clone();
         EV.lock().unwrap().push(EvRec {
             set: set.to_string(),
             caller_only: true,
-            u1,
-            split,
+            u1: m0.u1,
+            split: m0.split,
             upgrade_leak: 0,
-            nosplit_lost,
+            nosplit_lost: m0.nosplit_lost,
             ref_words: cref.len(),
             floor_gap: cref.len().saturating_sub(floor_kept),
+            modes,
         });
     }
 
@@ -2558,6 +2768,7 @@ mod straddle {
             }
         }
         md.push_str("\nGate false accepts are unchanged by every rule: a rule only decides split or upgrade after the gate already confirmed `caller`. An upgrade counts no lost words above the floor; its leak is every bystander word of the merged utterance.\n\n");
+        md.push_str(&veto_table(&recs, &sets));
         md
     }
 
@@ -2773,7 +2984,11 @@ mod straddle {
                     add_bed(&mut s, cbed.map(|b| (b, (ci * 31 + r * 7907) % b.len())));
                     for (u, ue) in vad_utterances(&pcm48(&s))? {
                         if ue >= u + 3000 {
-                            far.push(build_utt(&s, u, ue, embedder, &reference));
+                            let utt = build_utt(&s, u, ue, embedder, &reference);
+                            if EVIDENCE.get().is_some() {
+                                far_o2c(cname, &s, &utt, embedder, &reference, threshold);
+                            }
+                            far.push(utt);
                         }
                     }
                 }

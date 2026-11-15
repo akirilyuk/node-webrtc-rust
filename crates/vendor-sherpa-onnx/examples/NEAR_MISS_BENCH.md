@@ -246,3 +246,43 @@ Run: `near_miss_bench --evidence` with `--stt`, `--fixtures` and `--straddle-pip
 - LibriSpeech dev-clean caller-only, clean: U1 [0.370,0.215,0.190,0.306], lost 17
 
 Gate false accepts are unchanged by every rule: a rule only decides split or upgrade after the gate already confirmed `caller`. An upgrade counts no lost words above the floor; its leak is every bystander word of the merged utterance.
+
+## Chunk 7f: scan-miss veto for other -> caller (decision gg), not shipped
+
+Held-out 6g sets, `--evidence`, threshold 0.459, shipped split rule (decision bb). Modes: today; veto (a `caller` window whose split scan completes with no `caller` sub-window does not confirm, the watch stays open); narrow veto (the same only below threshold + 0.05). Run 2262 s on this Mac, log `.test-logs/20261115-222456-7f-bench.log` (not committed).
+
+Result: the bar fails for both modes. Lost caller words rise on every LibriSpeech set (straddle bed 45 -> 51, clean 32 -> 35; caller-only bed 220 -> 248, clean 207 -> 213), mostly from utterances whose only confirming window was vetoed and never confirmed again ("no confirm"), plus delayed confirms. The n02 shape (confirm more than 1500 ms before the caller onset) goes from 6 + 4 to 0 + 0 on Piper (veto) and 4 + 1 (narrow). Bystander-only false splits are unchanged (0 / 1).
+
+| set | mode | lost (A) | leaked | same window | delayed 1 / 2+ | no confirm | split->upgrade / upgrade->split | caller-only false splits | early confirms | scans / embeds / ms / max ms |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Piper straddle | today | 0 | 396 | 355 | 0 / 0 | 0 | 0 / 0 | - | 6 | 380 / 5793 / 45293 / 154 |
+| Piper straddle | veto | 0 | 358 | 349 | 6 / 0 | 0 | 0 / 0 | - | 0 | 386 / 5842 / 45673 / 154 |
+| Piper straddle | narrow veto (< thr + 0.05) | 0 | 385 | 353 | 2 / 0 | 0 | 0 / 0 | - | 4 | 382 / 5810 / 45423 / 154 |
+| LibriSpeech straddle, Tocumen bed -12 dB | today | 45 | 110 | 69 | 0 / 0 | 0 | 0 / 0 | - | 1 | 85 / 1191 / 9447 / 156 |
+| LibriSpeech straddle, Tocumen bed -12 dB | veto | 51 | 104 | 66 | 1 / 0 | 2 | 0 / 0 | - | 0 | 86 / 1199 / 9508 / 156 |
+| LibriSpeech straddle, Tocumen bed -12 dB | narrow veto (< thr + 0.05) | 51 | 104 | 66 | 1 / 0 | 2 | 0 / 0 | - | 0 | 86 / 1199 / 9508 / 156 |
+| LibriSpeech straddle, clean | today | 32 | 131 | 110 | 0 / 0 | 0 | 0 / 0 | - | 0 | 125 / 1606 / 12780 / 160 |
+| LibriSpeech straddle, clean | veto | 35 | 129 | 109 | 0 / 0 | 1 | 0 / 0 | - | 0 | 125 / 1606 / 12780 / 160 |
+| LibriSpeech straddle, clean | narrow veto (< thr + 0.05) | 35 | 129 | 109 | 0 / 0 | 1 | 0 / 0 | - | 0 | 125 / 1606 / 12780 / 160 |
+| Piper fixtures, merged no-pause | today | 18 | 477 | 250 | 0 / 0 | 0 | 0 / 0 | - | 4 | 313 / 4345 / 33589 / 153 |
+| Piper fixtures, merged no-pause | veto | 13 | 477 | 246 | 2 / 2 | 0 | 0 / 0 | - | 0 | 317 / 4386 / 33908 / 153 |
+| Piper fixtures, merged no-pause | narrow veto (< thr + 0.05) | 13 | 477 | 247 | 1 / 2 | 0 | 0 / 0 | - | 1 | 316 / 4377 / 33838 / 153 |
+| Piper caller-only, fixture babble | today | 0 | 0 | 0 | 0 / 0 | 0 | 0 / 0 | 0 | 0 | 0 / 0 / 0 / 0 |
+| Piper caller-only, fixture babble | veto | 0 | 0 | 0 | 0 / 0 | 0 | 0 / 0 | 0 | 0 | 0 / 0 / 0 / 0 |
+| Piper caller-only, fixture babble | narrow veto (< thr + 0.05) | 0 | 0 | 0 | 0 / 0 | 0 | 0 / 0 | 0 | 0 | 0 / 0 / 0 / 0 |
+| Piper caller-only, fixture babble + Tocumen bed -12 dB | today | 0 | 0 | 4 | 0 / 0 | 0 | 0 / 0 | 0 | 0 | 4 / 35 / 277 / 79 |
+| Piper caller-only, fixture babble + Tocumen bed -12 dB | veto | 0 | 0 | 4 | 0 / 0 | 0 | 0 / 0 | 0 | 0 | 4 / 35 / 277 / 79 |
+| Piper caller-only, fixture babble + Tocumen bed -12 dB | narrow veto (< thr + 0.05) | 0 | 0 | 4 | 0 / 0 | 0 | 0 / 0 | 0 | 0 | 4 / 35 / 277 / 79 |
+| LibriSpeech dev-clean caller-only, Tocumen bed -12 dB | today | 220 | 0 | 26 | 0 / 0 | 0 | 0 / 0 | 0 | 0 | 54 / 866 / 6725 / 152 |
+| LibriSpeech dev-clean caller-only, Tocumen bed -12 dB | veto | 248 | 0 | 21 | 3 / 0 | 2 | 0 / 0 | 0 | 0 | 58 / 921 / 7149 / 152 |
+| LibriSpeech dev-clean caller-only, Tocumen bed -12 dB | narrow veto (< thr + 0.05) | 248 | 0 | 22 | 2 / 0 | 2 | 0 / 0 | 0 | 0 | 57 / 906 / 7031 / 152 |
+| LibriSpeech dev-clean caller-only, clean | today | 207 | 0 | 9 | 0 / 0 | 0 | 0 / 0 | 1 | 0 | 29 / 500 / 3867 / 151 |
+| LibriSpeech dev-clean caller-only, clean | veto | 213 | 0 | 8 | 0 / 0 | 1 | 0 / 0 | 1 | 0 | 29 / 500 / 3867 / 151 |
+| LibriSpeech dev-clean caller-only, clean | narrow veto (< thr + 0.05) | 213 | 0 | 8 | 0 / 0 | 1 | 0 / 0 | 1 | 0 | 29 / 500 / 3867 / 151 |
+
+### Bystander-only false splits (LibriSpeech bystander-only utterances, window 1 `other`, 2+ windows)
+
+| set | eligible | today | veto | narrow veto (< thr + 0.05) |
+| --- | --- | --- | --- | --- |
+| LS bystander-only Tocumen bed -12 dB | 322 | 0 | 0 | 0 |
+| LS bystander-only clean | 330 | 1 | 1 | 1 |

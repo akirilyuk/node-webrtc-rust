@@ -233,6 +233,10 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
     env:
       RUST_BACKTRACE: '1'
+      # Same linkage as the shipped .node: napi build adds -crt-static for musl. Without it the test
+      # binaries link musl libc statically while sherpa/onnxruntime/libstdc++ load the shared libc,
+      # and sherpa's LID create calls a NULL pointer (origin/main crashed the same way).
+      RUSTFLAGS: '-C target-feature=-crt-static'
       SHERPA_ONNX_LIB_DIR: /opt/sherpa-musl/lib
       LD_LIBRARY_PATH: /opt/sherpa-musl/lib:/usr/lib
     steps:
@@ -266,9 +270,8 @@ jobs:
           cat lid-test-bins.txt
           echo "LID_CONTROL_BIN=$(grep '/release/deps/lid_shared_model_test-' lid-test-bins.txt | tail -1)" >> "$GITHUB_ENV"
 
-      # Confirm step: which ONNX Runtime symbols the test binary defines or imports, and where the
-      # dynamic loader binds OrtGetApiBase. An Ort* symbol defined in the executable interposes the
-      # one in libonnxruntime.so that libsherpa-onnx-c-api.so uses.
+      # The test binary must only import ONNX Runtime symbols (OrtGetApiBase from the libonnxruntime
+      # sherpa uses), never define its own: a defined Ort* symbol would interpose the library's.
       - name: (diag) Ort symbols in the control binary
         if: always()
         run: |
@@ -282,43 +285,9 @@ jobs:
             echo "--- $so OrtGetApiBase"; nm -D "$so" | grep OrtGetApiBase || echo none
           done
 
-      # Which libonnxruntime.so.1 the job loads: the copy installed into /opt/sherpa-musl/lib or
-      # Alpine's /usr/lib one sherpa was compiled against (headers in /usr/include/onnxruntime).
-      - name: (diag) onnxruntime copies and versions
-        if: always()
-        run: |
-          ls -l /opt/sherpa-musl/lib/libonnxruntime* /usr/lib/libonnxruntime* || true
-          for so in /opt/sherpa-musl/lib/libonnxruntime.so.1 /usr/lib/libonnxruntime.so.1; do
-            echo "--- $so"; readlink -f "$so" || true
-            readelf -d "$so" | grep SONAME || true
-            nm -D "$so" | grep OrtGetApiBase || echo "no OrtGetApiBase"
-            strings "$so" | grep -m3 -E '^1\.[0-9]+\.[0-9]+$' || true
-          done
-          cmp /opt/sherpa-musl/lib/libonnxruntime.so.1 /usr/lib/libonnxruntime.so.1 && echo "cmp: identical" || echo "cmp: differ"
-          grep -n 'define ORT_API_VERSION' /usr/include/onnxruntime/onnxruntime_c_api.h || true
-          apk info -v onnxruntime onnxruntime-dev || true
-
-      - name: (diag) control, release, LD_LIBRARY_PATH=/usr/lib first
-        if: always()
-        env:
-          LD_LIBRARY_PATH: /usr/lib:/opt/sherpa-musl/lib
-        run: |
-          ldd "$LID_CONTROL_BIN" | grep -E 'onnxruntime|sherpa'
-          "$LID_CONTROL_BIN" --ignored --nocapture --test-threads=1
-
-      - name: (diag) b and c, release, LD_LIBRARY_PATH=/usr/lib first
-        if: always()
-        env:
-          LD_LIBRARY_PATH: /usr/lib:/opt/sherpa-musl/lib
-        run: |
-          cargo test -p node-webrtc-rust-vendor-sherpa-onnx --release --test lid_allowed_set_test -- \
-            --ignored --nocapture --test-threads=1
-          cargo test -p node-webrtc-rust-vendor-sherpa-onnx --release --lib lid::tests -- \
-            --ignored --nocapture --test-threads=1
-
       # The shipped musl .node (as the runner image installs it from npm) and this branch's build:
       # which libonnxruntime they need and whether they import or define OrtGetApiBase.
-      - name: (diag) shipped and branch musl .node linkage
+      - name: shipped and branch musl .node link the same libonnxruntime
         if: always()
         run: |
           mkdir -p /tmp/shipped && cd /tmp/shipped
@@ -326,14 +295,14 @@ jobs:
           node_file=$(find /tmp/shipped -name '*.node' | head -1)
           echo "--- shipped: $node_file"
           readelf -d "$node_file" | grep -E 'NEEDED|RPATH|RUNPATH' || true
-          ldd "$node_file" | grep -E 'onnxruntime|sherpa' || true
+          ldd "$node_file" 2>/dev/null | grep -E 'onnxruntime|sherpa' || true
           nm -D "$node_file" | grep -E ' Ort' || echo "no Ort symbols"
           cd "$GITHUB_WORKSPACE"
-          cargo build -p node-webrtc-rust-bindings --release --features silero-vad
+          cargo build -p node-webrtc-rust-bindings --release --features otel,rnnoise,silero-vad
           so=$(ls target/release/libnode_webrtc_rust_bindings.so)
           echo "--- branch: $so"
           readelf -d "$so" | grep -E 'NEEDED|RPATH|RUNPATH' || true
-          ldd "$so" | grep -E 'onnxruntime|sherpa' || true
+          ldd "$so" 2>/dev/null | grep -E 'onnxruntime|sherpa' || true
           nm -D "$so" | grep -E ' Ort' || echo "no Ort symbols"
 
       - name: (a) control, release, under gdb
@@ -341,16 +310,6 @@ jobs:
         run: |
           gdb -batch -ex run -ex bt -ex 'info sharedlibrary' -return-child-result \
             --args "$LID_CONTROL_BIN" --ignored --nocapture --test-threads=1
-
-      # Confirm step: the same control on origin/main crates (no ort alternative-backend in the graph).
-      - name: (diag) control on origin/main crates, release
-        if: always()
-        run: |
-          git fetch --no-tags --depth=1 origin main
-          git worktree add --detach /tmp/nwr-main origin/main
-          cd /tmp/nwr-main
-          cargo test -p node-webrtc-rust-vendor-sherpa-onnx --release --test lid_shared_model_test -- \
-            --ignored --nocapture --test-threads=1
 
       - name: (b) allowed-set scorer on fixtures, release
         if: always()

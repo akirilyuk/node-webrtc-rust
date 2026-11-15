@@ -498,12 +498,61 @@ describe('evaluateNoPauseScene', () => {
     it('fails when another final also holds the caller sentence', () => {
       const r = evaluateNoPauseScene(
         segments,
-        upgraded({ extra: [final('u9', 16_000, 'caller', 'please check my order')] }),
+        upgraded({ extra: [final('u9', 16_000, 'other', 'please check my order')] }),
         's',
         MEDIA0,
       )
       expect(r.upgradeLeaks).toHaveLength(0)
-      expect(r.failures.length).toBeGreaterThan(0)
+      expect(r.failures.some((f) => f.includes('holds bystander words'))).toBe(true)
+    })
+
+    it('n01 shape from eu-load 43759349585: counted, no failure', () => {
+      const n01: NoPauseSegment[] = [
+        {
+          role: 'main',
+          startMs: 300,
+          endMs: 5800,
+          text: 'Could you please check whether the invoice from last month was paid? I think it went out twice.',
+          kind: 'long',
+          enroll: true,
+        },
+        {
+          role: 'bystander',
+          startMs: 7300,
+          endMs: 15_600,
+          voicedEndMs: 15_500,
+          text: 'narrow path. On rainy afternoons my grandmother baked apple pies and sang old songs while the kitchen windows steamed.',
+          kind: 'background',
+        },
+        {
+          role: 'main',
+          startMs: 15_600,
+          endMs: 18_000,
+          voicedStartMs: 15_694,
+          text: 'victor seven eight nine',
+          kind: 'qualified',
+        },
+      ]
+      const seen: Seen[] = [
+        start('u1', 350),
+        final('u1', 7000, 'caller', n01[0]!.text),
+        start('u2', 7350),
+        barge('u2', 17_537),
+        {
+          ...final(
+            'u2',
+            19_000,
+            'caller',
+            'narrow path. On rainy afternoons my grandmother baked apple pies and sang old songs while the kitchen windows steamed. Victor seven eight nine',
+          ),
+          speakerCheckWindows: 6,
+        },
+      ]
+      const r = evaluateNoPauseScene(n01, seen, 's', MEDIA0)
+      expect(r.failures).toEqual([])
+      expect(r.upgradeLeaks).toHaveLength(1)
+      expect(r.cutPointLeaks).toHaveLength(0)
+      expect(r.leadingGlue).toHaveLength(0)
     })
 
     it('fails when the upgraded final is not labelled caller', () => {

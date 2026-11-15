@@ -79,11 +79,19 @@ fn count(s: &str, c: char) -> usize {
 struct LevelEmbedder {
     /// `B` frames embed as [`NEAR`] instead of [`OTHER`].
     near: bool,
+    /// Every 750 ms split-scan sub-window embeds as [`OTHER`] (a scan with no `caller` sub-window).
+    sub_other: bool,
 }
+
+/// Bytes of one 750 ms split-scan sub-window (16 kHz mono s16le).
+const SUB_WINDOW_BYTES: usize = 750 * 32;
 
 #[async_trait]
 impl SpeakerEmbedder for LevelEmbedder {
     async fn embed(&self, pcm: Bytes, _rate: u32) -> SpeechResult<Option<Vec<f32>>> {
+        if self.sub_other && pcm.len() == SUB_WINDOW_BYTES {
+            return Ok(Some(OTHER.to_vec()));
+        }
         let c = classes(&pcm);
         let (a, b) = (count(&c, 'A'), count(&c, 'B'));
         if a == 0 && b == 0 {
@@ -124,6 +132,8 @@ struct Script {
     near_other: bool,
     /// Frame classes of every abandoned (never decoded) stream, in abandon order.
     abandoned: Vec<String>,
+    /// Split-scan sub-windows embed as [`OTHER`] ([`LevelEmbedder::sub_other`]).
+    sub_other: bool,
 }
 
 struct LevelStt {
@@ -278,8 +288,11 @@ impl VendorFactory for SplitFactory {
         &self,
         _config: &SpeakerGateConfig,
     ) -> SpeechResult<Option<Box<dyn SpeakerEmbedder>>> {
-        let near = self.script.lock().unwrap().near_other;
-        Ok(Some(Box::new(LevelEmbedder { near })))
+        let (near, sub_other) = {
+            let s = self.script.lock().unwrap();
+            (s.near_other, s.sub_other)
+        };
+        Ok(Some(Box::new(LevelEmbedder { near, sub_other })))
     }
 }
 
@@ -1940,6 +1953,94 @@ async fn skipped_other_to_caller_split_not_speaking_upgrades_deferred() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn skipped_other_to_caller_split_with_drop_gives_a_caller_final() {
     assert_not_speaking_skip_upgrades(rig_with(drop_config()).await).await;
+}
+
+/// Decision hh: the caller's window scores `caller` but its split scan completes with no `caller`
+/// sub-window, so the split is deferred (the window is delivered as `other`, the barge-in stays
+/// held). The caller stops before another window: SpeechEnd with the split still deferred books
+/// `caller` for U1 before its final reads it. One `caller` final holds the whole utterance (both
+/// speakers), the barge-in is released exactly once, nothing is split.
+async fn assert_deferred_split_at_speech_end_upgrades(mut rig: Rig) {
+    rig.enroll().await;
+    rig.start_speaking().await;
+    rig.feed_paced(B, 30).await;
+    rig.drain();
+    assert!(rig.barge_ids().is_empty(), "other speaker barged in");
+    let mut a_fed = 0;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while rig.agent.speaker_gate_deferred_splits() == 0 {
+        assert!(Instant::now() < deadline, "no split deferred");
+        assert!(a_fed < 110, "no split deferred before the next window");
+        rig.feed(A, 1).await;
+        a_fed += 1;
+        sleep(Duration::from_millis(3)).await;
+    }
+    rig.drain();
+    assert!(
+        rig.barge_ids().is_empty(),
+        "barge-in released while the split was deferred"
+    );
+    assert_eq!(
+        rig.agent.speaker_gate_pending_changes(),
+        0,
+        "deferred, no change"
+    );
+    rig.feed(0, 30).await;
+    rig.idle().await;
+    rig.drain();
+    assert_eq!(
+        rig.agent.speaker_gate_deferred_splits(),
+        0,
+        "decided at SpeechEnd"
+    );
+    let ids = rig.speaking_start_ids();
+    assert_eq!(ids.len(), 3, "one utterance after enrollment: {ids:?}");
+    let u1 = ids[2].clone();
+    let (_, f) = rig.final_of(&u1);
+    assert_eq!(f.speaker.as_deref(), Some("caller"), "{f:?}");
+    let (a, b) = ab(&f);
+    assert!(
+        b >= 29 && a >= a_fed - 1,
+        "the final holds the whole utterance: a{a} b{b}"
+    );
+    assert_eq!(
+        rig.barge_ids(),
+        vec![Some(u1.clone())],
+        "barge-in released once"
+    );
+    let (splits, _, _, stale, _, _) = rig.agent.speaker_split_counts();
+    assert_eq!((splits, stale), (0, 0));
+    assert!(!rig
+        .log
+        .iter()
+        .any(|e| e.kind == SpeechEventKind::UserUtteranceSplit));
+    rig.agent.stop().await.unwrap();
+}
+
+fn deferred_split_script(deferred: bool) -> Script {
+    Script {
+        sub_other: true,
+        deferred,
+        ..Script::default()
+    }
+}
+
+fn deferred_split_config() -> VoiceAgentConfig {
+    let mut config = agent_config(true);
+    config.speaker_gate.check_speech_ms = 1000;
+    config
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_split_at_speech_end_upgrades_once() {
+    let rig = rig_with_script(deferred_split_config(), deferred_split_script(false)).await;
+    assert_deferred_split_at_speech_end_upgrades(rig).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_split_at_speech_end_upgrades_once_deferred_stt() {
+    let rig = rig_with_script(deferred_split_config(), deferred_split_script(true)).await;
+    assert_deferred_split_at_speech_end_upgrades(rig).await;
 }
 
 /// `replay_overflow`: the replay ring (test cap 600 ms) overflowed during the other speaker, so

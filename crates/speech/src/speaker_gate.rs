@@ -358,6 +358,14 @@ enum Msg {
         /// ([`SCAN_AWAIT_MARGIN_MS`]).
         enqueued: Instant,
     },
+    /// Decision hh: SpeechEnd resolved `key`'s deferred split as the skip upgrade
+    /// ([`SpeakerGate::resolve_deferred_split_at_end`]): deliver the confirming window's verdict
+    /// again (`other` re-check, read as `caller`) so the held barge-in is settled.
+    DeferredEnd {
+        key: u64,
+        /// The deferred window.
+        window: u32,
+    },
     /// An utterance that starts as the `caller` after an `other` -> `caller` split
     /// ([`SpeakerGate::inherit_caller`]): arms its watch with label `caller`.
     Inherit {
@@ -407,8 +415,41 @@ struct Book {
     /// clock (decision y; [`SpeakerGate::caller_floor_for`]).
     caller_floors: VecDeque<(u64, u32)>,
     /// Decision hh: keys whose `other` -> `caller` split is deferred (a `caller` window's split
-    /// scan completed with no `caller` sub-window), with the remembered window's fallback cut.
-    veto_pending: VecDeque<(u64, u32)>,
+    /// scan completed with no `caller` sub-window), with the remembered window's fallback cut and
+    /// that window's number.
+    veto_pending: VecDeque<(u64, u32, u32)>,
+    /// Keys whose SpeechEnd was seen (split on): a split deferred after it is resolved at once.
+    speech_ended: VecDeque<u64>,
+}
+
+/// Decision hh at the end of speech: the deferred split becomes the `not_speaking` skip's upgrade.
+/// The same book state as a stored `other` -> `caller` change (a split key) that the agent then
+/// skips with `not_speaking` ([`SpeakerGate::upgrade_after_skipped_split`]).
+fn book_deferred_end_upgrade(book: &mut Book, key: u64, cut: u32) {
+    if !book.split_keys.contains(&key) {
+        push_capped(&mut book.split_keys, key);
+    }
+    book_skip_upgrade(book, key);
+    eprintln!(
+        "[speaker-gate] info: speaker split skipped key={key} reason=not_speaking split_at_ms={cut} fallback=upgrade (deferred split at SpeechEnd)"
+    );
+}
+
+/// The skip -> upgrade transition: `caller` booked for `key` if it still reads `other`, and the
+/// key marked skip-upgraded (its `other` re-check verdicts then count as `caller`).
+fn book_skip_upgrade(book: &mut Book, key: u64) {
+    let still_other = book
+        .verdicts
+        .iter()
+        .rev()
+        .find(|(k, _)| *k == key)
+        .is_some_and(|(_, o)| *o == Outcome::Other);
+    if still_other {
+        push_capped(&mut book.verdicts, (key, Outcome::Caller));
+    }
+    if !book.skip_upgraded.contains(&key) {
+        push_capped(&mut book.skip_upgraded, key);
+    }
 }
 
 struct Shared {
@@ -1560,21 +1601,7 @@ impl SpeakerGate {
     /// confirming window's verdict ([`Self::upgraded_after_skipped_split`]). The key stays a split
     /// key: no further window is cut and the adaptive reference commits nothing from it.
     pub fn upgrade_after_skipped_split(&self, key: u64) {
-        {
-            let mut book = lock(&self.shared.book);
-            let still_other = book
-                .verdicts
-                .iter()
-                .rev()
-                .find(|(k, _)| *k == key)
-                .is_some_and(|(_, o)| *o == Outcome::Other);
-            if still_other {
-                push_capped(&mut book.verdicts, (key, Outcome::Caller));
-            }
-            if !book.skip_upgraded.contains(&key) {
-                push_capped(&mut book.skip_upgraded, key);
-            }
-        }
+        book_skip_upgrade(&mut lock(&self.shared.book), key);
         self.shared.notify.notify_waiters();
     }
 
@@ -1582,24 +1609,28 @@ impl SpeakerGate {
     /// outcome from the remembered window, which at the end of speech is the `not_speaking` skip.
     /// Books `caller` for `key` synchronously, before the final reads its verdict, and marks the
     /// key as split (no further window is cut, the adaptive reference commits nothing from it).
-    /// The held barge-in is released once: by the final that reads `caller`, or by a re-check
-    /// verdict still in flight ([`Self::upgraded_after_skipped_split`]).
+    /// The held barge-in is released once, by the verdict handler: the deferred window's verdict
+    /// is delivered again after the upgrade (`Msg::DeferredEnd`) and reads as `caller`
+    /// ([`Self::upgraded_after_skipped_split`]), as after the agent's `not_speaking` skip.
     fn resolve_deferred_split_at_end(&self, key: u64) {
-        let cut = {
+        let window = {
             let mut book = lock(&self.shared.book);
-            let Some(i) = book.veto_pending.iter().position(|(k, _)| *k == key) else {
+            if !book.speech_ended.contains(&key) {
+                push_capped(&mut book.speech_ended, key);
+            }
+            let Some(i) = book.veto_pending.iter().position(|(k, _, _)| *k == key) else {
                 return;
             };
-            let cut = book.veto_pending.remove(i).map_or(0, |(_, c)| c);
-            if !book.split_keys.contains(&key) {
-                push_capped(&mut book.split_keys, key);
-            }
-            cut
+            let (_, cut, window) = book.veto_pending.remove(i).unwrap_or((key, 0, 1));
+            book_deferred_end_upgrade(&mut book, key, cut);
+            window
         };
-        self.upgrade_after_skipped_split(key);
-        eprintln!(
-            "[speaker-gate] info: speaker split skipped key={key} reason=not_speaking split_at_ms={cut} fallback=upgrade (deferred at SpeechEnd)"
-        );
+        self.shared.notify.notify_waiters();
+        // As after the agent's skip: the confirming window's verdict is delivered after the
+        // upgrade, so the verdict handler releases the held barge-in. The deferred window's
+        // verdict went out before SpeechEnd and re-held it; nothing else would release it before
+        // the final, which comes only after the playback.
+        self.send(Msg::DeferredEnd { key, window });
     }
 
     /// Whether `key` was upgraded by [`Self::upgrade_after_skipped_split`].
@@ -1616,6 +1647,12 @@ impl SpeakerGate {
     #[doc(hidden)]
     pub fn pending_speaker_changes(&self) -> usize {
         lock(&self.shared.book).changes.len()
+    }
+
+    /// Decision hh: `other` -> `caller` splits deferred and not yet decided (test hook).
+    #[doc(hidden)]
+    pub fn deferred_speaker_splits(&self) -> usize {
+        lock(&self.shared.book).veto_pending.len()
     }
 
     /// The verdict a final of `key` can carry right now: the stored verdict, or `Unknown` when no
@@ -2292,6 +2329,16 @@ async fn run(
             shared.backlog_logged.store(false, Ordering::SeqCst);
         }
         match msg {
+            Msg::DeferredEnd { key, window } => {
+                on_verdict(Verdict {
+                    key,
+                    outcome: Outcome::Other,
+                    timed_out: false,
+                    reason: None,
+                    recheck: true,
+                    window,
+                });
+            }
             Msg::Inherit { key, floor } => {
                 // U2 of an `other` -> `caller` split starts as the caller, with its own watch and
                 // its caller floor (decision y).
@@ -2543,10 +2590,17 @@ async fn run(
                 let near_found = scan.and_then(|(_, end)| end.found()).filter(|_| near);
                 let defer = split_window && matches!(scan, Some((_, ScanEnd::Completed))) && {
                     let mut book = lock(&shared.book);
-                    let fresh = !book.veto_pending.iter().any(|(k, _)| *k == key)
+                    let fresh = !book.veto_pending.iter().any(|(k, _, _)| *k == key)
                         && !book.split_keys.contains(&key);
                     if let (true, Some((lo, _))) = (fresh, scan) {
-                        push_capped(&mut book.veto_pending, (key, other_to_caller_cut(lo, None)));
+                        let cut = other_to_caller_cut(lo, None);
+                        if book.speech_ended.contains(&key) {
+                            // Deferred after SpeechEnd: resolved at once; the `other` verdict this
+                            // window delivers reads `caller` through the skip upgrade.
+                            book_deferred_end_upgrade(&mut book, key, cut);
+                        } else {
+                            push_capped(&mut book.veto_pending, (key, cut, window));
+                        }
                     }
                     fresh
                 };
@@ -2592,8 +2646,8 @@ async fn run(
                 let deferred_cut = o2c
                     .then(|| {
                         let mut book = lock(&shared.book);
-                        let i = book.veto_pending.iter().position(|(k, _)| *k == key)?;
-                        book.veto_pending.remove(i).map(|(_, c)| c)
+                        let i = book.veto_pending.iter().position(|(k, _, _)| *k == key)?;
+                        book.veto_pending.remove(i).map(|(_, c, _)| c)
                     })
                     .flatten();
                 if let (true, Some((lo, end))) = (o2c, scan) {
@@ -4516,10 +4570,11 @@ mod tests {
         cfg.check_speech_ms = 1500;
         let mut steps: Vec<Step> = vec![(None, caller_v()), (None, other_v()), (None, caller_v())];
         no_hit_scan(&mut steps);
-        let (gate, _v, _q) = run_script_steps(cfg, steps.into(), 2, 75).await;
+        let (gate, verdicts, _q) = run_script_steps(cfg.clone(), steps.into(), 2, 75).await;
         assert!(gate.take_speaker_changes().is_empty(), "deferred");
         assert_eq!(gate.outcome_for(1), Some(Outcome::Other));
         gate.set_pending_barge(1, 0);
+        let delivered = lock(&verdicts).len();
         gate.end_utterance();
         assert_eq!(
             gate.outcome_for(1),
@@ -4535,6 +4590,92 @@ mod tests {
         assert!(lock(&gate.shared.book).split_keys.contains(&1));
         assert!(lock(&gate.shared.book).veto_pending.is_empty());
         assert!(gate.take_speaker_changes().is_empty());
+        // The state that hung the agent's final: the window 2 verdict already went out (`other`,
+        // barge-in re-held) and no window follows. The confirming window's verdict is delivered
+        // again after the upgrade, so the verdict handler settles the held barge-in.
+        for _ in 0..400 {
+            if lock(&verdicts).len() > delivered {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let after: Vec<_> = lock(&verdicts)[delivered..]
+            .iter()
+            .map(|v| (v.key, v.outcome, v.recheck, v.window))
+            .collect();
+        assert_eq!(
+            after,
+            vec![(1, Outcome::Other, true, 2)],
+            "one delivery after the upgrade"
+        );
+        assert!(gate.upgraded_after_skipped_split(1), "read as caller");
+        let bound = Duration::from_millis(u64::from(cfg.verify_timeout_ms) + 500);
+        assert_eq!(
+            tokio::time::timeout(bound, gate.await_outcome(1))
+                .await
+                .ok(),
+            Some(Outcome::Caller),
+            "the final reads caller within the bound"
+        );
+    }
+
+    /// Decision hh, the race: window 2's split scan is still running at SpeechEnd and completes
+    /// with no `caller` sub-window after it. The deferral resolves at once as the skip upgrade
+    /// (nothing is left pending for a SpeechEnd that already happened), and window 2's verdict,
+    /// delivered after the upgrade, reads as `caller`. Without the fix the split stayed deferred
+    /// with U1 `other`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_deferral_after_speech_end_upgrades_at_once() {
+        let mut cfg = split_cfg(true, 12);
+        cfg.check_speech_ms = 1500;
+        let parked = Arc::new(Notify::new());
+        let mut steps: Vec<Step> = vec![(None, caller_v()), (None, other_v()), (None, caller_v())];
+        no_hit_scan(&mut steps);
+        steps[3].0 = Some(Arc::clone(&parked));
+        let left = steps.len() - 4;
+        let (gate, verdicts, queue) = run_script_steps(cfg, steps.into(), 1, 75).await;
+        for f in 0..75 {
+            gate.push_frame(&alternating(f));
+        }
+        for _ in 0..400 {
+            if lock(&queue).len() <= left {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(lock(&queue).len(), left, "window 2's scan is parked");
+        gate.end_utterance();
+        assert_eq!(
+            gate.outcome_for(1),
+            Some(Outcome::Other),
+            "nothing deferred yet"
+        );
+        parked.notify_one();
+        for _ in 0..400 {
+            if lock(&verdicts).len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let v: Vec<_> = lock(&verdicts)
+            .iter()
+            .map(|v| (v.outcome, v.recheck, v.window))
+            .collect();
+        assert_eq!(v.len(), 2, "{v:?}");
+        assert_eq!(
+            v[1],
+            (Outcome::Other, true, 2),
+            "delivered after the upgrade"
+        );
+        assert!(gate.take_speaker_changes().is_empty());
+        assert_eq!(gate.deferred_speaker_splits(), 0, "nothing left pending");
+        assert_eq!(
+            gate.outcome_for(1),
+            Some(Outcome::Caller),
+            "upgraded at once"
+        );
+        assert!(gate.upgraded_after_skipped_split(1));
+        assert!(lock(&gate.shared.book).split_keys.contains(&1));
     }
 
     /// A scan embed that exceeds `verify_timeout_ms` falls back to the previous window's start

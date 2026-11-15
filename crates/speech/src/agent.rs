@@ -3689,6 +3689,14 @@ impl VoiceAgent {
             .map_or(0, |g| g.pending_speaker_changes())
     }
 
+    /// Test hook: `other` -> `caller` splits the gate deferred and has not decided yet (decision hh).
+    #[doc(hidden)]
+    pub fn speaker_gate_deferred_splits(&self) -> usize {
+        self.speaker_gate
+            .as_ref()
+            .map_or(0, |g| g.deferred_speaker_splits())
+    }
+
     /// Test hook: hold only the verdict delivery of a window that confirmed a speaker change
     /// (`SpeakerGate::park_change_delivery`).
     #[doc(hidden)]

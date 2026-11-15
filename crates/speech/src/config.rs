@@ -305,8 +305,11 @@ pub struct SpeakerGateConfig {
     ///   comes from sub-window embeddings (`SPLIT_STAGE2_SUB_MS` 750 ms on a `SPLIT_STAGE2_HOP_MS`
     ///   125 ms hop) on the verifier task from the previous scored window's
     ///   start: the first `caller` sub-window's start minus `speaker_gate::SPLIT_BACKOFF_MS`, never
-    ///   before that window's start, which is also the split without one or on a timeout (bounded
-    ///   by `verify_timeout_ms`). The first
+    ///   before that window's start, which is also the split on a timeout (bounded by
+    ///   `verify_timeout_ms`). A split is postponed when the scan finds no caller audio in the
+    ///   range (decision hh): it is decided by the next `caller` window (its first `caller`
+    ///   sub-window, else the postponed window's cut) or, at the end of the utterance, falls back
+    ///   to the `caller` upgrade as a `not_speaking` skip. The first
     ///   part stays `other` (never upgraded, never barges); the second part inherits the `caller`
     ///   verdict (`SpeakerGate::inherit_caller`) and gets its own watch.
     ///

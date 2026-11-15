@@ -303,16 +303,35 @@ async fn run_pattern_with(pattern: Pattern, impairment: Option<&str>) -> Outcome
 /// smears into an ambiguous detection.
 const CODEC_SLACK: u64 = 6;
 
+/// Paced input loses no frame the mixer did not count. On a host that keeps the test process
+/// scheduled the mixer counts no merge, so this is `gaps == 0`. A whole-process stall (a
+/// loaded host deschedules the sender, the room's loops and the listener together) makes the
+/// room's listener catch up by counted merges after it resumes; those gaps are the product's
+/// documented behaviour (`listener_catchup_compressed`, queue `compressed`), not a loss. The
+/// budget comes only from those counters, and `span` bounds the forward walk, so a replay or
+/// an uncounted skip still fails. Reproduction: SIGSTOP the test binary for 80 ms every 700 ms
+/// (10/10 failed `gaps == 0` with every gap inside the counted merges).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn paced_input_has_no_gaps_or_duplicates() {
     let o = run_pattern(Pattern::Paced).await;
     let r = &o.report;
-    assert_eq!(r.gaps, 0, "{r:?}");
+    let s = o.stats.expect("source stats");
+    let merged = merged_frames(&s);
+    assert!(
+        r.gaps <= merged,
+        "gaps {} exceed counted merges {merged}: {r:?} {s:?}",
+        r.gaps
+    );
     assert_eq!(r.duplicates, 0, "{r:?}");
     assert_eq!(r.reordered, 0, "{r:?}");
     assert!(
-        r.played >= FRAMES - CODEC_SLACK,
-        "heard too few markers: {r:?}"
+        r.span < FRAMES,
+        "span {} exceeds {FRAMES} source frames: {r:?}",
+        r.span
+    );
+    assert!(
+        r.played + merged >= FRAMES - CODEC_SLACK,
+        "heard too few markers: {r:?} {s:?}"
     );
     assert_accounting(&o);
     assert_inbound_stats_readable(&o);

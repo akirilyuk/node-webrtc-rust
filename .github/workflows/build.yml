@@ -255,37 +255,63 @@ jobs:
           bash scripts/ci/ensure-sherpa-models.sh
           echo "SHERPA_LID_MODEL_PATH=$GITHUB_WORKSPACE/examples/voice-agent-local-sherpa/.models/sherpa-onnx-whisper-tiny" >> "$GITHUB_ENV"
 
-      - name: Build LID test binaries
-        run: |
-          cargo test -p node-webrtc-rust-vendor-sherpa-onnx --no-run \
-            --test lid_shared_model_test --test lid_allowed_set_test --lib
+      - name: Install gdb (native stack on a crash)
+        run: apk add --no-cache gdb >/dev/null && gdb --version | head -1
 
-      - name: (a) control — sherpa LID only (lid_shared_model_test)
+      - name: Build LID test binaries (debug + release)
+        run: |
+          for profile in "" "--release"; do
+            cargo test -p node-webrtc-rust-vendor-sherpa-onnx $profile --no-run --message-format=json \
+              --test lid_shared_model_test --test lid_allowed_set_test --lib \
+              | grep -o '"executable":"[^"]*"' | sed 's/"executable":"\(.*\)"/\1/'
+          done | tee lid-test-bins.txt
+          echo "LID_CONTROL_DEBUG_BIN=$(grep '/debug/deps/lid_shared_model_test-' lid-test-bins.txt | tail -1)" >> "$GITHUB_ENV"
+
+      - name: (a1) control, debug, under gdb
         if: always()
+        run: |
+          gdb -batch -ex run -ex bt -ex 'info threads' -ex 'thread apply all bt 25' \
+            -return-child-result \
+            --args "$LID_CONTROL_DEBUG_BIN" --ignored --nocapture --test-threads=1
+
+      - name: (a2) control, release
+        if: always()
+        run: |
+          cargo test -p node-webrtc-rust-vendor-sherpa-onnx --release --test lid_shared_model_test -- \
+            --ignored --nocapture --test-threads=1
+
+      - name: (a3) control, debug, RUST_MIN_STACK=16 MiB
+        if: always()
+        env:
+          RUST_MIN_STACK: '16777216'
         run: |
           cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test lid_shared_model_test -- \
             --ignored --nocapture --test-threads=1
 
-      - name: (b) allowed-set scorer on fixtures (lid_allowed_set_test)
+      - name: (b) allowed-set scorer on fixtures, release
         if: always()
         run: |
-          set +e
+          cargo test -p node-webrtc-rust-vendor-sherpa-onnx --release --test lid_allowed_set_test -- \
+            --ignored --nocapture --test-threads=1
+
+      - name: (b) allowed-set scorer on fixtures, debug, RUST_MIN_STACK=16 MiB
+        if: always()
+        env:
+          RUST_MIN_STACK: '16777216'
+        run: |
           cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test lid_allowed_set_test -- \
             --ignored --nocapture --test-threads=1
-          status=$?
-          if [ "$status" -ne 0 ]; then
-            # A native crash (SIGSEGV) has no Rust backtrace: print the native stack under gdb.
-            bin=$(cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test lid_allowed_set_test \
-              --no-run 2>&1 | sed -n 's/.*Executable .*(\(.*\))$/\1/p' | tail -1)
-            if [ -n "$bin" ] && apk add --no-cache gdb >/dev/null 2>&1; then
-              gdb -batch -ex run -ex bt -ex 'thread apply all bt 20' \
-                --args "$bin" --ignored --nocapture --test-threads=1 || true
-            fi
-          fi
-          exit "$status"
 
-      - name: (c) scorer failure falls back to sherpa (lid::tests)
+      - name: (c) scorer failure falls back to sherpa, release
         if: always()
+        run: |
+          cargo test -p node-webrtc-rust-vendor-sherpa-onnx --release --lib lid::tests -- \
+            --ignored --nocapture --test-threads=1
+
+      - name: (c) scorer failure falls back to sherpa, debug, RUST_MIN_STACK=16 MiB
+        if: always()
+        env:
+          RUST_MIN_STACK: '16777216'
         run: |
           cargo test -p node-webrtc-rust-vendor-sherpa-onnx --lib lid::tests -- \
             --ignored --nocapture --test-threads=1

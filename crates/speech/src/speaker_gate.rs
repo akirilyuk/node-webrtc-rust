@@ -1214,7 +1214,7 @@ impl SpeakerGate {
                 end_ms: (cur.media_bytes / BYTES_PER_MS) as u32,
                 enqueued: Instant::now(),
             });
-        } else if self.cfg.recheck_on_other
+        } else if (self.cfg.recheck_on_other || self.cfg.split_on_speaker_change)
             && self.outcome_for(cur.key) == Some(Outcome::Other)
             && !self.recheck_in_flight(cur.key)
             && !self.change_pending(cur.key)
@@ -1223,7 +1223,8 @@ impl SpeakerGate {
             // held for a further window is dropped. A window in flight keeps it (the final awaits
             // that result). So does a confirmed speaker change the agent has not applied yet: the
             // split drops it, a skipped `other` -> `caller` split releases it
-            // (`upgrade_after_skipped_split`), and a final that comes first settles it.
+            // (`upgrade_after_skipped_split`), and a final that comes first settles it. The split
+            // implies the re-check hold (`recheck_open_locked`), so it also implies this release.
             feed.pending_barge.remove(&cur.key);
         }
         if !self.is_enrolled() {
@@ -5117,12 +5118,14 @@ mod tests {
         assert_eq!(end_ms, Some(600));
     }
 
-    /// With the watch on and `recheck_on_other` off, `end_locked` leaves a held barge-in of an
-    /// `other` key exactly as with the watch off: the verdict handler owns it.
+    /// `recheck_on_other` off: with the split off, `end_locked` leaves a held barge-in of an
+    /// `other` key to the verdict handler (unchanged). With the split on, the split implies the
+    /// re-check hold and so the SpeechEnd release: ended with nothing in flight and no change
+    /// pending, the held barge-in is dropped (a later `cut_live` cannot fire a bystander barge).
+    /// A re-check still in flight keeps it.
     #[test]
-    fn pending_barge_after_end_matches_flag_off_without_recheck() {
-        let mut kept = Vec::new();
-        for split in [false, true] {
+    fn end_drops_held_barge_with_split_on_without_recheck() {
+        let kept = |split: bool, in_flight: bool| {
             let mut cfg = split_cfg(split, 12);
             cfg.recheck_on_other = false;
             let gate = SpeakerGate::new(cfg);
@@ -5130,11 +5133,22 @@ mod tests {
             let _rx = lock(&gate.rx).take().unwrap();
             start(&gate, 1, 10);
             store(&gate, 1, Outcome::Other);
+            if in_flight {
+                lock(&gate.shared.book).rechecks_in_flight.push_back(1);
+            }
             gate.set_pending_barge(1, 0);
             gate.end_utterance();
-            kept.push(gate.has_pending_barge(1));
-        }
-        assert_eq!(kept[0], kept[1]);
+            gate.has_pending_barge(1)
+        };
+        assert!(
+            kept(false, false),
+            "(a) split off: kept for the verdict handler"
+        );
+        assert!(
+            !kept(true, false),
+            "(b) split on, nothing in flight: dropped"
+        );
+        assert!(kept(true, true), "(c) split on, re-check in flight: kept");
     }
 
     #[test]

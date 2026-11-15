@@ -169,3 +169,81 @@ the caller): 0/322 and 0/330 on LibriSpeech dev-clean, 0/120 on Piper VAD-separa
 bystanders, +1/250 on the bystander part of merged Piper utterances.
 Sub-window embeds at 750/125: p99 19 per scan, about 150-250 ms.
 Paused merged scenes: 0 of 156 split, 0 leaked words.
+
+## 6j: U1 evidence for an other-to-caller split (decision aa)
+
+Run: `near_miss_bench --evidence` with `--stt`, `--fixtures` and `--straddle-piper` set to the rerolled Piper held-out fixtures, `--librispeech --ls-split dev-clean` and `--bed` (Tocumen). The gate is the shipped one: window 1 `other`, then the first `caller` window or a near-miss window whose 750/125 scan finds a `caller` sub-window within the remaining verify budget, cut by config A. A rule decides from U1's window scores (windows 1..k-1) whether the change splits or stays the re-check upgrade (U1 becomes caller).
+
+- Bystander-to-caller: the 6g held-out scenes (merged no-pause, merged paused, Piper and LibriSpeech straddle). Paused scenes are VAD-separate and never split, so they do not appear.
+- Caller-only: LibriSpeech dev-clean whole utterances (6 per caller, not the straddle pieces), Tocumen -12 dB and clean; Piper: 3 caller phrases of consecutive fixture scenes joined with 150 ms gaps, as is and with Tocumen added. Window 1 starts at the caller's onset.
+- Lost words are measure A above the floor of the same utterance. The floor is the cut at the caller onset (bystander-to-caller) or at U1's start (caller-only), with no gate. An upgrade loses nothing above the floor and leaks every bystander word of the merged utterance. Whole-utterance drops (window 1 `other`, no confirm) are the same under every rule and are listed apart.
+- The Piper caller-only floor is high (6.5 % of reference words) because the reference is the whole joined utterance and the head decode covers 2500 ms; it cancels above the floor.
+- R4 (window 1 outside the near-miss band, or a second `other` window) gives the same answer as R3 on every input and has no row of its own.
+
+### Floor and drops per set (no rule changes these)
+
+| set | utterances | reference words | STT floor (words measure A misses with no gate) | whole-utterance drops (window 1 other, no confirm): utterances / words above floor | other-to-caller splits today |
+| --- | --- | --- | --- | --- | --- |
+| Piper straddle | 355 | 1298 | 0 | 0 / 0 | 355 |
+| LibriSpeech straddle, Tocumen bed -12 dB | 80 | 345 | 10 | 11 / 41 | 69 |
+| LibriSpeech straddle, clean | 118 | 496 | 0 | 8 / 26 | 110 |
+| Piper fixtures, merged no-pause | 250 | 2881 | 0 | 0 / 0 | 250 |
+| Piper caller-only, fixture babble | 600 | 19211 | 1243 | 0 / 0 | 0 |
+| Piper caller-only, fixture babble + Tocumen bed -12 dB | 601 | 19205 | 1233 | 0 / 0 | 4 |
+| LibriSpeech dev-clean caller-only, Tocumen bed -12 dB | 261 | 4698 | 26 | 21 / 220 | 26 |
+| LibriSpeech dev-clean caller-only, clean | 252 | 4747 | 0 | 16 / 190 | 9 |
+
+### Per set (split lost above floor / leaked words / splits kept / splits upgraded)
+
+| rule | Piper straddle | LibriSpeech straddle, Tocumen bed -12 dB | LibriSpeech straddle, clean | Piper fixtures, merged no-pause | Piper caller-only, fixture babble | Piper caller-only, fixture babble + Tocumen bed -12 dB | LibriSpeech dev-clean caller-only, Tocumen bed -12 dB | LibriSpeech dev-clean caller-only, clean |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| today: always split | 0 / 93 / 355 / 0 | 4 / 15 / 69 / 0 | 6 / 17 / 110 / 0 | 21 / 44 / 250 / 0 | 0 / 0 / 0 / 0 | 3 / 0 / 4 / 0 | 98 / 0 / 26 / 0 | 51 / 0 / 9 / 0 |
+| never split (always upgrade) | 0 / 4325 / 0 / 355 | 0 / 789 / 0 / 69 | 0 / 1284 / 0 / 110 | 0 / 4257 / 0 / 250 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 4 | 0 / 0 / 0 / 26 | 0 / 0 / 0 / 9 |
+| R2: U1 has >= 2 other windows | 0 / 93 / 355 / 0 | 4 / 15 / 69 / 0 | 6 / 17 / 110 / 0 | 21 / 55 / 248 / 2 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 4 | 62 / 0 / 5 / 21 | 35 / 0 / 3 / 6 |
+| R1': a U1 window < 0.20 | 0 / 396 / 329 / 26 | 4 / 110 / 62 / 7 | 6 / 131 / 101 / 9 | 18 / 477 / 223 / 27 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 4 | 0 / 0 / 0 / 26 | 17 / 0 / 1 / 8 |
+| R3': a U1 window < 0.20, or >= 2 other windows | 0 / 93 / 355 / 0 | 4 / 15 / 69 / 0 | 6 / 17 / 110 / 0 | 21 / 55 / 248 / 2 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 4 | 62 / 0 / 5 / 21 | 35 / 0 / 3 / 6 |
+| R1': a U1 window < 0.25 | 0 / 166 / 349 / 6 | 4 / 72 / 65 / 4 | 6 / 85 / 104 / 6 | 19 / 224 / 238 / 12 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 4 | 0 / 0 / 0 / 26 | 19 / 0 / 2 / 7 |
+| R3': a U1 window < 0.25, or >= 2 other windows | 0 / 93 / 355 / 0 | 4 / 15 / 69 / 0 | 6 / 17 / 110 / 0 | 21 / 55 / 248 / 2 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 4 | 62 / 0 / 5 / 21 | 35 / 0 / 3 / 6 |
+| R1: a U1 window < 0.30 | 0 / 128 / 352 / 3 | 4 / 26 / 68 / 1 | 6 / 42 / 108 / 2 | 21 / 44 / 250 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 4 | 46 / 0 / 6 / 20 | 19 / 0 / 2 / 7 |
+| R3 (= R4): a U1 window < 0.30, or >= 2 other windows | 0 / 93 / 355 / 0 | 4 / 15 / 69 / 0 | 6 / 17 / 110 / 0 | 21 / 44 / 250 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 4 | 68 / 0 / 8 / 18 | 35 / 0 / 3 / 6 |
+| R1': a U1 window < 0.35 | 0 / 93 / 355 / 0 | 4 / 26 / 68 / 1 | 6 / 17 / 110 / 0 | 21 / 44 / 250 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 4 | 52 / 0 / 8 / 18 | 35 / 0 / 3 / 6 |
+| R3': a U1 window < 0.35, or >= 2 other windows | 0 / 93 / 355 / 0 | 4 / 15 / 69 / 0 | 6 / 17 / 110 / 0 | 21 / 44 / 250 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 4 | 68 / 0 / 9 / 17 | 35 / 0 / 3 / 6 |
+| R1': a U1 window < 0.40 | 0 / 93 / 355 / 0 | 4 / 15 / 69 / 0 | 6 / 17 / 110 / 0 | 21 / 44 / 250 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 1 / 3 | 82 / 0 / 16 / 10 | 46 / 0 / 6 / 3 |
+| R3': a U1 window < 0.40, or >= 2 other windows | 0 / 93 / 355 / 0 | 4 / 15 / 69 / 0 | 6 / 17 / 110 / 0 | 21 / 44 / 250 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 1 / 3 | 82 / 0 / 16 / 10 | 46 / 0 / 6 / 3 |
+
+### Ranked (split-dependent lost words above the floor, both sets; then leaked words)
+
+| rank | rule | caller-only lost above floor | caller-only false splits left | bystander->caller lost above floor | true splits upgraded | leaked words | total lost above floor |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | never split (always upgrade) | 0 | 0 | 0 | 784 | 10655 | 0 |
+| 2 | R1': a U1 window < 0.20 | 17 | 1 | 28 | 69 | 1114 | 45 |
+| 3 | R1': a U1 window < 0.25 | 19 | 2 | 29 | 28 | 547 | 48 |
+| 4 | R1: a U1 window < 0.30 | 65 | 8 | 31 | 6 | 240 | 96 |
+| 5 | R1': a U1 window < 0.35 | 87 | 11 | 31 | 1 | 180 | 118 |
+| 6 | R2: U1 has >= 2 other windows | 97 | 8 | 31 | 2 | 180 | 128 |
+| 7 | R3': a U1 window < 0.20, or >= 2 other windows | 97 | 8 | 31 | 2 | 180 | 128 |
+| 8 | R3': a U1 window < 0.25, or >= 2 other windows | 97 | 8 | 31 | 2 | 180 | 128 |
+| 9 | R3 (= R4): a U1 window < 0.30, or >= 2 other windows | 103 | 11 | 31 | 0 | 169 | 134 |
+| 10 | R3': a U1 window < 0.35, or >= 2 other windows | 103 | 12 | 31 | 0 | 169 | 134 |
+| 11 | R1': a U1 window < 0.40 | 128 | 23 | 31 | 0 | 169 | 159 |
+| 12 | R3': a U1 window < 0.40, or >= 2 other windows | 128 | 23 | 31 | 0 | 169 | 159 |
+| 13 | today: always split | 152 | 39 | 31 | 0 | 169 | 183 |
+
+### Caller-only false splits left under "R1': a U1 window < 0.25" (set, U1 scores, caller words lost above floor)
+
+- LibriSpeech dev-clean caller-only, clean: U1 [0.221,0.413], lost 2
+- LibriSpeech dev-clean caller-only, clean: U1 [0.370,0.215,0.190,0.306], lost 17
+
+### Caller-only false splits left under "R1: a U1 window < 0.30" (set, U1 scores, caller words lost above floor)
+
+- LibriSpeech dev-clean caller-only, Tocumen bed -12 dB: U1 [0.275], lost 2
+- LibriSpeech dev-clean caller-only, Tocumen bed -12 dB: U1 [0.297,0.441], lost 5
+- LibriSpeech dev-clean caller-only, Tocumen bed -12 dB: U1 [0.426,0.282,0.332,0.455,0.308,0.412], lost 20
+- LibriSpeech dev-clean caller-only, Tocumen bed -12 dB: U1 [0.276], lost 4
+- LibriSpeech dev-clean caller-only, Tocumen bed -12 dB: U1 [0.300,0.418,0.381], lost 15
+- LibriSpeech dev-clean caller-only, Tocumen bed -12 dB: U1 [0.298], lost 0
+- LibriSpeech dev-clean caller-only, clean: U1 [0.221,0.413], lost 2
+- LibriSpeech dev-clean caller-only, clean: U1 [0.370,0.215,0.190,0.306], lost 17
+
+Gate false accepts are unchanged by every rule: a rule only decides split or upgrade after the gate already confirmed `caller`. An upgrade counts no lost words above the floor; its leak is every bystander word of the merged utterance.
+

@@ -696,6 +696,9 @@ fn run() -> Result<(), String> {
             "--stt" => {
                 let _ = straddle::STT_DIR.set(PathBuf::from(value("--stt")?));
             }
+            "--evidence" => {
+                let _ = straddle::EVIDENCE.set(());
+            }
             "--ls-split" => {
                 let _ = straddle::LS_SPLIT.set(value("--ls-split")?);
             }
@@ -756,6 +759,13 @@ fn run() -> Result<(), String> {
     }
     if !scenes.is_empty() {
         md.push_str(&tables(&scenes, threshold, &embedder));
+    }
+    if straddle::EVIDENCE.get().is_some() {
+        straddle::caller_only_piper(&embedder, &straddle_piper, bed.as_deref(), threshold)?;
+        if let Some(root) = &librispeech {
+            straddle::caller_only_ls(&embedder, root, bed.as_deref(), ls_callers, threshold)?;
+        }
+        md.push_str(&straddle::evidence_tables());
     }
     print!("{md}");
     if let Some(path) = out {
@@ -1306,6 +1316,36 @@ mod straddle {
             })
         };
         let floor_kept = a_at(p.c_on).0;
+        if EVIDENCE.get().is_some() {
+            // 6j: the product gate's other -> caller confirm and cut (config A), and U1's scores.
+            let rec = match product_o2c(&p.samples, utt, embedder, &p.reference, threshold) {
+                Some((_, cut, u1)) => {
+                    let (kept, lk) = a_at(cut);
+                    EvRec {
+                        set: String::new(),
+                        caller_only: false,
+                        u1,
+                        split: Some((floor_kept.saturating_sub(kept), lk)),
+                        upgrade_leak: bref.len(),
+                        nosplit_lost: 0,
+                        ref_words: cref.len(),
+                        floor_gap: cref.len().saturating_sub(floor_kept),
+                    }
+                }
+                None => EvRec {
+                    set: String::new(),
+                    caller_only: false,
+                    u1: Vec::new(),
+                    split: None,
+                    upgrade_leak: 0,
+                    nosplit_lost: floor_kept,
+                    ref_words: cref.len(),
+                    floor_gap: cref.len().saturating_sub(floor_kept),
+                },
+            };
+            EV_PENDING.lock().unwrap().push(rec);
+            return;
+        }
         let cs = cfgs();
         let mut subs_cache: SubsCache = Default::default();
         let mut res = Vec::new();
@@ -1366,6 +1406,13 @@ mod straddle {
 
     /// Drains [`RECS`] into `NM_SWEEP_TSV` (default /tmp/sg-nm-6g-sweep.tsv) for set `title`.
     fn sweep_flush(title: &str) {
+        {
+            let mut pending = std::mem::take(&mut *EV_PENDING.lock().unwrap());
+            for r in &mut pending {
+                r.set = title.to_string();
+            }
+            EV.lock().unwrap().extend(pending);
+        }
         let recs = std::mem::take(&mut *RECS.lock().unwrap());
         if recs.is_empty() {
             return;
@@ -2047,6 +2094,470 @@ mod straddle {
             ));
         }
         md.push('\n');
+        md
+    }
+
+    // ---- 6j (decision aa): an other -> caller split needs confident other evidence in U1. ----
+
+    /// 6j: `--evidence` replaces the 6g cut sweep with the U1-evidence bench (`EVIDENCE.md`
+    /// section of `NEAR_MISS_BENCH.md`).
+    pub static EVIDENCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    /// Product constants: `NEAR_MISS_MIN_SCORE`, `SPLIT_STAGE2_SUB_MS` / `_HOP_MS`, `SPLIT_BACKOFF_MS`.
+    const P_NM_LO: f32 = 0.30;
+    const P_SUB: usize = 750;
+    const P_HOP: usize = 125;
+    const P_BACK: usize = 300;
+    /// Caller-only utterances per LibriSpeech caller (files not used by the straddle pieces).
+    const CO_PIECES: usize = 6;
+    /// Gap between concatenated Piper caller phrases (merged by the VAD into one utterance).
+    const CO_GAP_MS: usize = 150;
+
+    /// One utterance of the 6j bench. `split`: the product gate confirms an other -> caller change
+    /// (lost caller words above the floor, leaked bystander words, both measure A at the cut).
+    /// Without a split the rule never applies: `nosplit_lost` words are lost under every rule.
+    /// A rule that refuses the split upgrades U1 to caller: no caller word is lost and
+    /// `upgrade_leak` bystander words reach the caller final.
+    struct EvRec {
+        set: String,
+        caller_only: bool,
+        u1: Vec<f32>,
+        split: Option<(usize, usize)>,
+        upgrade_leak: usize,
+        nosplit_lost: usize,
+        /// Reference words, and the STT floor: reference words measure A misses with the cut at
+        /// the caller onset (bystander->caller) or at U1's start (caller-only), no gate.
+        ref_words: usize,
+        floor_gap: usize,
+    }
+
+    static EV_PENDING: std::sync::Mutex<Vec<EvRec>> = std::sync::Mutex::new(Vec::new());
+    static EV: std::sync::Mutex<Vec<EvRec>> = std::sync::Mutex::new(Vec::new());
+
+    /// The product gate with the watch on (chunk 6g): window 1 `other`, then the first window
+    /// `k >= 2` scoring `caller`, or a near-miss window (`[0.30, thr)`) whose 750/125 scan finds a
+    /// `caller` sub-window within the window's remaining verify budget. The cut is that
+    /// sub-window's start minus 300 ms, never before the previous window's start (config A).
+    /// Returns (k, cut, U1 window scores = windows 1..k).
+    fn product_o2c(
+        samples: &[f32],
+        utt: &Utt,
+        embedder: &Embedder,
+        reference: &[f32],
+        threshold: f32,
+    ) -> Option<(usize, usize, Vec<f32>)> {
+        if utt.wins.first()?.1 >= threshold {
+            return None;
+        }
+        for k in 1..utt.wins.len() {
+            let (start, s, ms) = utt.wins[k];
+            let lo = utt.wins[k - 1].0;
+            let near = (P_NM_LO..threshold).contains(&s);
+            if s < threshold && !near {
+                continue;
+            }
+            let subs = subs_for(
+                samples,
+                lo,
+                start + WINDOW_MS,
+                (P_SUB, P_HOP),
+                embedder,
+                reference,
+            );
+            let budget = VERIFY_MS - ms;
+            let (mut spent, mut first) = (0.0, None);
+            for (t, sc, ems) in &subs {
+                spent += ems;
+                if spent > budget {
+                    break;
+                }
+                if *sc >= threshold {
+                    first = Some(*t);
+                    break;
+                }
+            }
+            if near && first.is_none() {
+                continue;
+            }
+            let cut = first.map_or(lo, |p| p.saturating_sub(P_BACK).max(lo));
+            return Some((k, cut, utt.wins[..k].iter().map(|w| w.1).collect()));
+        }
+        None
+    }
+
+    /// A caller-only utterance `[u, ue)` of `samples` (`clean` = the same timeline without the
+    /// added bed, for the reference decode).
+    fn caller_only_rec(
+        set: &str,
+        samples: &[f32],
+        clean: &[f32],
+        (u, ue): (usize, usize),
+        embedder: &Embedder,
+        reference: &[f32],
+        threshold: f32,
+    ) {
+        let wins = score_windows(samples, u, ue, embedder, reference);
+        let utt = Utt {
+            wins,
+            rechecks: Vec::new(),
+        };
+        let Some((cref, _)) = recognize_words(slice(clean, u, ue)) else {
+            return;
+        };
+        let kept = |cut: usize| -> usize {
+            let end = (cut + U2_HEAD_MS).min(ue);
+            let (hyp, _) = recognize_words(slice(samples, cut, end)).unwrap_or_default();
+            let (del, _) = head_align(&cref, &hyp);
+            cref.len() - del.min(cref.len())
+        };
+        let floor_kept = kept(u);
+        let (split, u1, nosplit_lost) =
+            match product_o2c(samples, &utt, embedder, reference, threshold) {
+                Some((_, cut, u1)) => (Some((floor_kept.saturating_sub(kept(cut)), 0)), u1, 0),
+                // Window 1 `other` and no `caller` window: the whole utterance is dropped under
+                // every rule (a gate false reject, not this chunk's change), counted above the floor.
+                None if utt.wins.first().is_some_and(|w| w.1 < threshold) => {
+                    (None, Vec::new(), floor_kept)
+                }
+                None => (None, Vec::new(), 0),
+            };
+        EV.lock().unwrap().push(EvRec {
+            set: set.to_string(),
+            caller_only: true,
+            u1,
+            split,
+            upgrade_leak: 0,
+            nosplit_lost,
+            ref_words: cref.len(),
+            floor_gap: cref.len().saturating_sub(floor_kept),
+        });
+    }
+
+    fn load_bed(p: &Path) -> Result<Vec<f32>, String> {
+        let bytes = fs::read(p).map_err(|e| format!("bed: {e}"))?;
+        let f: Vec<f32> = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect();
+        Ok(f.as_chunks::<3>()
+            .0
+            .iter()
+            .map(|c| (c[0] + c[1] + c[2]) / 3.0)
+            .collect())
+    }
+
+    /// 6j set (1), LibriSpeech: whole utterances of each caller (VAD utterances of at least one
+    /// window), same enrollment as the straddle set, Tocumen bed -12 dB and clean.
+    pub fn caller_only_ls(
+        embedder: &Embedder,
+        root: &Path,
+        bed: Option<&Path>,
+        max_callers: usize,
+        threshold: f32,
+    ) -> Result<(), String> {
+        let split = LS_SPLIT.get().map_or("test-clean", |s| s.as_str());
+        let test = root.join(split);
+        let mut spk: Vec<PathBuf> = fs::read_dir(&test)
+            .map_err(|e| format!("{}: {e}", test.display()))?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.is_dir())
+            .collect();
+        spk.sort();
+        let bed16 = bed.map(load_bed).transpose()?;
+        let mut conds: Vec<(String, Option<&[f32]>)> = Vec::new();
+        if let Some(b) = &bed16 {
+            conds.push((
+                format!("LibriSpeech {split} caller-only, Tocumen bed -12 dB"),
+                Some(b),
+            ));
+        }
+        conds.push((format!("LibriSpeech {split} caller-only, clean"), None));
+        for (cname, cbed) in &conds {
+            for (ci, s) in spk.iter().take(max_callers).enumerate() {
+                let mut files = Vec::new();
+                wavs(s, &mut files)?;
+                if files.len() < 1 + PIECES_PER_CALLER + 1 {
+                    continue;
+                }
+                let e = load(&files[0])?;
+                let Some((eon, _)) = voiced(&e) else { continue };
+                let Some((reference, _)) = embedder.embed(slice(&e, eon, eon + 3000)) else {
+                    continue;
+                };
+                for r in 0..CO_PIECES {
+                    let Some(f) = files.get(1 + PIECES_PER_CALLER + r) else {
+                        break;
+                    };
+                    let a = load(f)?;
+                    let mut clean = vec![0f32; LEAD_MS * SAMPLES_PER_MS];
+                    clean.extend_from_slice(slice(&a, 0, 15_000));
+                    clean.extend(vec![0f32; TAIL_MS * SAMPLES_PER_MS]);
+                    let mut s = clean.clone();
+                    add_bed(&mut s, cbed.map(|b| (b, (ci * 6151 + r * 99991) % b.len())));
+                    for (u, ue) in vad_utterances(&pcm48(&s))? {
+                        if ue >= u + WINDOW_MS {
+                            caller_only_rec(
+                                cname,
+                                &s,
+                                &clean,
+                                (u, ue),
+                                embedder,
+                                &reference,
+                                threshold,
+                            );
+                        }
+                    }
+                }
+                eprintln!("{cname} caller {ci} done");
+            }
+        }
+        Ok(())
+    }
+
+    /// 6j set (1), Piper: 3 caller phrases of consecutive fixture scenes (one voice, the
+    /// fixtures' babble bed) joined with 150 ms gaps into one utterance, scored against the
+    /// first scene's enrollment; as is and with the Tocumen bed -12 dB added.
+    pub fn caller_only_piper(
+        embedder: &Embedder,
+        dirs: &[PathBuf],
+        bed: Option<&Path>,
+        threshold: f32,
+    ) -> Result<(), String> {
+        let mut phrases: Vec<(Vec<f32>, Vec<f32>)> = Vec::new();
+        for dir in dirs {
+            let manifest = parse_json(
+                &fs::read_to_string(dir.join("manifest.json"))
+                    .map_err(|e| format!("manifest: {e}"))?,
+            )?;
+            let Some(Json::Arr(list)) = manifest.get("scenes") else {
+                return Err("manifest has no scenes".into());
+            };
+            for scene in list {
+                let id = text(scene, "id").unwrap_or_default();
+                let Some(Json::Arr(segs)) = scene.get("segments") else {
+                    continue;
+                };
+                let role = |s: &Json| text(s, "role").unwrap_or_default();
+                let is_enroll = |s: &Json| matches!(s.get("enroll"), Some(Json::Bool(true)));
+                let (Some(e), Some(c)) = (
+                    segs.iter().find(|s| is_enroll(s)),
+                    segs.iter().find(|s| role(s) == "main" && !is_enroll(s)),
+                ) else {
+                    continue;
+                };
+                let (Some(e), Some(cs)) = (span_of(e), span_of(c)) else {
+                    continue;
+                };
+                let samples = read_wav(&dir.join("scenes").join(format!("{id}.16k.wav")))?;
+                let (reference, _) = embedder
+                    .embed(slice(&samples, e.on, e.off))
+                    .ok_or("enroll embed")?;
+                phrases.push((ms_to(&samples, cs.on, cs.off), reference));
+            }
+        }
+        let bed16 = bed.map(load_bed).transpose()?;
+        let n = phrases.len();
+        let mut conds: Vec<(&str, Option<&[f32]>)> =
+            vec![("Piper caller-only, fixture babble", None)];
+        if let Some(b) = &bed16 {
+            conds.push((
+                "Piper caller-only, fixture babble + Tocumen bed -12 dB",
+                Some(b),
+            ));
+        }
+        for (cname, cbed) in conds {
+            for i in 0..n {
+                let mut clean = vec![0f32; LEAD_MS * SAMPLES_PER_MS];
+                for j in 0..3 {
+                    if j > 0 {
+                        clean.extend(vec![0f32; CO_GAP_MS * SAMPLES_PER_MS]);
+                    }
+                    clean.extend_from_slice(&phrases[(i + j) % n].0);
+                }
+                clean.extend(vec![0f32; TAIL_MS * SAMPLES_PER_MS]);
+                let mut s = clean.clone();
+                add_bed(&mut s, cbed.map(|b| (b, (i * 7919) % b.len())));
+                for (u, ue) in vad_utterances(&pcm48(&s))? {
+                    if ue >= u + WINDOW_MS {
+                        caller_only_rec(
+                            cname,
+                            &s,
+                            &clean,
+                            (u, ue),
+                            embedder,
+                            &phrases[i].1,
+                            threshold,
+                        );
+                    }
+                }
+            }
+            eprintln!("{cname} done ({n} utterances)");
+        }
+        Ok(())
+    }
+
+    type Rule = (String, Box<dyn Fn(&[f32]) -> bool>);
+
+    /// Candidate rules on U1's window scores (all below the threshold): `true` = split.
+    fn ev_rules() -> Vec<Rule> {
+        let min = |u: &[f32]| u.iter().cloned().fold(f32::MAX, f32::min);
+        let mut v: Vec<Rule> = vec![
+            ("today: always split".into(), Box::new(|_| true)),
+            ("never split (always upgrade)".into(), Box::new(|_| false)),
+            (
+                "R2: U1 has >= 2 other windows".into(),
+                Box::new(|u: &[f32]| u.len() >= 2),
+            ),
+        ];
+        for x in [0.20f32, 0.25, 0.30, 0.35, 0.40] {
+            let tag = if (x - 0.30).abs() < 1e-6 { "R1" } else { "R1'" };
+            v.push((
+                format!("{tag}: a U1 window < {x:.2}"),
+                Box::new(move |u: &[f32]| min(u) < x),
+            ));
+            let tag = if (x - 0.30).abs() < 1e-6 {
+                "R3 (= R4)"
+            } else {
+                "R3'"
+            };
+            v.push((
+                format!("{tag}: a U1 window < {x:.2}, or >= 2 other windows"),
+                Box::new(move |u: &[f32]| min(u) < x || u.len() >= 2),
+            ));
+        }
+        v
+    }
+
+    /// The 6j tables (decision aa), lost words above the STT floor. Per record, the floor is
+    /// measure A's miss with no gate (cut at the caller onset, or at U1's start for caller-only).
+    /// A split loses `floor kept - kept at the cut`; an upgrade loses nothing above the floor (the
+    /// whole utterance is the caller final); a whole-utterance drop (window 1 `other`, no confirm)
+    /// loses the floor-kept words under every rule and is reported apart. Rows are ranked by
+    /// split-dependent lost words over both sets, then leaked words. `NM_EV_TSV` (default
+    /// /tmp/sg-6j/ev.tsv) gets one line per utterance.
+    pub fn evidence_tables() -> String {
+        let recs = std::mem::take(&mut *EV.lock().unwrap());
+        let rules = ev_rules();
+        let mut sets: Vec<(String, bool)> = Vec::new();
+        for r in &recs {
+            if !sets.iter().any(|(s, _)| *s == r.set) {
+                sets.push((r.set.clone(), r.caller_only));
+            }
+        }
+        let scores = |u: &[f32]| {
+            u.iter()
+                .map(|x| format!("{x:.3}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let mut tsv = String::new();
+        for r in &recs {
+            let (sl, sk) = r.split.unwrap_or((0, 0));
+            tsv.push_str(&format!(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{sl}\t{sk}\t{}\t{}\n",
+                r.set,
+                u8::from(r.caller_only),
+                r.ref_words,
+                r.floor_gap,
+                r.nosplit_lost,
+                u8::from(r.split.is_some()),
+                r.upgrade_leak,
+                scores(&r.u1)
+            ));
+        }
+        let path = std::env::var("NM_EV_TSV").unwrap_or_else(|_| "/tmp/sg-6j/ev.tsv".into());
+        let _ = fs::write(&path, tsv);
+        // (split lost above floor, leaked, split kept, split upgraded) of one record.
+        let eval = |rule: &dyn Fn(&[f32]) -> bool, r: &EvRec| -> (usize, usize, usize, usize) {
+            match r.split {
+                None => (0, 0, 0, 0),
+                Some((lost, leak)) if rule(&r.u1) => (lost, leak, 1, 0),
+                Some(_) => (0, r.upgrade_leak, 0, 1),
+            }
+        };
+        let mut md = String::from(
+            "## U1 evidence for an other-to-caller split (chunk 6j, decision aa)\n\n### Floor and drops per set (no rule changes these)\n\n| set | utterances | reference words | STT floor (words measure A misses with no gate) | whole-utterance drops (window 1 other, no confirm): utterances / words above floor | other-to-caller splits today |\n| --- | --- | --- | --- | --- | --- |\n",
+        );
+        for (s, _) in &sets {
+            let rs: Vec<&EvRec> = recs.iter().filter(|r| r.set == *s).collect();
+            md.push_str(&format!(
+                "| {s} | {} | {} | {} | {} / {} | {} |\n",
+                rs.len(),
+                rs.iter().map(|r| r.ref_words).sum::<usize>(),
+                rs.iter().map(|r| r.floor_gap).sum::<usize>(),
+                rs.iter().filter(|r| r.nosplit_lost > 0).count(),
+                rs.iter().map(|r| r.nosplit_lost).sum::<usize>(),
+                rs.iter().filter(|r| r.split.is_some()).count()
+            ));
+        }
+        md.push_str("\n### Per set (split lost above floor / leaked words / splits kept / splits upgraded)\n\n| rule |");
+        for (s, _) in &sets {
+            md.push_str(&format!(" {s} |"));
+        }
+        md.push_str("\n| --- |");
+        for _ in &sets {
+            md.push_str(" --- |");
+        }
+        md.push('\n');
+        let mut totals = Vec::new();
+        for (name, rule) in &rules {
+            md.push_str(&format!("| {name} |"));
+            let mut t = (0usize, 0usize, 0usize, 0usize, 0usize);
+            for (s, co) in &sets {
+                let (mut l, mut k, mut sk, mut su) = (0, 0, 0, 0);
+                for r in recs.iter().filter(|r| r.set == *s) {
+                    let (a, b, c, d) = eval(rule.as_ref(), r);
+                    l += a;
+                    k += b;
+                    sk += c;
+                    su += d;
+                }
+                md.push_str(&format!(" {l} / {k} / {sk} / {su} |"));
+                if *co {
+                    t.0 += l;
+                    t.1 += sk;
+                } else {
+                    t.2 += l;
+                    t.3 += su;
+                }
+                t.4 += k;
+            }
+            md.push('\n');
+            totals.push((name.clone(), t));
+        }
+        totals.sort_by_key(|(_, t)| (t.0 + t.2, t.4));
+        md.push_str("\n### Ranked (split-dependent lost words above the floor, both sets; then leaked words)\n\n| rank | rule | caller-only lost above floor | caller-only false splits left | bystander->caller lost above floor | true splits upgraded | leaked words | total lost above floor |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n");
+        for (i, (name, t)) in totals.iter().enumerate() {
+            md.push_str(&format!(
+                "| {} | {name} | {} | {} | {} | {} | {} | {} |\n",
+                i + 1,
+                t.0,
+                t.1,
+                t.2,
+                t.3,
+                t.4,
+                t.0 + t.2
+            ));
+        }
+        for (name, rule) in &rules {
+            if !(name.contains("< 0.25") || name.starts_with("R1:")) || name.contains(">=") {
+                continue;
+            }
+            md.push_str(&format!(
+                "\n### Caller-only false splits left under \"{name}\" (set, U1 scores, caller words lost above floor)\n\n"
+            ));
+            for r in recs.iter().filter(|r| r.caller_only) {
+                if let Some((lost, _)) = r.split.filter(|_| rule(&r.u1)) {
+                    md.push_str(&format!(
+                        "- {}: U1 [{}], lost {lost}\n",
+                        r.set,
+                        scores(&r.u1)
+                    ));
+                }
+            }
+        }
+        md.push_str("\nGate false accepts are unchanged by every rule: a rule only decides split or upgrade after the gate already confirmed `caller`. An upgrade counts no lost words above the floor; its leak is every bystander word of the merged utterance.\n\n");
         md
     }
 

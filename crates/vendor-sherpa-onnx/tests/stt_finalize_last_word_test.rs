@@ -160,3 +160,110 @@ async fn finalize_of_silence_or_no_audio_gives_no_words() {
         "silence-only utterances produced words: {texts:?}"
     );
 }
+
+/// End of speech in the fixture: the end of the last 20 ms frame whose peak is above
+/// `SPEECH_PEAK` (the received tail after it is near-silent), in bytes.
+const SPEECH_PEAK: i16 = 1000;
+/// Trailing audio kept after the speech end, 40 ms steps up to 800 ms: every end position the
+/// 640 ms tail padding could leave undecoded on the Kroko chunk grid (1.28 s steps).
+const TAIL_STEPS: usize = 21;
+const TAIL_STEP_BYTES: usize = 40 * 32;
+
+fn speech_end_bytes() -> usize {
+    let mut end = 0;
+    for (index, frame) in FIXTURE.chunks(CHUNK_BYTES).enumerate() {
+        let peak = frame
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b).saturating_abs())
+            .max()
+            .unwrap_or(0);
+        if peak > SPEECH_PEAK {
+            end = (index + 1) * CHUNK_BYTES;
+        }
+    }
+    end
+}
+
+/// Final text of one utterance (`pcm` fed in 20 ms frames, then `finalize_utterance`) and the
+/// `finalize_utterance` wall time in ms.
+async fn finalize_text(
+    stt: &mut Box<dyn node_webrtc_rust_speech::pipeline::SttProvider>,
+    pcm: &[u8],
+) -> (String, f64) {
+    let mut seen = Vec::new();
+    for chunk in pcm.chunks(CHUNK_BYTES) {
+        stt.push_and_poll(Bytes::copy_from_slice(chunk), &mut seen)
+            .await
+            .expect("push_and_poll");
+    }
+    let started = std::time::Instant::now();
+    stt.finalize_utterance().await.expect("finalize_utterance");
+    let finalize_ms = started.elapsed().as_secs_f64() * 1000.0;
+    while let Some(t) = stt.poll_transcript().await.expect("poll") {
+        seen.push(t);
+    }
+    let text = seen
+        .into_iter()
+        .filter_map(|t| match t {
+            SttTranscript::Final(text) => Some(text),
+            SttTranscript::Partial(_) => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    (text, finalize_ms)
+}
+
+/// `finalize_utterance` must decode speech that runs up to the very last sample. With only the
+/// 640 ms tail padding, up to ~0.8 s of speech after the last full chunk of the Kroko model was
+/// never decoded ("four five six" -> "four five"); the flush (`finalize_flush.rs`) decodes until
+/// every sample was consumed. Covers the fixture cut at its speech end (no trailing silence) and
+/// 40 ms steps of trailing audio up to 800 ms, for every lead trim of `ALIGNMENTS`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finalize_decodes_speech_up_to_the_last_sample() {
+    let Ok(model_path) = std::env::var("SHERPA_STT_MODEL_PATH") else {
+        eprintln!("skip: SHERPA_STT_MODEL_PATH is not set");
+        return;
+    };
+    if !std::path::Path::new(&model_path).is_dir() {
+        eprintln!("skip: SHERPA_STT_MODEL_PATH is not a directory: {model_path}");
+        return;
+    }
+    let speech_end = speech_end_bytes();
+    assert!(
+        speech_end > 32_000 && speech_end + TAIL_STEPS * TAIL_STEP_BYTES <= FIXTURE.len(),
+        "speech end {speech_end} bytes leaves no room for the tail sweep"
+    );
+
+    let mut stt = SherpaFactory
+        .create_stt(&stt_config(model_path))
+        .expect("create_stt");
+    stt.start().await.expect("stt start");
+
+    let mut lost = Vec::new();
+    let mut finalize_ms = Vec::new();
+    for offset in 0..ALIGNMENTS {
+        for tail in 0..TAIL_STEPS {
+            let cut = speech_end + tail * TAIL_STEP_BYTES;
+            let (text, ms) = finalize_text(&mut stt, &FIXTURE[offset * CHUNK_BYTES..cut]).await;
+            finalize_ms.push(ms);
+            if words(&text) != ["four", "five", "six"] {
+                lost.push((offset * 20, tail * 40, text));
+            }
+        }
+    }
+    stt.stop().await.expect("stt stop");
+
+    finalize_ms.sort_by(f64::total_cmp);
+    eprintln!(
+        "finalize_utterance ms: p50={:.1} max={:.1} (n={})",
+        finalize_ms[finalize_ms.len() / 2],
+        finalize_ms[finalize_ms.len() - 1],
+        finalize_ms.len()
+    );
+    assert!(
+        lost.is_empty(),
+        "finals lost words (lead trimmed ms, trailing audio ms after speech end, final): {lost:?}"
+    );
+}

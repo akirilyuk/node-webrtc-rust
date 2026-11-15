@@ -1,6 +1,11 @@
 //! With one session at a time (every round holds exactly one stream) the decode thread must give
 //! exactly the finals of per-stream decode: a deterministic guard for its rule handling.
 //!
+//! The PCMs come from Piper, which is random per synthesis, so what the recognizer hears in each
+//! clip is not fixed. The test therefore does not judge recognition per clip. It checks that every
+//! clip reached the decoder (at least one decode step on its own audio), that both modes give the
+//! same finals, and that the run as a whole recognized something (a non-vacuous comparison).
+//!
 //! `#[ignore]` (needs STT + TTS weights). Run with `--test-threads=1`: the switch and the batch
 //! counters are process-wide (own test binary, one test).
 
@@ -11,8 +16,8 @@ use node_webrtc_rust_speech::config::{SttConfig, SttVendor, TtsConfig, TtsVendor
 use node_webrtc_rust_speech::pcm::{i16_samples_to_bytes, stereo_48k_to_mono_16k};
 use node_webrtc_rust_speech::pipeline::{SttTranscript, VendorFactory};
 use node_webrtc_rust_vendor_sherpa_onnx::{
-    reset_sherpa_batch_counters, set_stt_batch_decode, sherpa_batch_rounds,
-    sherpa_batch_stream_steps, SherpaFactory,
+    reset_sherpa_batch_counters, reset_sherpa_utterance_decode_steps, set_stt_batch_decode,
+    sherpa_batch_rounds, sherpa_batch_stream_steps, sherpa_utterance_decode_steps, SherpaFactory,
 };
 use tokio::sync::Barrier;
 
@@ -128,7 +133,13 @@ async fn batched_thread_equals_per_stream_decode_one_stream_at_a_time() {
 
     set_stt_batch_decode(false);
     reset_sherpa_batch_counters();
-    let off = run_sequential(&cfg, &pcms).await;
+    let mut off = Vec::new();
+    let mut off_steps = Vec::new();
+    for pcm in &pcms {
+        reset_sherpa_utterance_decode_steps();
+        off.push(run_session(&cfg, pcm.as_ref(), Arc::new(Barrier::new(1))).await);
+        off_steps.push(sherpa_utterance_decode_steps());
+    }
     assert_eq!(sherpa_batch_rounds(), 0, "switch off must not batch");
     assert_eq!(sherpa_batch_stream_steps(), 0, "switch off must not batch");
 
@@ -137,14 +148,21 @@ async fn batched_thread_equals_per_stream_decode_one_stream_at_a_time() {
     let on = run_sequential(&cfg, &pcms).await;
     let rounds = sherpa_batch_rounds();
     let steps = sherpa_batch_stream_steps();
-    println!("batch_counters rounds={rounds} stream_steps={steps}");
+    println!("batch_counters rounds={rounds} stream_steps={steps} off_steps={off_steps:?}");
 
-    for (idx, (a, b)) in off.iter().zip(on.iter()).enumerate() {
+    for (idx, decode_steps) in off_steps.iter().enumerate() {
         assert!(
-            !a.is_empty(),
-            "session {idx} ({:?}) has no final (off)",
+            *decode_steps >= 1,
+            "session {idx} ({:?}): no decode step on its own audio (off)",
             PHRASES[idx]
         );
+    }
+    assert!(
+        off.iter().any(|finals| !finals.is_empty()),
+        "no session recognized anything (off): the comparison would be vacuous"
+    );
+    assert_eq!(off.len(), on.len());
+    for (idx, (a, b)) in off.iter().zip(on.iter()).enumerate() {
         assert_eq!(
             a, b,
             "session {idx} ({:?}): off={a:?} on={b:?}",

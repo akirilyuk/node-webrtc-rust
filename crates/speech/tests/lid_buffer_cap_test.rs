@@ -148,6 +148,7 @@ fn agent_with_lid(stt_bytes: Arc<Mutex<usize>>) -> Arc<VoiceAgent> {
             model_path: Some("/fake/lid-model".into()),
             allowlist: None,
             allowlist_max_gap: None,
+            allowlist_min_margin: None,
             min_speech_ms: Some(200),
             continuous: None,
             // Default clip length (5000 ms) on purpose.

@@ -238,6 +238,9 @@ struct UttLid {
     second_pass_pending: bool,
     /// The end-of-utterance second identify has started (at most once per utterance).
     second_pass_done: bool,
+    /// Early in-set pick whose allowed-set margin was below `allowlist_min_margin`: held (not
+    /// emitted) until the second pass, which decides on the summed allowed logits of both.
+    early_low_margin: Option<crate::pipeline::LanguageIdResult>,
     /// VAD speech end or utterance close was reached for this utterance.
     speech_ended: bool,
 }
@@ -5685,6 +5688,46 @@ impl VoiceAgent {
                 // `language_id_skipped` (`undetermined`) when no usable code came back.
                 let mut undetermined = false;
                 let mut second_pass_now = false;
+                // Second pass after a low-margin early pick: decide on the summed allowed-set
+                // logits of both clips. Without usable scores on the second clip the early pick
+                // stands.
+                let held = if pass == 2 {
+                    inner
+                        .record_mut(key)
+                        .and_then(|r| r.lid.early_low_margin.take())
+                } else {
+                    None
+                };
+                let result = match held {
+                    Some(early) => {
+                        let full_logits = match &result {
+                            Ok(Some(r)) => r.allowed_logits.clone(),
+                            _ => None,
+                        };
+                        let combined = early
+                            .allowed_logits
+                            .as_deref()
+                            .zip(full_logits.as_deref())
+                            .and_then(|(e, f)| crate::config::combine_allowed_passes(e, f));
+                        voice_debug(format!(
+                            "LID second pass after low margin: early={} full={} decided={}",
+                            early.language,
+                            result
+                                .as_ref()
+                                .ok()
+                                .and_then(|r| r.as_ref().map(|r| r.language.clone()))
+                                .unwrap_or_default(),
+                            combined.as_deref().unwrap_or(early.language.as_str())
+                        ));
+                        let language = combined.unwrap_or_else(|| early.language.clone());
+                        Ok(Some(crate::pipeline::LanguageIdResult {
+                            language,
+                            ..early
+                        }))
+                    }
+                    None => result,
+                };
+                let min_margin = crate::config::resolved_lid_allowlist_min_margin(&allowlist_cfg);
                 match result {
                     Ok(Some(lang_result)) => {
                         let code = lang_result.language.trim().to_ascii_lowercase();
@@ -5708,6 +5751,21 @@ impl VoiceAgent {
                             voice_debug(format!(
                             "LID early result {code} outside allowlist beyond gap — second pass at utterance end"
                         ));
+                        } else if keep_for_second_pass
+                            && language_id_allowlist_accepts(&allowlist_cfg, &code)
+                            && lang_result.allowed_margin().is_some_and(|m| m < min_margin)
+                        {
+                            // In the allowed set, but the allowed languages are close on the
+                            // early clip: hold the pick; the end-of-utterance pass (shared with
+                            // the out-of-set retry) decides on both clips' summed logits.
+                            let margin = lang_result.allowed_margin().unwrap_or_default();
+                            let rec = inner.record_mut(key).expect("checked");
+                            rec.lid.early_low_margin = Some(lang_result);
+                            rec.lid.second_pass_pending = true;
+                            second_pass_now = rec.lid.speech_ended;
+                            voice_debug(format!(
+                                "LID early result {code} margin {margin:.2} < {min_margin:.2} — second pass at utterance end"
+                            ));
                         } else if !language_id_allowlist_accepts(&allowlist_cfg, &code) {
                             voice_debug(format!("LID result {code} not in allowlist — ignored"));
                             undetermined = true;

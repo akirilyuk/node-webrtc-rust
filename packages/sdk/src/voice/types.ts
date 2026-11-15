@@ -247,6 +247,15 @@ export interface LanguageIdConfig {
    */
   allowlistMaxGap?: number
   /**
+   * With `timing: 'early'` and an `allowlist`: when the early identify's logit margin between
+   * the best and the second-best listed language is below this, its pick is not final. One more
+   * identify runs at end of utterance and the listed language with the highest summed logit
+   * over both clips is reported. Finite, >= 0; `0` turns it off. Default 2.0 (calibrated on
+   * Whisper tiny so a close early pick between allowed languages does not leave a Spanish
+   * caller in English).
+   */
+  allowlistMinMargin?: number
+  /**
    * Minimum speech (ms) before the first identify attempt. Counts VAD-voiced audio;
    * pauses between words count, silence after the caller stops speaking does not. Default 1000.
    */

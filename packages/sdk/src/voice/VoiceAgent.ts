@@ -265,6 +265,7 @@ export function toJsConfig(config?: VoiceAgentConfig): JsVoiceAgentConfig | unde
           modelPath: config.languageId.modelPath,
           allowlist: config.languageId.allowlist,
           allowlistMaxGap: languageIdAllowlistMaxGap(config.languageId.allowlistMaxGap),
+          allowlistMinMargin: languageIdAllowlistMinMargin(config.languageId.allowlistMinMargin),
           minSpeechMs: config.languageId.minSpeechMs,
           continuous: config.languageId.continuous,
           timing: config.languageId.timing,
@@ -443,6 +444,17 @@ export function languageIdAllowlistMaxGap(value: number | undefined): number | u
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
     throw new TypeError(
       `languageId.allowlistMaxGap must be a finite number >= 0, got ${String(value)}`,
+    )
+  }
+  return value
+}
+
+/** Validates `languageId.allowlistMinMargin` (finite, >= 0); undefined keeps the native default. */
+export function languageIdAllowlistMinMargin(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new TypeError(
+      `languageId.allowlistMinMargin must be a finite number >= 0, got ${String(value)}`,
     )
   }
   return value

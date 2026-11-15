@@ -2150,6 +2150,34 @@ fn caller_to_other_split(
         .max(floor.unwrap_or(0))
 }
 
+/// Bench hook (chunk 7h, `near_miss_bench --second-cut`): the product's `caller` -> `other` cut
+/// ([`caller_to_other_split`]) for a change whose first `other` window is `first`, after the last
+/// `caller` window `prev`, confirmed by `confirm`. `forward` benches option 2 of decision jj (not
+/// shipped): when the range is empty (`floor >= hi`), cut right before the first loud frame after
+/// the first closed quiet run between the floor and the confirming window's middle, else at the
+/// floor. Clips are 16 kHz mono i16 PCM ending at the span's end.
+#[doc(hidden)]
+pub fn bench_caller_to_other_cut(
+    prev: Option<(u32, u32, Vec<u8>)>,
+    first: (u32, u32, Vec<u8>),
+    confirm: (u32, u32, Vec<u8>),
+    floor: Option<u32>,
+    forward: bool,
+) -> u32 {
+    let hi = i64::from(first.0) + i64::from(first.1.saturating_sub(first.0) / 2);
+    if let (true, Some(f)) = (forward, floor.filter(|f| i64::from(*f) >= hi)) {
+        let chi = i64::from(confirm.0) + i64::from(confirm.1.saturating_sub(confirm.0) / 2);
+        let tl = Timeline::from_clips(&[(first.1, &first.2), (confirm.1, &confirm.2)]);
+        let closed = tl
+            .quiet_scan(i64::from(f), chi)
+            .filter(|q| q.best_len > 0 && q.best_end < q.raw_db.len());
+        return closed
+            .and_then(|q| q.raw_cut(i64::MAX))
+            .map_or(f, |at| (at.max(0) as u32).max(f));
+    }
+    caller_to_other_split(prev, first, floor)
+}
+
 /// U2's caller floor (decision y) on U2's clock, for an `other` -> `caller` cut `cut` (U1's clock)
 /// whose sub-window scan found the first `caller` sub-window at `found`: the end of that
 /// sub-window (`found + SPLIT_STAGE2_SUB_MS`). U2's clock starts at the agent's split frame,

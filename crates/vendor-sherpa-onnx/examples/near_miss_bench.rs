@@ -46,6 +46,10 @@
 //! - **Cost**: embeds per re-check and their time against the window's `verify_timeout_ms`
 //!   budget (500 ms minus the window's own embed, as `scan_caller_sub_window` bounds it). A re-check that
 //!   would run past the budget is cut off there and confirms nothing (counted).
+//! - **Second cut** (`--second-cut`, chunk 7h, decision jj): on each split-born U2 the caller ->
+//!   other watch is simulated on the product's U2 window grid from its caller floor, rules today /
+//!   jj / option 2; optional `--takeover-db <dB>` appends a bystander takeover after the caller.
+//!   Table: caller words cut out of U2, bystander-2 words left, takeovers split later or not split.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -699,6 +703,16 @@ fn run() -> Result<(), String> {
             "--evidence" => {
                 let _ = straddle::EVIDENCE.set(());
             }
+            "--second-cut" => {
+                let _ = straddle::EVIDENCE.set(());
+                let _ = straddle::SECOND_CUT.set(());
+            }
+            "--takeover-db" => {
+                let db: f64 = value("--takeover-db")?
+                    .parse()
+                    .map_err(|e| format!("--takeover-db: {e}"))?;
+                let _ = straddle::TAKEOVER_DB.set(db);
+            }
             "--ls-split" => {
                 let _ = straddle::LS_SPLIT.set(value("--ls-split")?);
             }
@@ -760,7 +774,9 @@ fn run() -> Result<(), String> {
     if !scenes.is_empty() {
         md.push_str(&tables(&scenes, threshold, &embedder));
     }
-    if straddle::EVIDENCE.get().is_some() {
+    if straddle::SECOND_CUT.get().is_some() {
+        md.push_str(&straddle::second_cut_table());
+    } else if straddle::EVIDENCE.get().is_some() {
         straddle::caller_only_piper(&embedder, &straddle_piper, bed.as_deref(), threshold)?;
         if let Some(root) = &librispeech {
             straddle::caller_only_ls(&embedder, root, bed.as_deref(), ls_callers, threshold)?;
@@ -998,6 +1014,9 @@ mod straddle {
         /// for the recognizer's word timestamps.
         caller_clean: Vec<f32>,
         by_clean: Vec<f32>,
+        /// 7h `--takeover-db`: the second bystander's onset (right after the caller's voiced end,
+        /// no pause) and its clean audio.
+        by2: Option<(usize, Vec<f32>)>,
     }
 
     /// 6g: `--stt <model dir>` turns on word timings from the recognizer's documented result
@@ -1128,6 +1147,7 @@ mod straddle {
             reference: sc.reference.clone(),
             caller_clean: ms_to(&sc.samples, sc.caller.on, sc.caller.off),
             by_clean: ms_to(&sc.samples, sc.by.on, sc.by.off),
+            by2: None,
         };
         sweep_scene(embedder, &p, utt, threshold);
     }
@@ -1332,7 +1352,7 @@ mod straddle {
                         &mut cache,
                     );
                     match o {
-                        Some((k, cut, u1)) => {
+                        Some((k, cut, u1, _)) => {
                             let (kept, lk) = a_at(cut);
                             ModeRec {
                                 k: Some(k),
@@ -1356,6 +1376,9 @@ mod straddle {
                     }
                 })
                 .collect();
+            if SECOND_CUT.get().is_some() {
+                second_cut_scene(p, utt, embedder, threshold, &cref, &mut cache);
+            }
             let m0 = modes[0].clone();
             let rec = EvRec {
                 set: String::new(),
@@ -1437,6 +1460,11 @@ mod straddle {
                 r.set = title.to_string();
             }
             EV.lock().unwrap().extend(pending);
+            let mut c2 = std::mem::take(&mut *C2_PENDING.lock().unwrap());
+            for r in &mut c2 {
+                r.set = title.to_string();
+            }
+            C2.lock().unwrap().extend(c2);
         }
         let recs = std::mem::take(&mut *RECS.lock().unwrap());
         if recs.is_empty() {
@@ -1735,11 +1763,18 @@ mod straddle {
         let mut s = vec![0f32; LEAD_MS * SAMPLES_PER_MS];
         s.extend(ms_to(&by.audio, by.off - len, by.off));
         let c_on = LEAD_MS + len;
-        s.extend(ms_to(
-            &caller.audio,
-            caller.on,
-            caller.audio.len() / SAMPLES_PER_MS,
-        ));
+        match TAKEOVER_DB.get() {
+            // 7h: the caller's voiced piece, then a second bystander with no pause.
+            Some(db) => {
+                s.extend(ms_to(&caller.audio, caller.on, caller.off));
+                s.extend(takeover_clip(by, *db));
+            }
+            None => s.extend(ms_to(
+                &caller.audio,
+                caller.on,
+                caller.audio.len() / SAMPLES_PER_MS,
+            )),
+        }
         s.extend(vec![0f32; TAIL_MS * SAMPLES_PER_MS]);
         add_bed(&mut s, bed);
         Some((s, c_on, c_on + (caller.off - caller.on), c_on))
@@ -1782,6 +1817,7 @@ mod straddle {
                         caller.audio.len() / SAMPLES_PER_MS,
                     ),
                     by_clean: ms_to(&by.audio, by.off - (BY_BASE_MS + extra), by.off),
+                    by2: TAKEOVER_DB.get().map(|db| (c_off, takeover_clip(by, *db))),
                 }));
             }
             extra += (WINDOW_MS - t + WINDOW_MS - r) % WINDOW_MS;
@@ -2193,7 +2229,7 @@ mod straddle {
             let (o, _, end) =
                 product_o2c(samples, utt, embedder, reference, threshold, m, &mut cache);
             *h = usize::from(o.is_some());
-            let cut = o.map(|(_, c, _)| c).or(end.then_some(u));
+            let cut = o.map(|(_, c, _, _)| c).or(end.then_some(u));
             if m == 3 {
                 end_caller = usize::from(end);
             }
@@ -2359,8 +2395,9 @@ mod straddle {
     }
 
     type SubCache = std::collections::HashMap<usize, Vec<(usize, f32, f64)>>;
-    /// A product other -> caller confirm: (k, cut, U1 window scores).
-    type O2cConfirm = Option<(usize, usize, Vec<f32>)>;
+    /// A product other -> caller confirm: (k, cut, U1 window scores, the first `caller`
+    /// sub-window start the cut backs off from, `None` for a fallback cut).
+    type O2cConfirm = Option<(usize, usize, Vec<f32>, Option<usize>)>;
 
     /// The product gate with the watch on (chunk 6g): window 1 `other`, then the first window
     /// `k >= 2` scoring `caller`, or a near-miss window (`[0.30, thr)`) whose 750/125 scan finds a
@@ -2431,7 +2468,7 @@ mod straddle {
             }
             if mode == 3 && first.is_none() {
                 match pending {
-                    Some((pk, plo)) => return (Some((pk, plo, u1(pk))), st, false),
+                    Some((pk, plo)) => return (Some((pk, plo, u1(pk), None)), st, false),
                     None if !stopped => {
                         pending = Some((k, lo));
                         continue;
@@ -2440,9 +2477,246 @@ mod straddle {
                 }
             }
             let cut = first.map_or(lo, |p| p.saturating_sub(P_BACK).max(lo));
-            return (Some((k, cut, u1(k))), st, false);
+            return (Some((k, cut, u1(k), first)), st, false);
         }
         (None, st, pending.is_some())
+    }
+
+    // ---- 7h (decision jj): the second cut on a split-born U2. ----
+
+    /// `--second-cut`: simulate U2 of the shipped other -> caller split (mode 3) through its
+    /// caller -> other change and cut, per rule of [`C2_RULES`].
+    pub static SECOND_CUT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    /// `--takeover-db <dB>`: append a second bystander right after the caller's voiced end (no
+    /// pause), at this gain relative to the (normalized) pieces.
+    pub static TAKEOVER_DB: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    pub(super) const C2_RULES: [&str; 3] = [
+        "today",
+        "jj: pre-floor windows reset the run",
+        "option 2: forward to the next closed quiet run",
+    ];
+    /// The other -> caller scan's own time after window `k` ends (eu-load 43752352272: 202 ms):
+    /// U2's seed window ends here.
+    const C2_SCAN_MS: usize = 200;
+    const C2_PRE_ROLL_MS: usize = 300;
+
+    struct C2Rec {
+        set: String,
+        takeover: bool,
+        /// Caller reference words / bystander-2 reference words.
+        b2_words: usize,
+        /// Per rule: the second cut (scene ms), caller words cut out of U2, bystander-2 words left
+        /// in U2.
+        c2: [Option<usize>; 3],
+        lost: [usize; 3],
+        b2_left: [usize; 3],
+    }
+    static C2_PENDING: std::sync::Mutex<Vec<C2Rec>> = std::sync::Mutex::new(Vec::new());
+    static C2: std::sync::Mutex<Vec<C2Rec>> = std::sync::Mutex::new(Vec::new());
+
+    /// The second bystander: the head of the bystander clip (up to 2500 ms from its voiced onset)
+    /// at `db`.
+    fn takeover_clip(by: &Clip, db: f64) -> Vec<f32> {
+        let g = 10f64.powf(db / 20.0) as f32;
+        ms_to(&by.audio, by.on, (by.on + 2500).min(by.off))
+            .into_iter()
+            .map(|x| x * g)
+            .collect()
+    }
+
+    fn pcm16(s: &[f32]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(s.len() * 2);
+        for x in s {
+            out.extend_from_slice(&((x.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
+        }
+        out
+    }
+
+    /// Longest common subsequence length (words matched in order).
+    fn lcs(a: &[String], b: &[String]) -> usize {
+        let mut row = vec![0usize; b.len() + 1];
+        for x in a {
+            let mut prev = 0;
+            for (j, y) in b.iter().enumerate() {
+                let cur = row[j + 1];
+                row[j + 1] = if x == y {
+                    prev + 1
+                } else {
+                    row[j + 1].max(row[j])
+                };
+                prev = cur;
+            }
+        }
+        row[b.len()]
+    }
+
+    /// U2's windows on U2's clock (origin = the split frame): the seed window `[0, seed end)`
+    /// scored at the split (window `k`'s end + the scan), then the 1500 ms grid of U1 while the
+    /// utterance lasts, clips with 300 ms of pre-roll. Returns (span, clip, score).
+    fn u2_windows(
+        p: &Placed,
+        utt: &Utt,
+        k: usize,
+        origin: usize,
+        embedder: &Embedder,
+    ) -> Vec<((u32, u32), Vec<u8>, f32)> {
+        let mut out = Vec::new();
+        let grid = utt.wins[k].0 + WINDOW_MS;
+        let mut ends = vec![grid + C2_SCAN_MS];
+        let mut e = grid + WINDOW_MS;
+        while e <= p.u_end && ends.len() < MAX_WINDOWS {
+            ends.push(e);
+            e += WINDOW_MS;
+        }
+        for (i, end) in ends.into_iter().enumerate() {
+            if end > p.u_end + C2_SCAN_MS || end <= origin {
+                break;
+            }
+            let from = if i == 0 {
+                origin
+            } else {
+                (end - WINDOW_MS - C2_PRE_ROLL_MS).max(origin)
+            };
+            let clip = slice(&p.samples, from, end);
+            let score = embedder
+                .embed(clip)
+                .map_or(0.0, |(v, _)| cosine(&v, &p.reference));
+            let start = if i == 0 { from } else { end - WINDOW_MS };
+            out.push((
+                ((start - origin) as u32, (end - origin) as u32),
+                pcm16(clip),
+                score,
+            ));
+        }
+        out
+    }
+
+    /// The caller -> other watch of U2 (armed `caller` with no previous window, as
+    /// `Msg::Inherit`): two `other` windows in a row confirm; rule 1 (jj) counts a window whose
+    /// middle is before the floor as a reset. Returns the cut on U2's clock.
+    fn u2_cut(
+        wins: &[((u32, u32), Vec<u8>, f32)],
+        floor: u32,
+        threshold: f32,
+        rule: usize,
+    ) -> Option<u32> {
+        let mut prev: Option<(u32, u32, Vec<u8>)> = None;
+        let mut first: Option<(u32, u32, Vec<u8>)> = None;
+        let mut run = 0;
+        for ((s, e), clip, score) in wins {
+            let w = (*s, *e, clip.clone());
+            let pre_floor = rule == 1 && s + (e - s) / 2 < floor;
+            if *score >= threshold || pre_floor {
+                run = 0;
+                first = None;
+                prev = Some(w);
+                continue;
+            }
+            if run == 0 {
+                first = Some(w.clone());
+            }
+            run += 1;
+            if run >= 2 {
+                return Some(
+                    node_webrtc_rust_speech::speaker_gate::bench_caller_to_other_cut(
+                        prev.take(),
+                        first.take()?,
+                        w,
+                        Some(floor),
+                        rule == 2,
+                    ),
+                );
+            }
+        }
+        None
+    }
+
+    fn second_cut_scene(
+        p: &Placed,
+        utt: &Utt,
+        embedder: &Embedder,
+        threshold: f32,
+        cref: &[String],
+        cache: &mut SubCache,
+    ) {
+        let (o, _, _) = product_o2c(&p.samples, utt, embedder, &p.reference, threshold, 3, cache);
+        let Some((k, cut, _, found)) = o else { return };
+        let origin = cut / FRAME_MS * FRAME_MS;
+        let floor = found.map_or(300, |f| (f + 750).saturating_sub(origin)) as u32;
+        let wins = u2_windows(p, utt, k, origin, embedder);
+        let total = p.samples.len() / SAMPLES_PER_MS;
+        let u2_end = (p.u_end + C2_PRE_ROLL_MS).min(total);
+        let words = |end: usize| -> Vec<String> {
+            recognize_words(slice(&p.samples, origin, end.max(origin + FRAME_MS)))
+                .map(|(w, _)| w)
+                .unwrap_or_default()
+        };
+        let full = lcs(cref, &words(u2_end));
+        let b2ref: Vec<String> = p
+            .by2
+            .as_ref()
+            .and_then(|(_, a)| recognize_words(a).map(|(w, _)| w))
+            .unwrap_or_default();
+        let mut rec = C2Rec {
+            set: String::new(),
+            takeover: p.by2.is_some(),
+            b2_words: b2ref.len(),
+            c2: [None; 3],
+            lost: [0; 3],
+            b2_left: [0; 3],
+        };
+        for r in 0..3 {
+            let c2 = u2_cut(&wins, floor, threshold, r).map(|c| origin + c as usize);
+            let hyp = words(c2.unwrap_or(u2_end).min(u2_end));
+            rec.c2[r] = c2;
+            rec.lost[r] = full.saturating_sub(lcs(cref, &hyp));
+            rec.b2_left[r] = lcs(&b2ref, &hyp);
+        }
+        C2_PENDING.lock().unwrap().push(rec);
+    }
+
+    /// The 7h table: per set and rule, U2s, U2 caller -> other splits, caller words cut out of U2
+    /// (scenes), bystander-2 words left in U2 (takeover sets), takeovers split later / not split
+    /// than today.
+    pub fn second_cut_table() -> String {
+        let recs = std::mem::take(&mut *C2.lock().unwrap());
+        let mut sets: Vec<String> = Vec::new();
+        for r in &recs {
+            if !sets.contains(&r.set) {
+                sets.push(r.set.clone());
+            }
+        }
+        let mut md = String::from("\n## Chunk 7h: second cut on a split-born U2 (decision jj)\n\n| set | rule | U2s | caller -> other splits | caller words cut out of U2 (scenes) | bystander-2 words left in U2 / total | split later than today / not split |\n|---|---|---|---|---|---|---|\n");
+        for set in &sets {
+            let rs: Vec<&C2Rec> = recs.iter().filter(|r| &r.set == set).collect();
+            let tk = rs.first().is_some_and(|r| r.takeover);
+            for (ri, name) in C2_RULES.iter().enumerate() {
+                let splits = rs.iter().filter(|r| r.c2[ri].is_some()).count();
+                let lost: usize = rs.iter().map(|r| r.lost[ri]).sum();
+                let lost_n = rs.iter().filter(|r| r.lost[ri] > 0).count();
+                let (b2, b2t) = if tk {
+                    (
+                        rs.iter().map(|r| r.b2_left[ri]).sum::<usize>().to_string(),
+                        rs.iter().map(|r| r.b2_words).sum::<usize>().to_string(),
+                    )
+                } else {
+                    ("-".into(), "-".into())
+                };
+                let later = rs
+                    .iter()
+                    .filter(|r| matches!((r.c2[0], r.c2[ri]), (Some(a), Some(b)) if b > a))
+                    .count();
+                let none = rs
+                    .iter()
+                    .filter(|r| r.c2[0].is_some() && r.c2[ri].is_none())
+                    .count();
+                md.push_str(&format!(
+                    "| {set} | {name} | {} | {splits} | {lost} ({lost_n}) | {b2} / {b2t} | {later} / {none} |\n",
+                    rs.len()
+                ));
+            }
+        }
+        md
     }
 
     /// A caller-only utterance `[u, ue)` of `samples` (`clean` = the same timeline without the
@@ -2477,7 +2751,7 @@ mod straddle {
                 let (o, st, end_caller) =
                     product_o2c(samples, &utt, embedder, reference, threshold, m, &mut cache);
                 match o {
-                    Some((k, cut, u1)) => ModeRec {
+                    Some((k, cut, u1, _)) => ModeRec {
                         k: Some(k),
                         split: Some((floor_kept.saturating_sub(kept(cut)), 0)),
                         u1,

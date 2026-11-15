@@ -336,3 +336,53 @@ Confirms per mode; deferred veto: utterances that end with the veto pending (who
 | ------------------------------------ | -------- | ----- | ---- | -------------------------- | ------------------ | ------------------------------- | ------------------------------------------------- |
 | LS bystander-only Tocumen bed -12 dB | 322      | 0     | 0    | 0                          | 0                  | 0                               | 0 / 0                                             |
 | LS bystander-only clean              | 330      | 1     | 1    | 1                          | 1                  | 0                               | 9 / 9                                             |
+
+## Chunk 7h: second cut on a split-born U2 (decision jj), shipped
+
+`--second-cut` scenes: every straddle scene whose U1 splits other -> caller under the shipped deferred veto (`product_o2c` mode 3, decision hh) gets a simulated U2: its caller floor (`caller_floor`, decision y), the product's U2 window grid (the seed window scored at the split, then U1's 1500 ms grid) and the caller->other watch run on it. The cut goes through the product function (`speaker_gate::bench_caller_to_other_cut`). Rules: **today** (every `other` window counts); **jj** (a window whose middle lies before the floor resets the run like a `caller` window; the shipped rule); **option 2** (today's count, but a cut that would land at the floor moves forward to the end of the next closed quiet run). Tail scenes are the plain straddle sets (the caller phrase, then 2 s of bed or silence). Takeover scenes (`--takeover-db <dB>`) append the head of the bystander clip (up to 2500 ms) after the caller phrase at that gain. Caller words cut = recognized caller words in the whole U2 minus those in U2 up to the cut (LCS against the caller-alone reference, sherpa streaming zipformer); bystander-2 words left = recognized takeover words still in U2 before the cut.
+
+Run (models from the primary checkout's `examples/voice-agent-local-sherpa/.models`, LibriSpeech under `/tmp/librispeech`, bed `/tmp/sg-demo/bed/tocumen48.f32`, Piper straddle fixtures `/tmp/sg-nm-n400` and `/tmp/sg-nm-p200`; audio is never committed):
+
+```bash
+cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example near_miss_bench -- \
+  --model $M/speaker/nemo_en_titanet_small.onnx --stt $M/sherpa-onnx-streaming-zipformer-en-2023-06-26 \
+  --second-cut --librispeech /tmp/librispeech --bed /tmp/sg-demo/bed/tocumen48.f32 [--takeover-db -3] --out /tmp/7h.md
+```
+
+Result: the bar of decision jj holds. On the tail scenes, caller words cut out of U2 go from 3 (1 scene, LibriSpeech test-clean, the n03 shape) to 0: that U2 is not split and stays `caller` whole. The held-out dev-clean tail sets have no caller->other split under any rule (0 -> 0). On the takeover sets jj cuts fewer caller words in every set (29 -> 28, 61 -> 57, 25 -> 24, 61 -> 57, 18 -> 17, 62 -> 58), leaves at most one more bystander-2 word (133 -> 134, 123 -> 124) and splits 1-4 takeovers one window later; no takeover goes unsplit. Option 2 removes no tail cut (3 -> 3) and helps takeovers less, so it is not shipped.
+
+| set | rule | U2s | caller -> other splits | caller words cut out of U2 (scenes) | bystander-2 words left in U2 / total | split later than today / not split |
+|---|---|---|---|---|---|---|
+| Piper straddle | today | 398 | 0 | 0 (0) | - / - | 0 / 0 |
+| Piper straddle | jj: pre-floor windows reset the run | 398 | 0 | 0 (0) | - / - | 0 / 0 |
+| Piper straddle | option 2: forward to the next closed quiet run | 398 | 0 | 0 (0) | - / - | 0 / 0 |
+| test-clean LibriSpeech straddle, Tocumen bed -12 dB | today | 75 | 0 | 0 (0) | - / - | 0 / 0 |
+| test-clean LibriSpeech straddle, Tocumen bed -12 dB | jj: pre-floor windows reset the run | 75 | 0 | 0 (0) | - / - | 0 / 0 |
+| test-clean LibriSpeech straddle, Tocumen bed -12 dB | option 2: forward to the next closed quiet run | 75 | 0 | 0 (0) | - / - | 0 / 0 |
+| test-clean LibriSpeech straddle, clean | today | 109 | 1 | 3 (1) | - / - | 0 / 0 |
+| test-clean LibriSpeech straddle, clean | jj: pre-floor windows reset the run | 109 | 0 | 0 (0) | - / - | 0 / 1 |
+| test-clean LibriSpeech straddle, clean | option 2: forward to the next closed quiet run | 109 | 1 | 3 (1) | - / - | 0 / 0 |
+| dev-clean (held out) LibriSpeech straddle, Tocumen bed -12 dB | today | 67 | 0 | 0 (0) | - / - | 0 / 0 |
+| dev-clean (held out) LibriSpeech straddle, Tocumen bed -12 dB | jj: pre-floor windows reset the run | 67 | 0 | 0 (0) | - / - | 0 / 0 |
+| dev-clean (held out) LibriSpeech straddle, Tocumen bed -12 dB | option 2: forward to the next closed quiet run | 67 | 0 | 0 (0) | - / - | 0 / 0 |
+| dev-clean (held out) LibriSpeech straddle, clean | today | 109 | 0 | 0 (0) | - / - | 0 / 0 |
+| dev-clean (held out) LibriSpeech straddle, clean | jj: pre-floor windows reset the run | 109 | 0 | 0 (0) | - / - | 0 / 0 |
+| dev-clean (held out) LibriSpeech straddle, clean | option 2: forward to the next closed quiet run | 109 | 0 | 0 (0) | - / - | 0 / 0 |
+| takeover 0 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | today | 63 | 56 | 29 (23) | 92 / 480 | 0 / 0 |
+| takeover 0 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | jj: pre-floor windows reset the run | 63 | 56 | 28 (22) | 92 / 480 | 1 / 0 |
+| takeover 0 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | option 2: forward to the next closed quiet run | 63 | 56 | 28 (22) | 92 / 480 | 1 / 0 |
+| takeover 0 dB, test-clean LibriSpeech straddle, clean | today | 94 | 79 | 61 (38) | 133 / 728 | 0 / 0 |
+| takeover 0 dB, test-clean LibriSpeech straddle, clean | jj: pre-floor windows reset the run | 94 | 79 | 57 (36) | 134 / 728 | 4 / 0 |
+| takeover 0 dB, test-clean LibriSpeech straddle, clean | option 2: forward to the next closed quiet run | 94 | 79 | 60 (37) | 134 / 728 | 3 / 0 |
+| takeover -3 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | today | 65 | 53 | 25 (19) | 97 / 492 | 0 / 0 |
+| takeover -3 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | jj: pre-floor windows reset the run | 65 | 53 | 24 (18) | 97 / 492 | 1 / 0 |
+| takeover -3 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | option 2: forward to the next closed quiet run | 65 | 53 | 24 (18) | 97 / 492 | 1 / 0 |
+| takeover -3 dB, test-clean LibriSpeech straddle, clean | today | 93 | 79 | 61 (37) | 123 / 717 | 0 / 0 |
+| takeover -3 dB, test-clean LibriSpeech straddle, clean | jj: pre-floor windows reset the run | 93 | 79 | 57 (35) | 124 / 717 | 4 / 0 |
+| takeover -3 dB, test-clean LibriSpeech straddle, clean | option 2: forward to the next closed quiet run | 93 | 79 | 60 (36) | 124 / 717 | 3 / 0 |
+| takeover -6 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | today | 66 | 45 | 18 (15) | 118 / 497 | 0 / 0 |
+| takeover -6 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | jj: pre-floor windows reset the run | 66 | 45 | 17 (14) | 118 / 497 | 1 / 0 |
+| takeover -6 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB | option 2: forward to the next closed quiet run | 66 | 45 | 17 (14) | 118 / 497 | 1 / 0 |
+| takeover -6 dB, test-clean LibriSpeech straddle, clean | today | 94 | 78 | 62 (36) | 130 / 719 | 0 / 0 |
+| takeover -6 dB, test-clean LibriSpeech straddle, clean | jj: pre-floor windows reset the run | 94 | 78 | 58 (34) | 130 / 719 | 4 / 0 |
+| takeover -6 dB, test-clean LibriSpeech straddle, clean | option 2: forward to the next closed quiet run | 94 | 78 | 61 (35) | 130 / 719 | 3 / 0 |

@@ -452,7 +452,7 @@ pub struct JsSpeakerGateConfig {
     pub check_speech_ms: Option<u32>,
     pub min_check_speech_ms: Option<u32>,
     pub suppress_short_barge_in: Option<bool>,
-    /// Keep re-checking an utterance while its verdict is `other` (default true).
+    /// Keep re-checking an utterance while its verdict is `other` (default true). `splitOnSpeakerChange` implies the re-check.
     pub recheck_on_other: Option<bool>,
     /// Windows scored per utterance, the first check included (default 12). `0` = no cap; `1` is
     /// rejected by the gate.

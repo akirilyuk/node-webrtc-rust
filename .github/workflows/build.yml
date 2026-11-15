@@ -258,6 +258,9 @@ jobs:
           apk add --no-cache coreutils >/dev/null
           bash scripts/ci/ensure-sherpa-models.sh
           echo "SHERPA_LID_MODEL_PATH=$GITHUB_WORKSPACE/examples/voice-agent-local-sherpa/.models/sherpa-onnx-whisper-tiny" >> "$GITHUB_ENV"
+          # lid_shared_model_test also overlaps an STT load with the LID load.
+          SHERPA_EXPORT_SKIP_VALIDATE=1 source scripts/export-sherpa-local-models.sh
+          echo "SHERPA_STT_MODEL_PATH=$SHERPA_STT_MODEL_PATH" >> "$GITHUB_ENV"
 
       - name: Install gdb (native stack on a crash)
         run: apk add --no-cache gdb binutils >/dev/null && gdb --version | head -1

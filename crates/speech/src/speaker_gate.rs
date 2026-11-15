@@ -1698,9 +1698,6 @@ struct Watch {
     prev: Option<(u32, u32, Vec<u8>)>,
     /// A change was reported: the key is not watched further.
     done: bool,
-    /// An `other` -> `caller` change: the audio the sub-window scan runs on (taken once by the
-    /// verifier).
-    refine: Option<Refine>,
     /// `other` label: a window of U1 scored `other` below [`CONFIDENT_OTHER_MAX_SCORE`]
     /// (decision bb); without one an `other` -> `caller` change is not a split.
     confident_other: bool,
@@ -1718,10 +1715,24 @@ impl Watch {
             first: None,
             prev,
             done: false,
-            refine: None,
             confident_other: false,
             floor: None,
         }
+    }
+
+    /// Open on `other`: a window of this key may confirm an `other` -> `caller` change, so the
+    /// sub-window scan applies to it.
+    fn open_on_other(&self) -> bool {
+        !self.done && self.label == Outcome::Other
+    }
+
+    /// The next `caller` window confirms an `other` -> `caller` split (decision bb: U1 holds a
+    /// confident `other` window). The verifier runs the split scan before [`watch_step`] on
+    /// exactly these windows.
+    fn splits_on_next_caller(&self) -> bool {
+        self.open_on_other()
+            && self.confident_other
+            && self.run + 1 >= OTHER_TO_CALLER_CONFIRM_WINDOWS
     }
 }
 
@@ -1893,8 +1904,8 @@ impl QuietScan {
 /// One scored window for the watch. The first scored (non-re-check) window labels the key. Each
 /// later window of the opposite label extends a run, any other window (same label, unscored)
 /// ends it. `caller` -> `other` reports after [`SPEAKER_CHANGE_CONFIRM_WINDOWS`] in a row;
-/// `other` -> `caller` after [`OTHER_TO_CALLER_CONFIRM_WINDOWS`] (one), and holds the audio for
-/// the sub-window scan (see [`Watch::refine`]). `span` is the window's
+/// `other` -> `caller` after [`OTHER_TO_CALLER_CONFIRM_WINDOWS`] (one); its cut is the previous
+/// window's start here, and the verifier replaces it with the sub-window scan's cut. `span` is the window's
 /// `(start_ms, end_ms)` on the utterance clock; `clip` is the PCM that was scored, ending at
 /// `end_ms`.
 fn watch_step(
@@ -1943,11 +1954,22 @@ fn watch_step(
         w.done = true;
         return None;
     }
+    let confirm = if w.label == Outcome::Other {
+        OTHER_TO_CALLER_CONFIRM_WINDOWS
+    } else {
+        SPEAKER_CHANGE_CONFIRM_WINDOWS
+    };
+    if w.run == 0 && w.label == Outcome::Caller {
+        w.first = Some((span.0, span.1, clip.clone()));
+    }
+    w.run += 1;
+    if w.run < confirm {
+        return None;
+    }
+    w.done = true;
     if w.label == Outcome::Other {
-        // `other` -> `caller`: confirmed by the first `caller` window.
-        let (split_at_ms, refine) = other_to_caller_split(w.prev.take(), span, &clip);
-        w.done = true;
-        w.refine = refine;
+        // `other` -> `caller`: the cut without a `caller` sub-window.
+        let split_at_ms = other_to_caller_split(w.prev.take().as_ref(), span, &clip).lo as u32;
         return Some(SpeakerChange {
             key,
             from: Outcome::Other,
@@ -1955,14 +1977,6 @@ fn watch_step(
             split_at_ms,
         });
     }
-    if w.run == 0 {
-        w.first = Some((span.0, span.1, clip));
-    }
-    w.run += 1;
-    if w.run < SPEAKER_CHANGE_CONFIRM_WINDOWS {
-        return None;
-    }
-    w.done = true;
     let first = w.first.take()?;
     Some(SpeakerChange {
         key,
@@ -2005,19 +2019,14 @@ fn caller_to_other_split(
             i64::from(start) - i64::from(SPLIT_SEARCH_MS),
         ),
     };
-    let Some(floor) = floor else {
-        return tl
-            .quiet_scan(lo, hi)
-            .and_then(|q| q.raw_cut(i64::from(start) + i64::from(CALLER_TO_OTHER_OPEN_CUT_MAX_MS)))
-            .map_or_else(|| split_point(start, end, &clip), |at| at.max(0) as u32);
-    };
-    if i64::from(floor) >= hi {
+    if let Some(floor) = floor.filter(|f| i64::from(*f) >= hi) {
         return floor;
     }
-    tl.quiet_scan(lo.max(i64::from(floor)), hi)
+    let lo = floor.map_or(lo, |f| lo.max(i64::from(f)));
+    tl.quiet_scan(lo, hi)
         .and_then(|q| q.raw_cut(i64::from(start) + i64::from(CALLER_TO_OTHER_OPEN_CUT_MAX_MS)))
         .map_or_else(|| split_point(start, end, &clip), |at| at.max(0) as u32)
-        .max(floor)
+        .max(floor.unwrap_or(0))
 }
 
 /// U2's caller floor (decision y) on U2's clock, for an `other` -> `caller` cut `cut` (U1's clock)
@@ -2037,14 +2046,15 @@ fn caller_floor(cut: u32, found: Option<i64>) -> u32 {
 /// The audio of the `other` -> `caller` sub-window scan and its fallback cut. The scan starts at
 /// the previous scored window's start (the cut without a `caller` sub-window) and runs over that
 /// window and this one. Without a previous window that tiles into this one (an unscored window in
-/// between), it runs over this window's own clip from its start - [`SPLIT_SEARCH_MS`].
+/// between), it runs over this window's own clip from its start - [`SPLIT_SEARCH_MS`]. The cut
+/// without a `caller` sub-window is the returned `lo`.
 fn other_to_caller_split(
-    prev: Option<(u32, u32, Vec<u8>)>,
+    prev: Option<&(u32, u32, Vec<u8>)>,
     span: (u32, u32),
     clip: &[u8],
-) -> (u32, Option<Refine>) {
+) -> Refine {
     let prev = prev.filter(|(_, end, _)| *end + 2 * SPLIT_FRAME_MS as u32 >= span.0);
-    let (tl, lo) = match prev.as_ref() {
+    let (tl, lo) = match prev {
         Some((start, end, pclip)) => (
             Timeline::from_clips(&[(*end, pclip), (span.1, clip)]),
             i64::from(*start),
@@ -2056,7 +2066,7 @@ fn other_to_caller_split(
     };
     let lo = lo.max(tl.start_ms).max(0);
     let audio_end = tl.end_ms();
-    (lo as u32, Some(Refine { tl, lo, audio_end }))
+    Refine { tl, lo, audio_end }
 }
 
 /// The `other` -> `caller` cut: the first `caller` sub-window's start minus [`SPLIT_BACKOFF_MS`],
@@ -2407,41 +2417,51 @@ async fn run(
                 }
                 let span_start = end_ms.saturating_sub((speech_bytes / BYTES_PER_MS) as u32);
                 let span = (span_start, end_ms);
-                // Near-miss re-check (watch on only): a window of an `other` utterance scoring
-                // in [NEAR_MISS_MIN_SCORE, threshold) runs the sub-window scan over the same
-                // audio a confirmed change would; one `caller` sub-window confirms it as the
-                // `caller` window (same cut, inheritance and barge path). Bounded by the window's
-                // remaining verify budget; a budget stop confirms nothing.
-                let mut near_found: Option<i64> = None;
+                // The `other` -> `caller` sub-window scan (watch on, re-check window of a key whose
+                // watch is open on `other`), once per window, over the previous scored window and
+                // this one. Bounded by the window's remaining verify budget.
+                // - `near-miss`: the window scored in [NEAR_MISS_MIN_SCORE, threshold). One
+                //   `caller` sub-window confirms it as the `caller` window (same cut, inheritance
+                //   and barge path); a budget stop confirms nothing.
+                // - `split`: the window scored `caller` and confirms a split
+                //   ([`Watch::splits_on_next_caller`]). The scan gives the cut; no `caller`
+                //   sub-window or a budget stop keeps the previous window's start.
                 let near = recheck
                     && outcome == Outcome::Other
                     && window_score.is_some_and(|s| s >= NEAR_MISS_MIN_SCORE && s < cfg.threshold);
+                let split_window = recheck && outcome == Outcome::Caller;
+                let mut scan: Option<(i64, Option<i64>)> = None;
                 if let (true, Some(clip), Some(reference)) =
-                    (near, clip.as_ref(), reference.as_ref())
+                    (near || split_window, clip.as_ref(), reference.as_ref())
                 {
-                    let prev = watches
+                    let refine = watches
                         .iter()
                         .find(|(k, _)| *k == key)
-                        .filter(|(_, w)| !w.done && w.label == Outcome::Other)
-                        .map(|(_, w)| w.prev.clone());
-                    if let Some(prev) = prev {
-                        let (_, refine) = other_to_caller_split(prev, span, clip);
-                        if let Some(refine) = refine {
-                            near_found = scan_caller_sub_window(
-                                &embedder,
-                                reference,
-                                cfg.threshold,
-                                &refine,
-                                verify,
-                                started,
-                                &shared,
-                                key,
-                                "near-miss",
-                            )
-                            .await;
-                        }
+                        .filter(|(_, w)| {
+                            if near {
+                                w.open_on_other()
+                            } else {
+                                w.splits_on_next_caller()
+                            }
+                        })
+                        .map(|(_, w)| other_to_caller_split(w.prev.as_ref(), span, clip));
+                    if let Some(refine) = refine {
+                        let found = scan_caller_sub_window(
+                            &embedder,
+                            reference,
+                            cfg.threshold,
+                            &refine,
+                            verify,
+                            started,
+                            &shared,
+                            key,
+                            if near { "near-miss" } else { "split" },
+                        )
+                        .await;
+                        scan = Some((refine.lo, found));
                     }
                 }
+                let near_found = scan.and_then(|(_, found)| found).filter(|_| near);
                 let watch_outcome = if near_found.is_some() {
                     Outcome::Caller
                 } else {
@@ -2469,40 +2489,14 @@ async fn run(
                 } else {
                     outcome
                 };
-                // `other` -> `caller`: the cut comes from the sub-window scan (the near-miss
-                // scan's result when it confirmed the change; else a new scan on the verifier
-                // task, bounded); no `caller` sub-window or a budget stop keeps the previous
-                // window's start.
+                // `other` -> `caller`: the cut comes from this window's sub-window scan.
                 let o2c = change.is_some_and(|c| c.from == Outcome::Other);
                 let mut o2c_found: Option<i64> = None;
-                if o2c {
-                    let refine = watches
-                        .iter_mut()
-                        .find(|(k, _)| *k == key)
-                        .and_then(|(_, w)| w.refine.take());
-                    if let (Some(refine), Some(reference)) = (refine, reference.as_ref()) {
-                        let found = match near_found {
-                            Some(p) => Some(p),
-                            None => {
-                                scan_caller_sub_window(
-                                    &embedder,
-                                    reference,
-                                    cfg.threshold,
-                                    &refine,
-                                    verify,
-                                    started,
-                                    &shared,
-                                    key,
-                                    "split",
-                                )
-                                .await
-                            }
-                        };
-                        if let Some(c) = change.as_mut() {
-                            c.split_at_ms = other_to_caller_cut(refine.lo, found);
-                        }
-                        o2c_found = found;
+                if let (true, Some((lo, found))) = (o2c, scan) {
+                    if let Some(c) = change.as_mut() {
+                        c.split_at_ms = other_to_caller_cut(lo, found);
                     }
+                    o2c_found = found;
                 }
                 // U1 of an `other` -> `caller` change stays `other`: nothing upgrades or barges on
                 // it (the caller's speech is U2, which inherits the verdict).
@@ -3649,14 +3643,21 @@ mod tests {
     /// Chunk 6g (decision x, config A): no stage 1 on `other` -> `caller`. Before the sub-window
     /// scan the change carries the previous window's start (the cut without a `caller`
     /// sub-window), even where a long quiet run ends later (window 1 here is silent from 800 ms;
-    /// stage 1 used to cut at 1460), and the watch always holds the scan's audio: from the
-    /// previous window's start to the end of this window.
+    /// stage 1 used to cut at 1460), and the scan's audio runs from the previous window's start
+    /// to the end of this window.
     #[test]
     fn other_to_caller_split_starts_at_the_previous_window_start() {
         let mut w = VecDeque::new();
         let mut first = tone(1500, 10_000);
         first[800 * BYTES_PER_MS..].fill(0);
+        let r = other_to_caller_split(
+            Some(&(0, 1500, first.clone())),
+            (1500, 3000),
+            &tone(1500, 10_000),
+        );
+        assert_eq!((r.lo, r.audio_end), (0, 3000));
         assert!(watch_step(&mut w, 1, Outcome::Other, None, false, (0, 1500), first).is_none());
+        assert!(w[0].1.splits_on_next_caller());
         let change = watch_step(
             &mut w,
             1,
@@ -3668,16 +3669,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(change.split_at_ms, 0);
-        let r = w[0].1.refine.as_ref().expect("scan audio");
-        assert_eq!((r.lo, r.audio_end), (0, 3000));
+        assert!(!w[0].1.open_on_other(), "the change ends the watch");
 
         // Without a previous window the scan runs over the window's own clip from its start - 300
         // ms, never before the clip's first sample.
-        let (at, r) = other_to_caller_split(None, (1500, 3000), &tone(1800, 10_000));
-        let r = r.expect("scan audio");
-        assert_eq!((at, r.lo, r.audio_end), (1200, 1200, 3000));
-        let (at, r) = other_to_caller_split(None, (1500, 3000), &tone(1500, 10_000));
-        assert_eq!((at, r.expect("scan audio").lo), (1500, 1500));
+        let r = other_to_caller_split(None, (1500, 3000), &tone(1800, 10_000));
+        assert_eq!((r.lo, r.audio_end), (1200, 3000));
+        let r = other_to_caller_split(None, (1500, 3000), &tone(1500, 10_000));
+        assert_eq!(r.lo, 1500);
     }
 
     /// The cut is the first `caller` sub-window's start minus [`SPLIT_BACKOFF_MS`], clamped to the
@@ -4389,8 +4388,8 @@ mod tests {
         }
         let first = tone(1500, 10_000);
         let clip = tone(1500, 10_000);
-        let (point, refine) = other_to_caller_split(Some((0, 1500, first)), (1500, 3000), &clip);
-        let refine = refine.expect("scan audio");
+        let refine = other_to_caller_split(Some(&(0, 1500, first)), (1500, 3000), &clip);
+        let point = refine.lo as u32;
         let counting = Arc::new(Counting(Mutex::new(0)));
         let embedder: Arc<dyn SpeakerEmbedder> = counting.clone();
         let gate = SpeakerGate::new(split_cfg(true, 12));
@@ -4512,8 +4511,7 @@ mod tests {
             let pre = 300_u32;
             let prev = (ps, ws, cut(ps - pre, ws));
             let clip = cut(ws - pre, ws + 1500);
-            let (_, refine) = other_to_caller_split(Some(prev), (ws, ws + 1500), &clip);
-            let refine = refine.expect("scan audio");
+            let refine = other_to_caller_split(Some(&prev), (ws, ws + 1500), &clip);
             let queue = scores
                 .iter()
                 .map(|s| (None, vec![*s, (1.0 - s * s).max(0.0).sqrt()]))

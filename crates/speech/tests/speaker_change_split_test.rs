@@ -1102,6 +1102,19 @@ fn assert_other_to_caller_split(rig: &Rig) -> (String, String) {
     assert_eq!(split_ids(rig), (u1.clone(), u2.clone()));
     let (i1, f1) = rig.final_of(&u1);
     let (i2, f2) = rig.final_of(&u2);
+    // The split event carries U1's windows at the cut (the deciding window included), the count
+    // U1's final reports: an oracle can bound U2's barge-in even when U1 emits no final.
+    let se = rig
+        .log
+        .iter()
+        .find(|e| e.kind == SpeechEventKind::UserUtteranceSplit)
+        .expect("split event");
+    assert!(
+        se.speaker_check_windows.is_some_and(|n| n >= 1),
+        "split event speaker_check_windows: {:?}",
+        se.speaker_check_windows
+    );
+    assert_eq!(se.speaker_check_windows, f1.speaker_check_windows);
     assert!(i1 < i2, "U1 final before U2 final");
     assert_eq!(f1.reason.as_deref(), Some("speaker_split"));
     assert_eq!(f1.speaker.as_deref(), Some("other"));

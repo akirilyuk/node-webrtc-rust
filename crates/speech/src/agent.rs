@@ -4014,14 +4014,22 @@ impl VoiceAgent {
         // U2's speaking_start goes out before its SpeechStart handling: the seed already holds a
         // full check window, so U2's verdict (and an immediate barge-in) can be ready at once.
         self.emit_user_speaking_start_if_needed(u2_key).await;
-        self.emit(SpeechEvent::user_utterance_split(
+        // U1's windows at the cut, including the one that decided the split: the same count U1's
+        // final reports, carried here because a cut U1 whose re-decode yields no text emits no
+        // final at all.
+        let mut split_event = SpeechEvent::user_utterance_split(
             u1_id.clone(),
             u2_id.clone(),
             change.split_at_ms,
             change.from.as_str(),
             change.to.as_str(),
             u1_onset_media_ms.map(|ms| u32::try_from(ms).unwrap_or(u32::MAX)),
-        ));
+        );
+        let u1_windows = gate.windows_scored(u1_key);
+        if u1_windows > 0 {
+            split_event = split_event.with_speaker_check_windows(u1_windows);
+        }
+        self.emit(split_event);
         if let Err(error) = self.on_vad_speech_start().await {
             eprintln!("[speech] speaker split: start of {u2_id} failed: {error}");
         }

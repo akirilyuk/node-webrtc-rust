@@ -506,9 +506,11 @@ export function similaritySummary(sims: number[]): {
 /**
  * End of the window that decided an other→caller split, in scene ms: the n-th check window needs
  * n × checkSpeechMs of speech (types.ts `speakerCheckWindows`), so it ends no earlier than U1
- * `fromStartMs` + k × checkSpeechMs on the media clock, k = the cut utterance's (U1's) final
- * `speakerCheckWindows` (it includes the deciding window). `undefined` when a field is missing
- * (callers fail closed).
+ * `fromStartMs` + k × checkSpeechMs on the media clock, k = the cut utterance's (U1's)
+ * `speakerCheckWindows` at the cut (it includes the deciding window). k comes from the split event
+ * (the product sets it at the cut, also when U1's re-decode yields no text and U1 emits no final)
+ * or from U1's final; when both carry it they must agree. `undefined` when a field is missing or
+ * the two counts disagree (callers fail closed).
  */
 export function splitDecidingWindowEndSceneMs(
   split: Seen | undefined,
@@ -518,7 +520,10 @@ export function splitDecidingWindowEndSceneMs(
   if (split?.fromStartMs == null || split.fromUtteranceId == null || sceneStartMediaMs == null) {
     return undefined
   }
-  const k = finals.get(split.fromUtteranceId)?.speakerCheckWindows
+  const atCut = split.speakerCheckWindows
+  const onFinal = finals.get(split.fromUtteranceId)?.speakerCheckWindows
+  if (atCut != null && onFinal != null && atCut !== onFinal) return undefined
+  const k = atCut ?? onFinal
   if (k == null) return undefined
   return split.fromStartMs + k * CHECK_SPEECH_MS - sceneStartMediaMs
 }
@@ -821,7 +826,7 @@ export function evaluateTurns(
         const end = splitDecidingWindowEndSceneMs(split, finals, opts.sceneStartMediaMs)
         if (end == null) {
           failures.push(
-            `${tag}: other→caller split ${String(split?.fromUtteranceId)} -> ${id}: deciding window end unknown (fromStartMs, U1 speakerCheckWindows or sceneStartMediaMs missing)`,
+            `${tag}: other→caller split ${String(split?.fromUtteranceId)} -> ${id}: deciding window end unknown (fromStartMs, U1 speakerCheckWindows (split event or U1 final; they must agree) or sceneStartMediaMs missing)`,
           )
         } else if (barge.atMs < end - BARGE_EARLY_SLACK_MS) {
           failures.push(

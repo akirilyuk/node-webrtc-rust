@@ -12,6 +12,7 @@ import {
   mergedCallerFinals,
   pairTurnUtterances,
   similaritySummary,
+  splitDecidingWindowEndSceneMs,
   splitDistances,
   splitSceneMs,
   sttPartialTokenCount,
@@ -1461,5 +1462,119 @@ describe('other→caller split: the caller turn is judged on U2 by utteranceId',
     const { starts, followed } = pairTurnUtterances(SCENE, seen)
     expect(starts[1]?.utteranceId).toBe('utt-8')
     expect(followed.size).toBe(0)
+  })
+})
+
+describe('other→caller split whose U1 emits no final (U1 windows on the split event)', () => {
+  // eu-load run 43660018769 iteration 9, Pass 2 turn 12 of the S3 scene
+  // (.test-logs/20261115-stress-43660018769.log): the VAD opened on the bystander tail (utt-23,
+  // u1_onset_media_ms=88240, sceneStartMediaMs=620 -> scene 87620); window 1 scored other, the
+  // re-check `key=11 window=2` found the change and split at +575 ms into utt-25. U1's re-decode of
+  // 575 ms of bystander tail yielded no text (`re-decode done utterance=utt-23 final=false`), so
+  // utt-23 has no user_speech_final. The deciding window ends at 88240 + 2 x 1500 - 620 = 90620 ms
+  // (scene); U2's speaking_start came at 90783 and its barge-in at 90894 (111 ms later). As in the
+  // run, the bystander turn before has no utterance of its own and U1 starts in the caller's slot.
+  const t11: Turn = {
+    role: 'bystander',
+    startMs: 83_785,
+    endMs: 86_400,
+    text: 'The old lighthouse keeper climbed the stairs',
+    kind: 'background',
+  }
+  const t12: Turn = {
+    role: 'main',
+    startMs: 88_503,
+    endMs: 92_500,
+    text: 'You said: good morning, this is the recovery test.',
+    kind: 'qualified',
+  }
+  const t13: Turn = {
+    role: 'bystander',
+    startMs: 94_203,
+    endMs: 98_000,
+    text: 'A train rolled slowly into the station',
+    kind: 'background',
+  }
+  const SCENE = [t11, t12, t13]
+  const OPTS = { sceneStartMediaMs: 620 }
+  const events = (opts: { splitWindows?: number; u1FinalWindows?: number } = {}): Seen[] =>
+    [
+      ev('user_speaking_start', 87_640, { utteranceId: 'utt-23' }),
+      ev('user_utterance_split', 90_783, {
+        fromUtteranceId: 'utt-23',
+        toUtteranceId: 'utt-25',
+        splitAtMs: 575,
+        fromStartMs: 88_240,
+        from: 'other',
+        to: 'caller',
+        speakerCheckWindows: opts.splitWindows,
+      }),
+      ev('user_speaking_start', 90_783, { utteranceId: 'utt-25' }),
+      ...(opts.u1FinalWindows != null
+        ? [
+            ev('user_speech_final', 90_850, {
+              utteranceId: 'utt-23',
+              text: 'stairs',
+              speaker: 'other',
+              speakerRechecked: true,
+              speakerCheckWindows: opts.u1FinalWindows,
+            }),
+          ]
+        : []),
+      ev('user_speech_partial', 90_894, { utteranceId: 'utt-25', text: 'you said good morning' }),
+      ev('barge_in', 90_894, { utteranceId: 'utt-25' }),
+      ev('user_speaking_end', 92_900, { utteranceId: 'utt-25' }),
+      ev('user_speech_final', 93_000, {
+        utteranceId: 'utt-25',
+        text: 'You said good morning. This is the recovery test.',
+        speaker: 'caller',
+        speakerRechecked: true,
+        speakerCheckWindows: 3,
+      }),
+      ev('user_speaking_start', 94_300, { utteranceId: 'utt-27' }),
+      ev('user_speech_final', 97_000, {
+        utteranceId: 'utt-27',
+        text: 'a train rolled',
+        speaker: 'other',
+      }),
+    ].sort((a, b) => a.atMs - b.atMs)
+
+  it('passes on the split event windows when U1 has no final', () => {
+    expect(evaluateTurns(SCENE, events({ splitWindows: 2 }), 'p', OPTS)).toEqual([])
+  })
+
+  it('still fails closed with no windows on the split event and no U1 final (the run shape)', () => {
+    expect(evaluateTurns(SCENE, events(), 'p', OPTS).join('\n')).toContain(
+      'other→caller split utt-23 -> utt-25: deciding window end unknown',
+    )
+  })
+
+  it('fails a U2 barge before the window the split event names', () => {
+    // 3 windows: 88240 + 4500 - 620 = 92120, after the barge at 90894.
+    expect(evaluateTurns(SCENE, events({ splitWindows: 3 }), 'p', OPTS).join('\n')).toContain(
+      "barge-in at 90894 ms on utt-25, before the split's deciding window ends at 92120 ms (U1 utt-23, slack 50 ms)",
+    )
+  })
+
+  it('splitDecidingWindowEndSceneMs: split event and U1 final agree, or fail closed', () => {
+    const split = (w?: number): Seen =>
+      ev('user_utterance_split', 0, {
+        fromUtteranceId: 'u1',
+        fromStartMs: 88_240,
+        splitAtMs: 575,
+        speakerCheckWindows: w,
+      })
+    const finals = (w?: number): Map<string, Seen> =>
+      new Map(
+        w == null
+          ? []
+          : [['u1', ev('user_speech_final', 0, { utteranceId: 'u1', speakerCheckWindows: w })]],
+      )
+    expect(splitDecidingWindowEndSceneMs(split(2), finals(), 620)).toBe(90_620)
+    expect(splitDecidingWindowEndSceneMs(split(), finals(2), 620)).toBe(90_620)
+    expect(splitDecidingWindowEndSceneMs(split(2), finals(2), 620)).toBe(90_620)
+    expect(splitDecidingWindowEndSceneMs(split(2), finals(3), 620)).toBeUndefined()
+    expect(splitDecidingWindowEndSceneMs(split(), finals(), 620)).toBeUndefined()
+    expect(splitDecidingWindowEndSceneMs(split(2), finals(), undefined)).toBeUndefined()
   })
 })

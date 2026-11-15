@@ -651,7 +651,9 @@ export interface SpeechEvent {
   /**
    * `user_speech_final` with `speakerGate` on: check windows scored for the utterance (1 = the
    * first check only). A barge-in released by the n-th window came no earlier than
-   * n × `checkSpeechMs` of speech (`speakerRecheckBargeEarliestMs`).
+   * n × `checkSpeechMs` of speech (`speakerRecheckBargeEarliestMs`). Also on
+   * `user_utterance_split`: the cut utterance's (`fromUtteranceId`) windows at the cut, the
+   * deciding window included; set even when that utterance emits no final (empty re-decode).
    */
   speakerCheckWindows?: number
   /** `user_utterance_split`: id of the utterance that ends at the split. */

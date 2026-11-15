@@ -437,16 +437,6 @@ function jsEventTypeToString(eventType: JsSpeechEventType): SpeechEventType {
   }
 }
 
-/**
- * Voice agent orchestrating VAD, STT, TTS, and barge-in for one WebRTC session.
- *
- * After {@link attach} and {@link start}, a background loop reads
- * `inboundTrack.readSample()` (20 ms frames) and forwards PCM to the native
- * `processInboundPcm` pipeline. TTS from {@link sendTextToTTS} is drained to
- * `outboundTrack` at real-time cadence.
- *
- * @see [VOICE-API.md](../../VOICE-API.md)
- */
 /** Validates `languageId.allowlistMaxGap` (finite, >= 0); undefined keeps the native default. */
 export function languageIdAllowlistMaxGap(value: number | undefined): number | undefined {
   if (value === undefined) return undefined
@@ -458,6 +448,16 @@ export function languageIdAllowlistMaxGap(value: number | undefined): number | u
   return value
 }
 
+/**
+ * Voice agent orchestrating VAD, STT, TTS, and barge-in for one WebRTC session.
+ *
+ * After {@link attach} and {@link start}, a background loop reads
+ * `inboundTrack.readSample()` (20 ms frames) and forwards PCM to the native
+ * `processInboundPcm` pipeline. TTS from {@link sendTextToTTS} is drained to
+ * `outboundTrack` at real-time cadence.
+ *
+ * @see [VOICE-API.md](../../VOICE-API.md)
+ */
 export class VoiceAgent {
   private readonly native: JsVoiceAgent
   private readonly eventsMode: EventDeliveryMode

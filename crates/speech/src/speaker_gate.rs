@@ -704,6 +704,7 @@ impl SpeakerGate {
             feed.pending_barge.clear();
             feed.shorts.clear();
         }
+        self.clear_deferred_splits();
         self.send(Msg::Reset);
     }
 
@@ -855,7 +856,16 @@ impl SpeakerGate {
             feed.cur = None;
             feed.shorts.clear();
         }
+        self.clear_deferred_splits();
         self.shared.notify.notify_waiters();
+    }
+
+    /// Decision hh: drop deferred splits and SpeechEnd records (reset, disable): an old key is
+    /// never upgraded at its end after them.
+    fn clear_deferred_splits(&self) {
+        let mut book = lock(&self.shared.book);
+        book.veto_pending.clear();
+        book.speech_ended.clear();
     }
 
     /// After [`Self::set_disabled`]: takes the held barge-ins (key, playback epoch) of cut
@@ -1046,6 +1056,13 @@ impl SpeakerGate {
                 }
             }
         };
+        if self.cfg.split_on_speaker_change {
+            // A resumed key is live again: a deferral that completes now waits for its next
+            // window or SpeechEnd, it is not resolved at once.
+            lock(&self.shared.book)
+                .speech_ended
+                .retain(|k| *k != cur.key);
+        }
         feed.cur = Some(cur);
         drop(feed);
         self.push_frame(frame);
@@ -1350,6 +1367,17 @@ impl SpeakerGate {
         if self.recheck_in_flight(key) {
             return true;
         }
+        // Decision hh: a deferred split is decided by the next `caller` window or at the end of
+        // speech (the skip upgrade, which releases the barge-in), so its barge-in stays held even
+        // past the window cap.
+        if self.cfg.split_on_speaker_change
+            && lock(&self.shared.book)
+                .veto_pending
+                .iter()
+                .any(|(k, _, _)| *k == key)
+        {
+            return true;
+        }
         feed.cur.as_ref().is_some_and(|c| {
             c.key == key && c.sent && !c.rechecks_closed && self.windows_remain(c.windows_sent)
         }) && !self.recheck_closed(key)
@@ -1375,9 +1403,17 @@ impl SpeakerGate {
         if let Some(cur) = feed.cur.as_mut().filter(|c| c.key == key) {
             cur.rechecks_closed = true;
         }
-        let mut book = lock(&self.shared.book);
-        if !book.closed.contains(&key) {
-            push_capped(&mut book.closed, key);
+        {
+            let mut book = lock(&self.shared.book);
+            if !book.closed.contains(&key) {
+                push_capped(&mut book.closed, key);
+            }
+        }
+        drop(feed);
+        // Decision hh: a final that reads while the utterance is still live (its STT final came
+        // before VAD SpeechEnd) decides a deferred split as SpeechEnd does, before it reads.
+        if self.cfg.split_on_speaker_change {
+            self.resolve_deferred_split_at_end(key);
         }
     }
 
@@ -1611,7 +1647,8 @@ impl SpeakerGate {
     /// key as split (no further window is cut, the adaptive reference commits nothing from it).
     /// The held barge-in is released once, by the verdict handler: the deferred window's verdict
     /// is delivered again after the upgrade (`Msg::DeferredEnd`) and reads as `caller`
-    /// ([`Self::upgraded_after_skipped_split`]), as after the agent's `not_speaking` skip.
+    /// ([`Self::upgraded_after_skipped_split`]), as after the agent's `not_speaking` skip. Runs at
+    /// SpeechEnd and when the final starts reading ([`Self::close_recheck`]), whichever is first.
     fn resolve_deferred_split_at_end(&self, key: u64) {
         let window = {
             let mut book = lock(&self.shared.book);
@@ -4617,6 +4654,178 @@ mod tests {
             Some(Outcome::Caller),
             "the final reads caller within the bound"
         );
+    }
+
+    /// Waits until `verdicts` holds at least `n` entries.
+    async fn wait_verdicts(verdicts: &Arc<Mutex<Vec<Verdict>>>, n: usize) {
+        for _ in 0..400 {
+            if lock(verdicts).len() >= n {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("verdict {n} never arrived");
+    }
+
+    /// Decision hh at the window cap: window 3 (= `recheck_max_windows`) is `caller` but its
+    /// scan finds no `caller` sub-window, so the split is deferred with no window left. The
+    /// barge-in stays held (not suppressed) until SpeechEnd books `caller`. On e127a4bc the cap
+    /// closed the hold and the barge-in was suppressed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_deferral_at_the_window_cap_keeps_the_barge_held() {
+        let mut cfg = split_cfg(true, 3);
+        cfg.check_speech_ms = 1500;
+        let mut steps: Vec<Step> = vec![
+            (None, caller_v()),
+            (None, other_v()),
+            (None, other_v()),
+            (None, caller_v()),
+        ];
+        no_hit_scan(&mut steps);
+        let (gate, verdicts, _q) = run_script_steps(cfg, steps.into(), 3, 75).await;
+        assert_eq!(lock(&verdicts).last().map(|v| v.window), Some(3));
+        assert_eq!(gate.deferred_speaker_splits(), 1, "window 3 deferred");
+        assert!(gate.hold_for_recheck(1, 0), "held past the cap");
+        assert_eq!(gate.barge_decision(1), BargeDecision::Defer);
+        gate.end_utterance();
+        assert_eq!(gate.outcome_for(1), Some(Outcome::Caller));
+        assert!(
+            gate.has_pending_barge(1),
+            "left for the redelivered verdict"
+        );
+    }
+
+    /// A key that ended (SpeechEnd seen) and resumes is live again: a later `caller` window whose
+    /// scan finds no `caller` sub-window defers, it is not upgraded at once. Mirror: once that
+    /// deferral is resolved at the next SpeechEnd (upgraded, a split key), a further resume stays
+    /// `caller`: no re-check starts for a split key, so nothing defers or splits again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_resumed_key_defers_instead_of_upgrading() {
+        let mut cfg = split_cfg(true, 12);
+        cfg.check_speech_ms = 1500;
+        let mut steps: Vec<Step> = vec![(None, caller_v()), (None, other_v()), (None, caller_v())];
+        no_hit_scan(&mut steps);
+        // Window 1 only (run_script_steps feeds extra speech after its last window).
+        let gate = SpeakerGate::new(cfg);
+        let verdicts: Arc<Mutex<Vec<Verdict>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&verdicts);
+        let queue = Arc::new(Mutex::new(VecDeque::from(steps)));
+        gate.spawn(
+            Box::new(SharedSeqEmbedder {
+                queue: Arc::clone(&queue),
+            }),
+            Box::new(move |v| lock(&sink).push(v)),
+        );
+        gate.send(Msg::Enroll {
+            pcm: vec![0_u8; 100 * BYTES_PER_MS],
+        });
+        for _ in 0..500 {
+            if gate.is_enrolled() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        for _ in 0..15 {
+            gate.push_frame(&[1_u8; FRAME]);
+        }
+        gate.begin(1, &alternating(0));
+        for f in 1..75 {
+            gate.push_frame(&alternating(f));
+        }
+        wait_verdicts(&verdicts, 1).await;
+        gate.end_utterance();
+        gate.begin(1, &alternating(0));
+        for f in 1..75 {
+            gate.push_frame(&alternating(f));
+        }
+        wait_verdicts(&verdicts, 2).await;
+        for _ in 0..400 {
+            if gate.deferred_speaker_splits() > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(gate.deferred_speaker_splits(), 1, "deferred");
+        assert_eq!(gate.outcome_for(1), Some(Outcome::Other));
+        assert!(!gate.upgraded_after_skipped_split(1));
+        // Mirror: resolved at the next SpeechEnd, then resumed once more.
+        gate.end_utterance();
+        assert_eq!(gate.outcome_for(1), Some(Outcome::Caller));
+        gate.begin(1, &alternating(0));
+        for f in 1..75 {
+            gate.push_frame(&alternating(f));
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(lock(&queue).is_empty(), "nothing else scripted");
+        assert_eq!(gate.outcome_for(1), Some(Outcome::Caller), "stays caller");
+        assert_eq!(gate.deferred_speaker_splits(), 0);
+        assert!(gate.take_speaker_changes().is_empty());
+    }
+
+    /// Ruling 4: the final reads while the utterance is still live (`close_recheck` before
+    /// SpeechEnd, an STT final ahead of VAD) with a deferral pending. It is decided there as at
+    /// SpeechEnd: `caller` booked before the read, the deferred window's verdict delivered once
+    /// more after it, nothing left pending.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_live_final_read_resolves_a_pending_deferral() {
+        let mut cfg = split_cfg(true, 12);
+        cfg.check_speech_ms = 1500;
+        let mut steps: Vec<Step> = vec![(None, caller_v()), (None, other_v()), (None, caller_v())];
+        no_hit_scan(&mut steps);
+        let (gate, verdicts, _q) = run_script_steps(cfg, steps.into(), 2, 75).await;
+        assert_eq!(gate.deferred_speaker_splits(), 1);
+        gate.set_pending_barge(1, 0);
+        let delivered = lock(&verdicts).len();
+        gate.close_recheck(1);
+        assert_eq!(
+            gate.outcome_for(1),
+            Some(Outcome::Caller),
+            "booked before the read"
+        );
+        assert_eq!(gate.settled_outcome(1), Some(Outcome::Caller));
+        assert_eq!(gate.deferred_speaker_splits(), 0, "nothing pending");
+        wait_verdicts(&verdicts, delivered + 1).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let after: Vec<_> = lock(&verdicts)[delivered..]
+            .iter()
+            .map(|v| (v.key, v.outcome, v.recheck, v.window))
+            .collect();
+        assert_eq!(after, vec![(1, Outcome::Other, true, 2)], "one redelivery");
+        assert!(gate.upgraded_after_skipped_split(1), "read as caller");
+        gate.end_utterance();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(lock(&verdicts).len(), delivered + 1, "SpeechEnd adds none");
+    }
+
+    /// Ruling 5: reset (and disable) drop a pending deferral, so the old key is not upgraded at
+    /// its end.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reset_drops_a_pending_deferral() {
+        for disable in [false, true] {
+            let mut cfg = split_cfg(true, 12);
+            cfg.check_speech_ms = 1500;
+            let mut steps: Vec<Step> =
+                vec![(None, caller_v()), (None, other_v()), (None, caller_v())];
+            no_hit_scan(&mut steps);
+            let (gate, verdicts, _q) = run_script_steps(cfg, steps.into(), 2, 75).await;
+            assert_eq!(gate.deferred_speaker_splits(), 1);
+            let delivered = lock(&verdicts).len();
+            if disable {
+                gate.set_disabled();
+            } else {
+                gate.reset();
+            }
+            assert_eq!(gate.deferred_speaker_splits(), 0, "disable={disable}");
+            gate.end_utterance();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(!gate.upgraded_after_skipped_split(1), "disable={disable}");
+            assert_ne!(
+                gate.outcome_for(1),
+                Some(Outcome::Caller),
+                "disable={disable}"
+            );
+            assert_eq!(lock(&verdicts).len(), delivered, "no redelivery");
+        }
     }
 
     /// Decision hh, the race: window 2's split scan is still running at SpeechEnd and completes

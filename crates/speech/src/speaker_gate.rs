@@ -1059,9 +1059,12 @@ impl SpeakerGate {
         if self.cfg.split_on_speaker_change {
             // A resumed key is live again: a deferral that completes now waits for its next
             // window or SpeechEnd, it is not resolved at once.
-            lock(&self.shared.book)
-                .speech_ended
-                .retain(|k| *k != cur.key);
+            // A key whose final already started reading keeps its mark: a deferral that
+            // completes after that read still resolves at once.
+            let mut book = lock(&self.shared.book);
+            if !book.closed.contains(&cur.key) {
+                book.speech_ended.retain(|k| *k != cur.key);
+            }
         }
         feed.cur = Some(cur);
         drop(feed);
@@ -4854,6 +4857,69 @@ mod tests {
         }
         assert_eq!(lock(&queue).len(), left, "window 2's scan is parked");
         gate.end_utterance();
+        assert_eq!(
+            gate.outcome_for(1),
+            Some(Outcome::Other),
+            "nothing deferred yet"
+        );
+        parked.notify_one();
+        for _ in 0..400 {
+            if lock(&verdicts).len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let v: Vec<_> = lock(&verdicts)
+            .iter()
+            .map(|v| (v.outcome, v.recheck, v.window))
+            .collect();
+        assert_eq!(v.len(), 2, "{v:?}");
+        assert_eq!(
+            v[1],
+            (Outcome::Other, true, 2),
+            "delivered after the upgrade"
+        );
+        assert!(gate.take_speaker_changes().is_empty());
+        assert_eq!(gate.deferred_speaker_splits(), 0, "nothing left pending");
+        assert_eq!(
+            gate.outcome_for(1),
+            Some(Outcome::Caller),
+            "upgraded at once"
+        );
+        assert!(gate.upgraded_after_skipped_split(1));
+        assert!(lock(&gate.shared.book).split_keys.contains(&1));
+    }
+
+    /// The final started reading (`close_recheck`) while window 2's scan was parked, then the
+    /// key is begun again (the gate API allows it, see `short_verdict_closed_by_final_is_not_reopened`).
+    /// The scan completes with no hit after the resume: the read already happened, so the deferral
+    /// resolves at once instead of staying pending for a final that reads `other`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_deferral_after_the_final_read_and_a_resume_upgrades_at_once() {
+        let mut cfg = split_cfg(true, 12);
+        cfg.check_speech_ms = 1500;
+        let parked = Arc::new(Notify::new());
+        let mut steps: Vec<Step> = vec![(None, caller_v()), (None, other_v()), (None, caller_v())];
+        no_hit_scan(&mut steps);
+        steps[3].0 = Some(Arc::clone(&parked));
+        let left = steps.len() - 4;
+        let (gate, verdicts, queue) = run_script_steps(cfg, steps.into(), 1, 75).await;
+        for f in 0..75 {
+            gate.push_frame(&alternating(f));
+        }
+        for _ in 0..400 {
+            if lock(&queue).len() <= left {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(lock(&queue).len(), left, "window 2's scan is parked");
+        gate.close_recheck(1);
+        gate.end_utterance();
+        gate.begin(1, &alternating(0));
+        for f in 1..5 {
+            gate.push_frame(&alternating(f));
+        }
         assert_eq!(
             gate.outcome_for(1),
             Some(Outcome::Other),

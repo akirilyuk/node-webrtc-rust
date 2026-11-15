@@ -327,7 +327,9 @@ export interface VoiceAgentConfig {
      * `caller` window releases the held barge-in (no earlier than n × `checkSpeechMs` of speech
      * for the n-th window, see `speakerRecheckBargeEarliestMs`) and labels the final `caller`
      * with `speakerRechecked: true`. Never runs after a `caller` or `unknown` verdict. `false`
-     * keeps one check per utterance. See "Re-check after other" in VOICE-VAD-AND-BARGE-IN.md.
+     * keeps one check per utterance, unless `splitOnSpeakerChange` is on: the split keeps scoring
+     * windows for the whole utterance either way. See "Re-check after other" in
+     * VOICE-VAD-AND-BARGE-IN.md.
      */
     recheckOnOther?: boolean
     /**

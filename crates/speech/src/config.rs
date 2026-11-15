@@ -290,11 +290,18 @@ pub struct SpeakerGateConfig {
     /// reports a speaker change in both directions, with a split point in utterance media time
     /// (`speaker_gate::SpeakerChange`, `from` and `to` are `Caller` or `Other`):
     /// - `caller` -> `other` after `speaker_gate::SPEAKER_CHANGE_CONFIRM_WINDOWS` consecutive
-    ///   `other` windows; the split is the lowest-energy frame near the first opposite window.
+    ///   `other` windows. The split is the end of the longest quiet run from the previous `caller`
+    ///   window's start to the middle of the first `other` window: a closed run cuts right before
+    ///   the next speaker's first loud frame, an open run at its end but no later than
+    ///   `speaker_gate::CALLER_TO_OTHER_OPEN_CUT_MAX_MS` (450 ms) after the first `other` window's
+    ///   start. Without a quiet run, the lowest-energy frame near that window's start.
     /// - `other` -> `caller` after one `caller` window
-    ///   (`speaker_gate::OTHER_TO_CALLER_CONFIRM_WINDOWS`), or after one window just under the
+    ///   (`speaker_gate::OTHER_TO_CALLER_CONFIRM_WINDOWS`), only when one `other` window of the
+    ///   utterance scored below `speaker_gate::CONFIDENT_OTHER_MAX_SCORE` (0.20; otherwise the
+    ///   `caller` window upgrades the utterance), or after one window just under the
     ///   threshold (from `speaker_gate::NEAR_MISS_MIN_SCORE`) with a `caller` sub-window. The split
-    ///   comes from sub-window embeddings on the verifier task from the previous scored window's
+    ///   comes from sub-window embeddings (`SPLIT_STAGE2_SUB_MS` 750 ms on a `SPLIT_STAGE2_HOP_MS`
+    ///   125 ms hop) on the verifier task from the previous scored window's
     ///   start: the first `caller` sub-window's start minus `speaker_gate::SPLIT_BACKOFF_MS`, never
     ///   before that window's start, which is also the split without one or on a timeout (bounded
     ///   by `verify_timeout_ms`). The first

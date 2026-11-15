@@ -10,7 +10,7 @@ import { SPEECH_EVENT_TYPE, speakerRecheckBargeEarliestMs } from '@node-webrtc-r
 import { DEFAULT_BARGE_PHRASE_MIN_SIMILARITY } from './roundtrip-barge-in-helpers.js'
 import { normalizeForCompare, wordSimilarity } from './roundtrip-counting.js'
 
-/** Product default of `speakerGate.checkSpeechMs` (G1): the verdict needs this much speech. */
+/** Product default of `speakerGate.minCheckSpeechMs` (1500, equal to `checkSpeechMs`): a verdict needs this much speech. */
 export const CHECK_SPEECH_MS = 1500
 /**
  * `vad.bargeIn.minSttPartialTokens` the roundtrip sets on its agent (the product default, 2). With

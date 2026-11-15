@@ -1,5 +1,11 @@
 # Adaptive speaker reference bench
 
+## Default off, and why
+
+`speakerGate.adaptReference` is opt-in. Adapting the reference cuts caller false rejects when the channel drifts (drift FRR 13.6 % → 2.15 %), but it raises bystander accepts on every set: clean 0.014 → 0.085 %, bed 0.057 → 0.184 %, poison 1.527 → 4.232 %. In the poison set, 2 bystander windows were blended into the caller reference. Those are the numbers of the result table below.
+
+Turn it on for long calls where the caller's channel changes (codec, EQ, level) and a bystander accept costs less than a rejected caller. Leave it off when a bystander accept is the worse outcome.
+
 Decides the default of `speakerGate.adaptReference` (`DEFAULT_ADAPT_REFERENCE` in `crates/speech/src/config.rs`). Gate: caller FRR drops on the drift set, and FAR does not rise on any set (poison included). Source: `adapt_reference_bench.rs` (method in its header).
 
 ```text

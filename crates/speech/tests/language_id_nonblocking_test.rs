@@ -115,7 +115,8 @@ impl LanguageIdProvider for CountingLanguageId {
             .or_else(|| self.languages.last())
             .cloned()
             .unwrap_or_else(|| "en".into());
-        // "es|el": decided `es` from raw top `el` within the allowlist gap.
+        // "es|el": restricted-mode decision `es` from raw top `el` (as the sherpa provider
+        // reports when the allowlist maps to model languages); "ja|ja": decided out of set.
         if let Some((decided, raw)) = language.split_once('|') {
             return Ok(Some(LanguageIdResult {
                 language: decided.to_string(),
@@ -3246,7 +3247,7 @@ async fn early_out_of_set_beyond_gap_runs_second_pass_at_speech_end() {
     // yet; the second identify on the end-of-utterance clip decides `es`.
     let lid_calls = Arc::new(AtomicUsize::new(0));
     let agent = early_allowlist_agent(
-        vec!["ja", "es"],
+        vec!["ja|ja", "es|es"],
         Some(vec!["en", "es"]),
         Arc::clone(&lid_calls),
     );
@@ -3283,7 +3284,7 @@ async fn early_in_set_runs_no_second_pass() {
 async fn second_pass_still_out_of_set_is_undetermined_once() {
     let lid_calls = Arc::new(AtomicUsize::new(0));
     let agent = early_allowlist_agent(
-        vec!["ja", "ja", "ja"],
+        vec!["ja|ja", "ja|ja", "ja|ja"],
         Some(vec!["en", "es"]),
         Arc::clone(&lid_calls),
     );
@@ -3306,7 +3307,7 @@ async fn second_pass_starts_inline_when_speech_ended_during_early_identify() {
     // pass starts from the identify task itself; still exactly one outcome.
     let lid_calls = Arc::new(AtomicUsize::new(0));
     let agent = early_allowlist_agent(
-        vec!["ja", "es"],
+        vec!["ja|ja", "es|es"],
         Some(vec!["en", "es"]),
         Arc::clone(&lid_calls),
     );
@@ -3315,6 +3316,21 @@ async fn second_pass_starts_inline_when_speech_ended_during_early_identify() {
     assert_eq!(lid_calls.load(Ordering::SeqCst), 2);
     assert_eq!(user_language_codes(&events), vec!["es".to_string()]);
     assert_one_first_outcome(&events);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn allowlist_without_restricted_decision_runs_one_identify() {
+    // Allowlist ["xx"] maps to no model language: the provider returns its plain argmax (no
+    // `raw_language`), so there is no second pass. One identify, filtered as before.
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = early_allowlist_agent(vec!["ja", "es"], Some(vec!["xx"]), Arc::clone(&lid_calls));
+    let mut rx = agent.subscribe_events();
+    let events = run_one_utterance_events(&agent, &mut rx, 40).await;
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 1, "no second pass");
+    let outcome = assert_one_first_outcome(&events);
+    assert_eq!(outcome.kind, SpeechEventKind::LanguageIdSkipped);
+    assert_eq!(outcome.reason.as_deref(), Some("undetermined"));
     agent.stop().await.unwrap();
 }
 

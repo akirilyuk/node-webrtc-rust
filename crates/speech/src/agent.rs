@@ -5696,9 +5696,12 @@ impl VoiceAgent {
                             undetermined = true;
                         } else if !language_id_allowlist_accepts(&allowlist_cfg, &code)
                             && keep_for_second_pass
+                            && lang_result.raw_language.is_some()
                         {
                             // Out of the allowed set beyond the gap on the early clip: one more
-                            // identify on the end-of-utterance clip decides (same rule).
+                            // identify on the end-of-utterance clip decides (same rule). Only when
+                            // the provider decided among the allowed set (`raw_language` set);
+                            // a plain argmax (no allowed code maps to the model) stays one identify.
                             let rec = inner.record_mut(key).expect("checked");
                             rec.lid.second_pass_pending = true;
                             second_pass_now = rec.lid.speech_ended;

@@ -406,6 +406,9 @@ struct Book {
     /// Per U1 key of a confirmed `other` -> `caller` change: the caller floor of its U2, on U2's
     /// clock (decision y; [`SpeakerGate::caller_floor_for`]).
     caller_floors: VecDeque<(u64, u32)>,
+    /// Decision hh: keys whose `other` -> `caller` split is deferred (a `caller` window's split
+    /// scan completed with no `caller` sub-window), with the remembered window's fallback cut.
+    veto_pending: VecDeque<(u64, u32)>,
 }
 
 struct Shared {
@@ -1178,6 +1181,9 @@ impl SpeakerGate {
             feed.media_end.pop_front();
         }
         feed.gap_bytes = 0;
+        if self.cfg.split_on_speaker_change {
+            self.resolve_deferred_split_at_end(cur.key);
+        }
         if !cur.sent {
             self.mark_sent(cur.key);
             // A re-opened key that ends before (windows sent + 1) × check of counted speech is
@@ -1570,6 +1576,30 @@ impl SpeakerGate {
             }
         }
         self.shared.notify.notify_waiters();
+    }
+
+    /// Decision hh, SpeechEnd with a deferred `other` -> `caller` split still pending: today's
+    /// outcome from the remembered window, which at the end of speech is the `not_speaking` skip.
+    /// Books `caller` for `key` synchronously, before the final reads its verdict, and marks the
+    /// key as split (no further window is cut, the adaptive reference commits nothing from it).
+    /// The held barge-in is released once: by the final that reads `caller`, or by a re-check
+    /// verdict still in flight ([`Self::upgraded_after_skipped_split`]).
+    fn resolve_deferred_split_at_end(&self, key: u64) {
+        let cut = {
+            let mut book = lock(&self.shared.book);
+            let Some(i) = book.veto_pending.iter().position(|(k, _)| *k == key) else {
+                return;
+            };
+            let cut = book.veto_pending.remove(i).map_or(0, |(_, c)| c);
+            if !book.split_keys.contains(&key) {
+                push_capped(&mut book.split_keys, key);
+            }
+            cut
+        };
+        self.upgrade_after_skipped_split(key);
+        eprintln!(
+            "[speaker-gate] info: speaker split skipped key={key} reason=not_speaking split_at_ms={cut} fallback=upgrade (deferred at SpeechEnd)"
+        );
     }
 
     /// Whether `key` was upgraded by [`Self::upgrade_after_skipped_split`].
@@ -2091,6 +2121,29 @@ fn other_to_caller_cut(lo: i64, found: Option<i64>) -> u32 {
         .max(0) as u32
 }
 
+/// How a sub-window scan ended (decision hh tells a completed scan from a stopped one).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScanEnd {
+    /// Start of the first `caller` sub-window.
+    Found(i64),
+    /// Every sub-window of the range was embedded (at least one); none scored `caller`.
+    Completed,
+    /// The range holds no full sub-window: nothing was scored, so nothing vetoes the split
+    /// (today's fallback cut).
+    Empty,
+    /// A budget stop or an embed failure.
+    Stopped,
+}
+
+impl ScanEnd {
+    fn found(self) -> Option<i64> {
+        match self {
+            Self::Found(t) => Some(t),
+            _ => None,
+        }
+    }
+}
+
 /// The `other` -> `caller` sub-window scan: embeds [`SPLIT_STAGE2_SUB_MS`] sub-windows on a
 /// [`SPLIT_STAGE2_HOP_MS`] hop from the start of the range and returns the start of the first one
 /// that scores `caller`. `what` names the use in the logs (`split` for a confirmed change,
@@ -2099,8 +2152,8 @@ fn other_to_caller_cut(lo: i64, found: Option<i64>) -> u32 {
 /// `verify - SCAN_AWAIT_MARGIN_MS` minus what has passed since `enqueued` (queue wait and the
 /// window's own embed), each embed `min(verify, left)`, so the window's verdict lands at least
 /// [`SCAN_AWAIT_MARGIN_MS`] before a final awaiting it gives up, even when the check queued behind
-/// another embed. No budget left skips the scan. `None` on a budget stop, an embed
-/// failure, or when no sub-window is `caller`; `waitedMs` is logged either way.
+/// another embed. No budget left skips the scan. [`ScanEnd::Stopped`] on a budget stop or an embed
+/// failure, [`ScanEnd::Completed`] when no sub-window is `caller`; `waitedMs` is logged either way.
 #[allow(clippy::too_many_arguments)]
 async fn scan_caller_sub_window(
     embedder: &Arc<dyn SpeakerEmbedder>,
@@ -2112,7 +2165,7 @@ async fn scan_caller_sub_window(
     shared: &Shared,
     key: u64,
     what: &str,
-) -> Option<i64> {
+) -> ScanEnd {
     let started = Instant::now();
     let total = verify
         .saturating_sub(Duration::from_millis(SCAN_AWAIT_MARGIN_MS))
@@ -2165,13 +2218,17 @@ async fn scan_caller_sub_window(
         shared.warn(format!(
             "speaker gate {what} scan {why} key={key} embeds={embeds} waitedMs={waited_ms}; {then}"
         ));
-        return None;
+        return ScanEnd::Stopped;
     }
     crate::agent::voice_debug(format!(
         "speaker gate {what} scan key={key} embeds={embeds} found={} waitedMs={waited_ms}",
         found.is_some()
     ));
-    found
+    match found {
+        Some(t) => ScanEnd::Found(t),
+        None if embeds == 0 => ScanEnd::Empty,
+        None => ScanEnd::Completed,
+    }
 }
 
 /// Start (utterance clock, ms) of the lowest-energy 20 ms frame of `clip` within
@@ -2442,13 +2499,17 @@ async fn run(
                 //   `caller` sub-window confirms it as the `caller` window (same cut, inheritance
                 //   and barge path); a budget stop confirms nothing.
                 // - `split`: the window scored `caller` and confirms a split
-                //   ([`Watch::splits_on_next_caller`]). The scan gives the cut; no `caller`
-                //   sub-window or a budget stop keeps the previous window's start.
+                //   ([`Watch::splits_on_next_caller`]). The scan gives the cut; a budget stop
+                //   keeps the previous window's start. Decision hh: a completed scan with no
+                //   `caller` sub-window defers the split (the window counts as `other`, the watch
+                //   stays open, the fallback cut is remembered); a second `caller` window without
+                //   a `caller` sub-window cuts at the remembered point; SpeechEnd with the split
+                //   still deferred upgrades ([`SpeakerGate::resolve_deferred_split_at_end`]).
                 let near = recheck
                     && outcome == Outcome::Other
                     && window_score.is_some_and(|s| s >= NEAR_MISS_MIN_SCORE && s < cfg.threshold);
                 let split_window = recheck && outcome == Outcome::Caller;
-                let mut scan: Option<(i64, Option<i64>)> = None;
+                let mut scan: Option<(i64, ScanEnd)> = None;
                 if let (true, Some(clip), Some(reference)) =
                     (near || split_window, clip.as_ref(), reference.as_ref())
                 {
@@ -2479,9 +2540,25 @@ async fn run(
                         scan = Some((refine.lo, found));
                     }
                 }
-                let near_found = scan.and_then(|(_, found)| found).filter(|_| near);
+                let near_found = scan.and_then(|(_, end)| end.found()).filter(|_| near);
+                let defer = split_window && matches!(scan, Some((_, ScanEnd::Completed))) && {
+                    let mut book = lock(&shared.book);
+                    let fresh = !book.veto_pending.iter().any(|(k, _)| *k == key)
+                        && !book.split_keys.contains(&key);
+                    if let (true, Some((lo, _))) = (fresh, scan) {
+                        push_capped(&mut book.veto_pending, (key, other_to_caller_cut(lo, None)));
+                    }
+                    fresh
+                };
+                if defer {
+                    crate::agent::voice_debug(format!(
+                        "speaker gate split deferred key={key} window={window}: no caller sub-window"
+                    ));
+                }
                 let watch_outcome = if near_found.is_some() {
                     Outcome::Caller
+                } else if defer {
+                    Outcome::Other
                 } else {
                     outcome
                 };
@@ -2510,15 +2587,32 @@ async fn run(
                 // `other` -> `caller`: the cut comes from this window's sub-window scan.
                 let o2c = change.is_some_and(|c| c.from == Outcome::Other);
                 let mut o2c_found: Option<i64> = None;
-                if let (true, Some((lo, found))) = (o2c, scan) {
+                // Decision hh: a deferred split without a `caller` sub-window on this window cuts
+                // at the remembered window's fallback point.
+                let deferred_cut = o2c
+                    .then(|| {
+                        let mut book = lock(&shared.book);
+                        let i = book.veto_pending.iter().position(|(k, _)| *k == key)?;
+                        book.veto_pending.remove(i).map(|(_, c)| c)
+                    })
+                    .flatten();
+                if let (true, Some((lo, end))) = (o2c, scan) {
+                    let found = end.found();
                     if let Some(c) = change.as_mut() {
-                        c.split_at_ms = other_to_caller_cut(lo, found);
+                        c.split_at_ms = match (found, deferred_cut) {
+                            (None, Some(cut)) => cut,
+                            _ => other_to_caller_cut(lo, found),
+                        };
                     }
                     o2c_found = found;
                 }
                 // U1 of an `other` -> `caller` change stays `other`: nothing upgrades or barges on
                 // it (the caller's speech is U2, which inherits the verdict).
-                let outcome = if o2c { Outcome::Other } else { outcome };
+                let outcome = if o2c || defer {
+                    Outcome::Other
+                } else {
+                    outcome
+                };
                 let has_change = change.is_some();
                 {
                     let mut book = lock(&shared.book);
@@ -4312,20 +4406,135 @@ mod tests {
         assert_eq!(lock(&queue).len(), 2, "exactly five sub-windows embedded");
     }
 
-    /// No `caller` sub-window: the cut is the previous window's start (0 ms), the scan embeds every
-    /// sub-window of the held audio (0..3000 ms: 19) and stops.
+    /// 19 scripted `other` sub-windows: a split scan over 0..3000 ms (1500 ms windows) that
+    /// completes without a `caller` sub-window.
+    fn no_hit_scan(steps: &mut Vec<Step>) {
+        steps.extend((0..19).map(|_| (None, other_v())));
+    }
+
+    /// Decision hh, the eu-load n02 shape (43725495546): U1 window 1 scores -0.064 (confident
+    /// `other`), window 2 0.300 (near-miss, its scan finds no `caller` sub-window), window 3 just
+    /// over the threshold on bystander-only audio, and its split scan completes (19 embeds) with
+    /// no `caller` sub-window. The split is deferred: no change, window 3 is delivered as `other`
+    /// (the barge-in stays held), U1 stays `other` and the watch stays open. A 4th `caller`
+    /// window whose scan finds a `caller` sub-window at 500 ms into its range splits there:
+    /// window 3's start (3000 ms) + 500 - 300. On dabb7e29 window 3 split at 1500 ms.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn split_without_a_caller_sub_window_cuts_at_the_previous_window_start() {
+    async fn n02_scan_without_a_caller_sub_window_defers_the_split() {
+        let mut cfg = split_cfg(true, 12);
+        cfg.check_speech_ms = 1500;
+        let thr = cfg.threshold;
+        let script = |more: bool| {
+            let mut steps: Vec<Step> = vec![
+                (None, caller_v()),
+                (None, scored_v(-0.064)),
+                (None, scored_v(0.300)),
+            ];
+            no_hit_scan(&mut steps); // window 2's near-miss scan
+            steps.push((None, scored_v(thr + 0.004)));
+            no_hit_scan(&mut steps); // window 3's split scan
+            if more {
+                steps.push((None, caller_v()));
+                steps.extend((0..4).map(|_| (None, other_v())));
+                steps.push((None, caller_v()));
+            }
+            steps
+        };
+        let (gate, verdicts, _q) = run_script_steps(cfg.clone(), script(false).into(), 3, 75).await;
+        assert!(
+            gate.take_speaker_changes().is_empty(),
+            "deferred, not split"
+        );
+        assert_eq!(
+            lock(&verdicts)
+                .iter()
+                .find(|v| v.window == 3)
+                .map(|v| (v.outcome, v.recheck, v.window)),
+            Some((Outcome::Other, true, 3)),
+            "window 3 is delivered as other: the barge-in stays held"
+        );
+        assert_eq!(gate.outcome_for(1), Some(Outcome::Other), "U1 stays other");
+        assert!(!gate.upgraded_after_skipped_split(1));
+
+        let (gate, _v, _q) = run_script_steps(cfg, script(true).into(), 4, 75).await;
+        let changes = gate.take_speaker_changes();
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert_eq!(
+            (changes[0].from, changes[0].to, changes[0].split_at_ms),
+            (
+                Outcome::Other,
+                Outcome::Caller,
+                3000 + 500 - SPLIT_BACKOFF_MS
+            )
+        );
+    }
+
+    /// Decision hh: two `caller` windows whose scans both complete without a `caller` sub-window.
+    /// The first defers; the second applies today's cut from the remembered window: its previous
+    /// window's start (0 ms), not the second window's (1500 ms). On dabb7e29 the first window
+    /// split and no 3rd verdict was delivered.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_second_scan_without_a_caller_sub_window_cuts_at_the_deferred_point() {
         let mut cfg = split_cfg(true, 12);
         cfg.check_speech_ms = 1500;
         let mut steps: Vec<Step> = vec![(None, caller_v()), (None, other_v()), (None, caller_v())];
-        steps.extend((0..19).map(|_| (None, other_v())));
+        no_hit_scan(&mut steps);
         steps.push((None, caller_v()));
-        let (gate, _v, queue) = run_script_steps(cfg, steps.into(), 2, 75).await;
+        no_hit_scan(&mut steps);
+        let (gate, verdicts, queue) = run_script_steps(cfg, steps.into(), 3, 75).await;
         let changes = gate.take_speaker_changes();
         assert_eq!(changes.len(), 1, "{changes:?}");
-        assert_eq!(changes[0].split_at_ms, 0);
-        assert_eq!(lock(&queue).len(), 1, "19 sub-windows embedded, no more");
+        assert_eq!(
+            changes[0].split_at_ms, 0,
+            "the deferred window's fallback cut"
+        );
+        assert_eq!(
+            lock(&verdicts)
+                .iter()
+                .map(|v| (v.outcome, v.window))
+                .collect::<Vec<_>>(),
+            vec![
+                (Outcome::Other, 1),
+                (Outcome::Other, 2),
+                (Outcome::Other, 3)
+            ]
+        );
+        assert!(
+            lock(&queue).is_empty(),
+            "both scans embedded 19 sub-windows"
+        );
+        assert_eq!(gate.outcome_for(1), Some(Outcome::Other), "U1 stays other");
+    }
+
+    /// Decision hh: SpeechEnd with the split still deferred is the `not_speaking` skip: `caller`
+    /// is booked for U1 synchronously (before the final reads it), the key is a skip-upgraded
+    /// split key, and the held barge-in is kept for the final that reads `caller` (not dropped as
+    /// for an `other` key). On dabb7e29 the change was booked on window 2 instead.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn speech_end_with_the_split_deferred_upgrades_to_caller() {
+        let mut cfg = split_cfg(true, 12);
+        cfg.check_speech_ms = 1500;
+        let mut steps: Vec<Step> = vec![(None, caller_v()), (None, other_v()), (None, caller_v())];
+        no_hit_scan(&mut steps);
+        let (gate, _v, _q) = run_script_steps(cfg, steps.into(), 2, 75).await;
+        assert!(gate.take_speaker_changes().is_empty(), "deferred");
+        assert_eq!(gate.outcome_for(1), Some(Outcome::Other));
+        gate.set_pending_barge(1, 0);
+        gate.end_utterance();
+        assert_eq!(
+            gate.outcome_for(1),
+            Some(Outcome::Caller),
+            "booked at SpeechEnd"
+        );
+        assert_eq!(gate.settled_outcome(1), Some(Outcome::Caller));
+        assert!(gate.upgraded_after_skipped_split(1));
+        assert!(
+            gate.has_pending_barge(1),
+            "kept for the final that reads caller"
+        );
+        assert!(lock(&gate.shared.book).split_keys.contains(&1));
+        assert!(lock(&gate.shared.book).veto_pending.is_empty());
+        assert!(gate.take_speaker_changes().is_empty());
     }
 
     /// A scan embed that exceeds `verify_timeout_ms` falls back to the previous window's start
@@ -4440,8 +4649,8 @@ mod tests {
             "split",
         )
         .await;
-        assert_eq!(got, None);
-        assert_eq!((point, other_to_caller_cut(refine.lo, got)), (0, 0));
+        assert_eq!(got, ScanEnd::Stopped);
+        assert_eq!((point, other_to_caller_cut(refine.lo, got.found())), (0, 0));
         assert_eq!(*lock(&counting.0), 0, "no embed with the budget spent");
         let warns = gate.warnings();
         assert!(
@@ -4515,7 +4724,7 @@ mod tests {
             "split",
         )
         .await;
-        other_to_caller_cut(refine.lo, found)
+        other_to_caller_cut(refine.lo, found.found())
     }
 
     /// 6g step 1 (bench parity, not a CI test): replays the scenes `near_miss_bench` dumped with
@@ -4528,7 +4737,8 @@ mod tests {
     async fn bench_split_parity() {
         let dir = std::path::PathBuf::from(std::env::var("NM_SPLIT_DUMP").expect("NM_SPLIT_DUMP"));
         let index = std::fs::read_to_string(dir.join("index.txt")).expect("index.txt");
-        let (mut same, mut diff, mut found_n) = (0_usize, Vec::new(), 0_usize);
+        let (mut same, mut diff, mut found_n, mut deferred_n) =
+            (0_usize, Vec::new(), 0_usize, 0_usize);
         for line in index.lines() {
             let f: Vec<&str> = line.split_whitespace().collect();
             let n = f[0];
@@ -4567,19 +4777,24 @@ mod tests {
                 "split",
             )
             .await;
-            found_n += usize::from(found.is_some());
-            let got = other_to_caller_cut(refine.lo, found);
-            if got == bench {
+            found_n += usize::from(found.found().is_some());
+            // Decision hh: a completed scan with no `caller` sub-window defers the split (no cut
+            // on this window); the dump's scan is unbudgeted, so the bench defers exactly when no
+            // sub-window score reaches the threshold (its `bench_cut` is then the fallback).
+            let got = match found {
+                ScanEnd::Completed => None,
+                end => Some(other_to_caller_cut(refine.lo, end.found())),
+            };
+            let want = scores.iter().any(|s| *s >= threshold).then_some(bench);
+            if got == want {
                 same += 1;
+                deferred_n += usize::from(got.is_none());
             } else {
-                diff.push(format!(
-                    "{n}: product {got} bench {bench} (d={})",
-                    i64::from(got) - i64::from(bench)
-                ));
+                diff.push(format!("{n}: product {got:?} bench {want:?}"));
             }
         }
         println!(
-            "bench_split_parity: {same} same, {} differ, {found_n} with a caller sub-window",
+            "bench_split_parity: {same} same, {} differ, {found_n} with a caller sub-window, {deferred_n} deferred (decision hh)",
             diff.len()
         );
         for d in &diff {
@@ -4877,7 +5092,9 @@ mod tests {
             (None, scored_v(0.190)),
             (None, caller_v()),
         ];
-        steps.extend((0..19).map(|_| (None, other_v()))); // the split scan
+        // The split scan: a `caller` sub-window last (decision hh defers a scan without one).
+        steps.extend((0..18).map(|_| (None, other_v())));
+        steps.push((None, caller_v()));
         let (gate, _v, _q) = run_script_steps(cfg, steps.into(), 4, 75).await;
         let changes = gate.take_speaker_changes();
         assert_eq!(changes.len(), 1, "{changes:?}");

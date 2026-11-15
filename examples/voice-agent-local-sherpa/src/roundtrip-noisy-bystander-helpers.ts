@@ -650,6 +650,95 @@ export function exactThresholdCount(sims: number[]): number {
   ).length
 }
 
+/**
+ * An unscored-bystander leak (decision ee, weaker than a window-based rule because the oracle
+ * cannot see `short` verdicts): the VAD opened on a bystander turn, the gate never scored it (only
+ * `short` checks), and the caller's onset joined the same utterance, so its first verdict came from
+ * a window that already held caller audio. Reported, not failing, only when ALL hold:
+ *
+ * 1. the bystander slot's utterance has a `caller` final with `speakerCheckWindows` >= 1;
+ * 2. the next caller turn's sentence is in that final: {@link wordSimilarity} of the caller text
+ *    against the final's words from the best caller-length window on, at least
+ *    {@link DEFAULT_BARGE_PHRASE_MIN_SIMILARITY} (the no-pause bounded-leak threshold); the leaked
+ *    words are the final's words before that window;
+ * 3. a `barge_in` exists for that utteranceId and every one is at or after the caller turn's scene
+ *    start (`Seen.atMs` is scene time, the clock the barge checks in {@link evaluateTurns} use; no
+ *    new slack). No barge at all fails closed (the turn involves agent TTS, a barge is expected);
+ * 4. the caller turn has no utterance of its own and no other final holds the caller sentence.
+ *
+ * Also required (keeps the zero-gap merge guard): the utterance's speech end is strictly after the
+ * caller turn's scene start.
+ *
+ * Anything else keeps failing (barge before the caller onset, sentence missing, a bystander-only
+ * `caller` final, a second caller utterance). Pairing is by utteranceId.
+ */
+export interface UnscoredBystanderLeak {
+  bystanderTurnIndex: number
+  callerTurnIndex: number
+  utteranceId: string
+  words: string[]
+  text: string
+}
+
+export function unscoredBystanderLeaks(
+  turns: Turn[],
+  seen: Seen[],
+  starts: (Seen | undefined)[] = pairTurnUtterances(turns, seen).starts,
+): UnscoredBystanderLeak[] {
+  const out: UnscoredBystanderLeak[] = []
+  const finals = seen.filter(
+    (e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal && e.utteranceId != null,
+  )
+  const barges = seen.filter((e) => e.type === SPEECH_EVENT_TYPE.bargeIn)
+  turns.forEach((turn, i) => {
+    const id = starts[i]?.utteranceId
+    if (turn.role !== 'bystander' || id == null) return
+    const j = turns.findIndex((t, k) => k > i && t.role === 'main')
+    if (j < 0 || starts[j] != null) return
+    const caller = turns[j]!
+    const final = finals.find((f) => f.utteranceId === id)
+    if (final?.speaker !== 'caller' || (final.speakerCheckWindows ?? 0) < 1) return
+    const words = normalizeForCompare(final.text ?? '')
+      .split(' ')
+      .filter((w) => w.length > 0)
+    const n = normalizeForCompare(caller.text)
+      .split(' ')
+      .filter((w) => w.length > 0).length
+    if (n === 0 || words.length < n) return
+    let bestK = -1
+    let best = 0
+    for (let k = 0; k + n <= words.length; k += 1) {
+      const sim = wordSimilarity(caller.text, words.slice(k, k + n).join(' '))
+      if (sim > best) {
+        best = sim
+        bestK = k
+      }
+    }
+    if (bestK < 0 || best < DEFAULT_BARGE_PHRASE_MIN_SIMILARITY) return
+    // The utterance runs past the caller's scene start (as in the merge rule): speech that ends
+    // at or before it holds no caller audio, so the caller sentence in its text is not from it.
+    const endMs = utteranceEndMs(id, seen)
+    if (endMs == null || !(endMs > caller.startMs)) return
+    const own = barges.filter((b) => b.utteranceId === id)
+    if (own.length === 0 || own.some((b) => b.atMs < caller.startMs)) return
+    const elsewhere = finals.some(
+      (f) =>
+        f.utteranceId !== id &&
+        f.speaker === 'caller' &&
+        callerWindowSimilarity(caller.text, f.text ?? '') >= DEFAULT_BARGE_PHRASE_MIN_SIMILARITY,
+    )
+    if (elsewhere) return
+    out.push({
+      bystanderTurnIndex: i,
+      callerTurnIndex: j,
+      utteranceId: id,
+      words: words.slice(0, bestK),
+      text: final.text ?? '',
+    })
+  })
+  return out
+}
+
 /** Pure evaluation of one pass; exported for the evaluator unit test. */
 export function evaluateTurns(
   turns: Turn[],
@@ -690,12 +779,22 @@ export function evaluateTurns(
   }
   const { starts, merged, followed } = pairTurnUtterances(turns, seen)
   const splits = seen.filter((e) => e.type === SPEECH_EVENT_TYPE.userUtteranceSplit)
+  const leaks = unscoredBystanderLeaks(turns, seen, starts)
   let bystandersHeard = 0
   turns.forEach((turn, i) => {
     const tag = `${label} turn ${i} (${turn.role} ${turn.kind} "${turn.text.slice(0, 30)}")`
     const start = starts[i]
     const id = start?.utteranceId
     const final = id != null ? finals.get(id) : undefined
+    const leak = leaks.find((l) => l.bystanderTurnIndex === i || l.callerTurnIndex === i)
+    if (leak != null) {
+      if (turn.role === 'bystander') {
+        console.log(
+          `${label}: unscored-bystander leak in ${leak.utteranceId} (${leaks.length} in this pass): bystander words "${leak.words.join(' ')}" before the caller sentence, final "${leak.text}"`,
+        )
+      }
+      return
+    }
     if (turn.role === 'bystander') {
       // Documented behaviour of minCheckSpeechMs (1500) with suppressShortBargeIn off: an utterance
       // with less speech is not scored (`unknown`, reason `short`) and its barge-in is released at

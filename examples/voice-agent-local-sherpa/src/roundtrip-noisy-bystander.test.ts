@@ -15,6 +15,7 @@ import {
   splitDecidingWindowEndSceneMs,
   splitDistances,
   splitSceneMs,
+  unscoredBystanderLeaks,
   sttPartialTokenCount,
   voicedMsBetween,
   type Seen,
@@ -697,7 +698,10 @@ describe('merged caller utterance (VAD opened in the bystander slot)', () => {
         text: 'suitcase room charlie one two three',
       }),
     )
-    expect(failures).toMatch(/turn 1 .*barge_in for the bystander utterance u7/)
+    // Not merged, but the first verdict came after the caller onset and the final holds the caller
+    // sentence: an unscored-bystander leak (decision ee), reported, not failing.
+    expect(failures).toBe('')
+    expect(unscoredBystanderLeaks(SCENE, seen)).toHaveLength(1)
     expect([...pairTurnUtterances(SCENE, seen).merged]).toEqual([])
   })
 
@@ -712,7 +716,8 @@ describe('merged caller utterance (VAD opened in the bystander slot)', () => {
         text: 'suitcase room charlie one two three',
       })
     const atBound = run(shape(64_352))
-    expect(atBound.failures).toMatch(/turn 1 .*barge_in for the bystander utterance u7/)
+    expect(atBound.failures).toBe('')
+    expect(unscoredBystanderLeaks(SCENE, atBound.seen)).toHaveLength(1)
     expect([...pairTurnUtterances(SCENE, atBound.seen).merged]).toEqual([])
     const inside = run(shape(64_353))
     expect(inside.failures).toBe('')
@@ -876,9 +881,9 @@ describe('check windows of a re-checked final (speakerCheckWindows)', () => {
     const seen = [...u1({ bargeAt: 107_650 }), ...tail()].sort((a, b) => a.atMs - b.atMs)
     const scene = [t0, late, t2]
     expect([...pairTurnUtterances(scene, seen).merged]).toEqual([])
-    expect(evaluateTurns(scene, seen, 'p').join('\n')).toMatch(
-      /turn 0 .*barge_in for the bystander utterance u1/,
-    )
+    // Decision ee: caller final holding the caller sentence, barge after the caller onset.
+    expect(evaluateTurns(scene, seen, 'p')).toEqual([])
+    expect(unscoredBystanderLeaks(scene, seen)).toHaveLength(1)
   })
 
   it('fails a re-checked final without speakerCheckWindows and never defaults it', () => {
@@ -1591,5 +1596,101 @@ describe('other→caller split whose U1 emits no final (U1 windows on the split 
     ])
     expect(splitDecidingWindowEndSceneMs(split, finals, 620)).toBeUndefined()
     expect(splitDecidingWindowEndSceneMs(split, new Map(), 620)).toBeUndefined()
+  })
+})
+
+describe('unscored-bystander leak (decision ee; iteration-20 shape)', () => {
+  const b1: Turn = {
+    role: 'bystander',
+    startMs: 10_000,
+    endMs: 12_000,
+    text: 'Basil and crustones',
+    kind: 'background',
+  }
+  const c1: Turn = {
+    role: 'main',
+    startMs: 14_000,
+    endMs: 16_000,
+    text: 'charlie one two three',
+    kind: 'qualified',
+  }
+  const b2: Turn = {
+    role: 'bystander',
+    startMs: 20_000,
+    endMs: 22_000,
+    text: 'a bus waits outside',
+    kind: 'background',
+  }
+  const T = [b1, c1, b2]
+  const FINAL = 'Basil and crustones. Charlie one two three'
+  function leakSeen(
+    over: { bargeAt?: number | null; text?: string; speaker?: string } = {},
+  ): Seen[] {
+    const bargeAt = over.bargeAt === undefined ? 14_400 : over.bargeAt
+    return [
+      ev('user_speaking_start', 10_100, { utteranceId: 'u1' }),
+      ...(bargeAt == null ? [] : [ev('barge_in', bargeAt, { utteranceId: 'u1' })]),
+      ev('user_speech_final', 17_000, {
+        utteranceId: 'u1',
+        text: over.text ?? FINAL,
+        speaker: over.speaker ?? 'caller',
+        speakerCheckWindows: 1,
+      }),
+      ev('user_speaking_start', 20_100, { utteranceId: 'u2' }),
+      ev('user_speech_final', 23_000, { utteranceId: 'u2', text: 'a bus', speaker: 'other' }),
+    ]
+  }
+
+  it('reports the iteration-20 shape as a leak and passes', () => {
+    const leaks = unscoredBystanderLeaks(T, leakSeen())
+    expect(leaks).toHaveLength(1)
+    expect(leaks[0]!.words.join(' ')).toBe('basil and crustones')
+    expect(evaluateTurns(T, leakSeen(), 'p')).toEqual([])
+  })
+
+  it('fails a barge 1 ms before the caller scene start', () => {
+    const seen = leakSeen({ bargeAt: 13_999 })
+    expect(unscoredBystanderLeaks(T, seen)).toEqual([])
+    expect(evaluateTurns(T, seen, 'p').join('\n')).toMatch(
+      /barge_in for the bystander utterance u1/,
+    )
+  })
+
+  it('passes a barge exactly at the caller scene start', () => {
+    expect(evaluateTurns(T, leakSeen({ bargeAt: 14_000 }), 'p')).toEqual([])
+  })
+
+  it('fails closed with no barge event', () => {
+    const seen = leakSeen({ bargeAt: null })
+    expect(unscoredBystanderLeaks(T, seen)).toEqual([])
+    expect(evaluateTurns(T, seen, 'p').length).toBeGreaterThan(0)
+  })
+
+  it('fails when the caller sentence is missing', () => {
+    const seen = leakSeen({ text: 'Basil and crustones. Delta nine' })
+    expect(unscoredBystanderLeaks(T, seen)).toEqual([])
+    expect(evaluateTurns(T, seen, 'p').length).toBeGreaterThan(0)
+  })
+
+  it('fails a bystander-only final labelled caller', () => {
+    const seen = leakSeen({ text: 'Basil and crustones' })
+    expect(unscoredBystanderLeaks(T, seen)).toEqual([])
+    expect(evaluateTurns(T, seen, 'p').join('\n')).toMatch(/final speaker caller, expected other/)
+  })
+
+  it('fails when the caller turn has its own utterance', () => {
+    const seen = [
+      ...leakSeen(),
+      ev('user_speaking_start', 14_200, { utteranceId: 'u3' }),
+      ev('barge_in', 15_700, { utteranceId: 'u3' }),
+      ev('user_speech_final', 17_500, {
+        utteranceId: 'u3',
+        text: 'Charlie one two three',
+        speaker: 'caller',
+        speakerCheckWindows: 1,
+      }),
+    ]
+    expect(unscoredBystanderLeaks(T, seen)).toEqual([])
+    expect(evaluateTurns(T, seen, 'p').join('\n')).toMatch(/final speaker caller, expected other/)
   })
 })

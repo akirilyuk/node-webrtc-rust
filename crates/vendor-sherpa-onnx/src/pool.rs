@@ -366,7 +366,17 @@ impl SherpaModelPool {
     pub fn preload_lid(&self, config: &LanguageIdConfig) -> SpeechResult<()> {
         let shared = self.get_or_create_lid(config)?;
         if crate::lid::allowlist_set(config) {
-            shared.scorer(config)?;
+            // The allowed-set scorer is an improvement on top of sherpa's identify. If it cannot
+            // load, identify falls back to sherpa's argmax, so preload still succeeds; the error
+            // is logged once per process (it is cached on the shared recognizer).
+            if let Err(error) = shared.scorer(config) {
+                static SCORER_PRELOAD_FAILED: Once = Once::new();
+                SCORER_PRELOAD_FAILED.call_once(|| {
+                    eprintln!(
+                        "sherpa LID allowed-set scorer load failed; using sherpa identify: {error}"
+                    );
+                });
+            }
         }
         Ok(())
     }

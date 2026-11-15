@@ -197,6 +197,10 @@ run_rust_ignored() {
     "sherpa rust lid_allowed_set_test --ignored" -- \
     cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test lid_allowed_set_test -- \
       --ignored --nocapture --test-threads=1
+  bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
+    "sherpa rust lid scorer fallback --ignored" -- \
+    cargo test -p node-webrtc-rust-vendor-sherpa-onnx --lib lid::tests -- \
+      --ignored --nocapture --test-threads=1
   STOP_OPEN_ITERATIONS=1 bash "$CI_STEP" --timeout "$DEFAULT_SHERPA_RUST_IGNORED_TIMEOUT_SEC" \
     "sherpa rust stop_open_utterance_test --ignored" -- \
     cargo test -p node-webrtc-rust-vendor-sherpa-onnx --test stop_open_utterance_test -- \

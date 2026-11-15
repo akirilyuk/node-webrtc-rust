@@ -458,7 +458,9 @@ pub struct JsSpeakerGateConfig {
     /// rejected by the gate.
     pub recheck_max_windows: Option<u32>,
     /// Split an utterance when the voice changes, in both directions: caller to another voice and
-    /// another voice to the caller (default false). Costs one extra STT stream per split.
+    /// another voice to the caller (default false). Costs one extra STT stream per split. Another
+    /// voice to the caller splits only when one of the other voice's windows scored below 0.20;
+    /// otherwise the whole utterance is upgraded to caller, as before 0.19.0.
     pub split_on_speaker_change: Option<bool>,
     /// Refine the in-memory reference from confident caller speech (default false). Only with
     /// `split_on_speaker_change`. Trades bystander accepts for a lower false-reject rate under

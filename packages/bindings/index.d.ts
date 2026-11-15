@@ -396,7 +396,9 @@ export interface JsSpeakerGateConfig {
   recheckMaxWindows?: number
   /**
    * Split an utterance when the voice changes, in both directions: caller to another voice and
-   * another voice to the caller (default false). Costs one extra STT stream per split.
+   * another voice to the caller (default false). Costs one extra STT stream per split. Another
+   * voice to the caller splits only when one of the other voice's windows scored below 0.20;
+   * otherwise the whole utterance is upgraded to caller, as before 0.19.0.
    */
   splitOnSpeakerChange?: boolean
   /**

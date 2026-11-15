@@ -391,7 +391,7 @@ Off by default. By default one utterance gets one label, so a caller and a bysta
 
 Each new part is watched on its own, so other, caller, other, caller gives one split per confirmed change. `recheckMaxWindows` applies per utterance.
 
-Behaviour change in 0.19.0: before, someone else followed by the caller upgraded the whole utterance to `caller`, with the other voice's words in the final. A project that already sets `splitOnSpeakerChange: true` now gets two utterances there. With the option off nothing changes (see "Re-check after other").
+Behaviour change in 0.19.0: before, someone else followed by the caller upgraded the whole utterance to `caller`, with the other voice's words in the final. A project that already sets `splitOnSpeakerChange: true` now gets two utterances there, when one of the `other` windows scored below 0.20 (otherwise the whole utterance is upgraded to `caller`, as before). With the option off nothing changes (see "Re-check after other").
 
 When an other-to-caller split is skipped, the utterance falls back to the older behaviour: it becomes `caller`, the held barge-in is released, and the other voice's words stay in the final (a few leaked words rather than a dropped caller). That upgraded utterance is not split again. The skip reasons, all logged and counted:
 

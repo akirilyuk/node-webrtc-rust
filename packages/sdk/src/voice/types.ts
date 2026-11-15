@@ -348,7 +348,9 @@ export interface VoiceAgentConfig {
      * Since 0.19.0 this also splits someone else followed by the caller. Before, that change
      * upgraded the whole utterance to `caller`, with the other voice's words in it. A project that
      * already sets `true` now gets two utterances there: the first labelled `other`, the second
-     * `caller`.
+     * `caller`, but only when one of the `other` windows scored below 0.20. When every `other`
+     * window was close to the threshold, the whole utterance is upgraded to `caller` instead, as
+     * in 0.18.4, so the caller's own words are not cut.
      *
      * When an other-to-caller split is skipped (`not_speaking`, `replay_overflow`,
      * `replay_not_aligned`, `no_replay_pcm`, `split_out_of_range`, `stt_unavailable`), the

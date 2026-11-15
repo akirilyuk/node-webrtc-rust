@@ -1556,7 +1556,7 @@ describe('other→caller split whose U1 emits no final (U1 windows on the split 
     )
   })
 
-  it('splitDecidingWindowEndSceneMs: split event and U1 final agree, or fail closed', () => {
+  it('splitDecidingWindowEndSceneMs: the split event count wins, U1 final is the fallback', () => {
     const split = (w?: number): Seen =>
       ev('user_utterance_split', 0, {
         fromUtteranceId: 'u1',
@@ -1573,8 +1573,23 @@ describe('other→caller split whose U1 emits no final (U1 windows on the split 
     expect(splitDecidingWindowEndSceneMs(split(2), finals(), 620)).toBe(90_620)
     expect(splitDecidingWindowEndSceneMs(split(), finals(2), 620)).toBe(90_620)
     expect(splitDecidingWindowEndSceneMs(split(2), finals(2), 620)).toBe(90_620)
-    expect(splitDecidingWindowEndSceneMs(split(2), finals(3), 620)).toBeUndefined()
+    // A U1 re-check booked after the cut: U1's final reports 3, the split names window 2.
+    expect(splitDecidingWindowEndSceneMs(split(2), finals(3), 620)).toBe(90_620)
     expect(splitDecidingWindowEndSceneMs(split(), finals(), 620)).toBeUndefined()
     expect(splitDecidingWindowEndSceneMs(split(2), finals(), undefined)).toBeUndefined()
+  })
+
+  it('splitDecidingWindowEndSceneMs: k = 0 fails closed', () => {
+    const split = ev('user_utterance_split', 0, {
+      fromUtteranceId: 'u1',
+      fromStartMs: 88_240,
+      splitAtMs: 575,
+      speakerCheckWindows: 0,
+    })
+    const finals = new Map([
+      ['u1', ev('user_speech_final', 0, { utteranceId: 'u1', speakerCheckWindows: 0 })],
+    ])
+    expect(splitDecidingWindowEndSceneMs(split, finals, 620)).toBeUndefined()
+    expect(splitDecidingWindowEndSceneMs(split, new Map(), 620)).toBeUndefined()
   })
 })

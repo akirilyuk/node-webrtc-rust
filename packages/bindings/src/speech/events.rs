@@ -124,14 +124,10 @@ mod speech_event_to_js_tests {
 
     #[test]
     fn user_utterance_split_maps_fields() {
-        let js = speech_event_to_js(SpeechEvent::user_utterance_split(
-            "u1",
-            "u2",
-            1200,
-            "caller",
-            "other",
-            Some(5020),
-        ));
+        let js = speech_event_to_js(
+            SpeechEvent::user_utterance_split("u1", "u2", 1200, "caller", "other", Some(5020))
+                .with_speaker_check_windows(2),
+        );
         assert_eq!(js.event_type, JsSpeechEventType::UserUtteranceSplit);
         assert_eq!(js.from_utterance_id.as_deref(), Some("u1"));
         assert!(js.utterance_id.is_none());
@@ -140,6 +136,7 @@ mod speech_event_to_js_tests {
         assert_eq!(js.from_start_ms, Some(5020));
         assert_eq!(js.split_from.as_deref(), Some("caller"));
         assert_eq!(js.split_to.as_deref(), Some("other"));
+        assert_eq!(js.speaker_check_windows, Some(2));
     }
 
     #[test]

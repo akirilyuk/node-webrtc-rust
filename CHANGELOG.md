@@ -16,6 +16,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **speech, sdk:** `user_utterance_split.speakerCheckWindows` (other-to-caller and caller-to-other splits with `splitOnSpeakerChange`): the cut utterance's (`fromUtteranceId`) check windows at the cut, the deciding window included. It is the same count that utterance's final reports, and it is set even when that utterance emits no final because its re-decode found no text.
 - **speech, sdk:** `speakerGate.adaptReference` (default `false`, only with `splitOnSpeakerChange`): the in-memory reference voice moves slowly toward confident caller windows of utterances that ended with no split and with every window `caller`. The update is small, is rejected when it would drift too far from the enrolled voice, and nothing is stored or emitted. It defaults to off because of the bench in `crates/vendor-sherpa-onnx/examples/ADAPT_REFERENCE_BENCH.md` (LibriSpeech test-clean, 40 speakers): it trades bystander accepts for a lower false-reject rate under drift. The false-reject rate under drift fell from 13.6 % to 2.2 %, but the false-accept rate rose on every set (0.014 % to 0.085 % clean, 0.057 % to 0.184 % with a bed, 1.5 % to 4.2 % with the 3 bystanders whose voices are closest to each caller). Also in the voice catalog (`VOICE_AGENT_SETTINGS`) and as `SPEAKER_GATE_ADAPT_REFERENCE` in the SDK.
 
 ### Fixed

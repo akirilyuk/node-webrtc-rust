@@ -144,10 +144,9 @@ pub fn recognize(recognizer: &OnlineRecognizer, samples: &[f32]) -> String {
             / 1000
     ];
     stream.accept_waveform(SAMPLE_RATE, &tail);
-    stream.input_finished();
-    while recognizer.is_ready(&stream) {
-        recognizer.decode(&stream);
-    }
+    // Same flush as the product's `finalize_utterance`: decode every sample, then finish.
+    let geometry = node_webrtc_rust_vendor_sherpa_onnx::probe_chunk_geometry(recognizer);
+    node_webrtc_rust_vendor_sherpa_onnx::flush_finalize_tail(recognizer, &stream, geometry);
     recognizer
         .get_result(&stream)
         .map(|r| r.text.trim().to_string())

@@ -1,5 +1,6 @@
 mod audio;
 mod factory;
+mod finalize_flush;
 mod lid;
 mod lid_model_paths;
 mod loader;
@@ -16,6 +17,10 @@ mod tts_model_paths;
 mod tts_slots;
 
 pub use factory::SherpaFactory;
+pub use finalize_flush::{
+    flush_finalize_tail, probe_chunk_geometry, reset_sherpa_utterance_decode_steps,
+    sherpa_utterance_decode_steps, ChunkGeometry, FlushOutcome, FINALIZE_MAX_EXTRA_PADDING_MS,
+};
 pub use lid::{preload_language_id, preload_language_id_async, SherpaLanguageId};
 pub use loader::{
     create_offline_tts, lid_model_create_count, reset_create_counters, stt_recognizer_create_count,

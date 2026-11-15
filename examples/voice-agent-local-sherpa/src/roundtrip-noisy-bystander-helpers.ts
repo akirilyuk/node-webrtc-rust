@@ -8,7 +8,11 @@ import { readFileSync } from 'fs'
 import { SPEECH_EVENT_TYPE, speakerRecheckBargeEarliestMs } from '@node-webrtc-rust/sdk/voice'
 
 import { DEFAULT_BARGE_PHRASE_MIN_SIMILARITY } from './roundtrip-barge-in-helpers.js'
-import { normalizeForCompare, wordSimilarity } from './roundtrip-counting.js'
+import {
+  normalizeForCompare,
+  wordSimilarity,
+  type AgentSpeakingEndLatch,
+} from './roundtrip-counting.js'
 
 /** Product default of `speakerGate.minCheckSpeechMs` (1500, equal to `checkSpeechMs`): a verdict needs this much speech. */
 export const CHECK_SPEECH_MS = 1500
@@ -183,6 +187,113 @@ export function replyEndedBeforeQualifyingPartial(
     else if (e.type === SPEECH_EVENT_TYPE.agentSpeakingStart) endAtMs = undefined
   }
   return endAtMs != null ? { endAtMs, partialAtMs: partial.atMs } : undefined
+}
+
+/**
+ * Harness check for a caller turn without barge-in (decision ii): no reply was playing at the
+ * turn's qualifying partial because the reply had not started yet (no `agent_speaking_start` at or
+ * before the partial) and started only afterwards. The agent checks a barge-in on a partial during
+ * playback, so there was nothing to barge into. Returns the partial and the late start, else
+ * `undefined`. A pass with no reply at all stays a real miss.
+ */
+export function replyStartedAfterQualifyingPartial(
+  start: Pick<Seen, 'utteranceId'>,
+  seen: Seen[],
+): { partialAtMs: number; replyStartAtMs: number } | undefined {
+  const partial = qualifyingPartial(start as Seen, seen)
+  if (partial == null) return undefined
+  const isAgentEvent = (e: Seen): boolean =>
+    e.type === SPEECH_EVENT_TYPE.agentSpeakingStart || e.type === SPEECH_EVENT_TYPE.agentSpeakingEnd
+  if (seen.some((e) => e.atMs <= partial.atMs && isAgentEvent(e))) return undefined
+  const late = seen.find(
+    (e) => e.atMs > partial.atMs && e.type === SPEECH_EVENT_TYPE.agentSpeakingStart,
+  )
+  return late != null ? { partialAtMs: partial.atMs, replyStartAtMs: late.atMs } : undefined
+}
+
+/** Named harness failure for a caller turn whose qualifying partial came before the reply started. */
+export function lateReplyHarnessFailure(
+  tag: string,
+  late: { partialAtMs: number; replyStartAtMs: number },
+): string {
+  return `${tag}: harness: no reply playing at the qualifying partial at ${late.partialAtMs} ms (reply started at ${late.replyStartAtMs} ms)`
+}
+
+/**
+ * Diagnostics: the scene's first reply latency, first `user_speech_final` to the next
+ * `agent_speaking_start` (scene ms). `undefined` when either is missing.
+ */
+export function firstReplyLatency(
+  seen: Seen[],
+): { finalAtMs: number; startAtMs: number; latencyMs: number } | undefined {
+  const final = seen.find((e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal)
+  if (final == null) return undefined
+  const start = seen.find(
+    (e) => e.atMs >= final.atMs && e.type === SPEECH_EVENT_TYPE.agentSpeakingStart,
+  )
+  if (start == null) return undefined
+  return { finalAtMs: final.atMs, startAtMs: start.atMs, latencyMs: start.atMs - final.atMs }
+}
+
+/** Short warm-up reply synthesized before the scene anchor (decision ii). */
+export const WARM_REPLY_PHRASE = 'Hello, I am ready to help.'
+/**
+ * Total bound for the warm-up reply: Piper engine-pool load plus one short reply. Cold first replies
+ * measured up to 5581 ms after the preamble final while the gate embedded enrollment audio
+ * (eu-load 43744251995, 79 pass-1 samples); the warm-up runs with no enrollment load, so 30 s is
+ * a wide margin that still fails a wedged TTS by name.
+ */
+export const WARM_REPLY_TIMEOUT_MS = 30_000
+
+export class WarmReplyTimeoutError extends Error {
+  constructor(readonly waitedMs: number) {
+    super(
+      `harness: warm-up reply did not reach agent_speaking_end within ${WARM_REPLY_TIMEOUT_MS} ms (waitedMs=${waitedMs})`,
+    )
+    this.name = 'WarmReplyTimeoutError'
+  }
+}
+
+/**
+ * Synthesizes one short reply through `send` (the agent's `sendTextToTTS`) and waits for its
+ * `agent_speaking_end` on `latch`, bounded by `timeoutMs`. Ends on the event, never on a sleep.
+ * Returns the wait in ms; throws `WarmReplyTimeoutError` (named) on the bound.
+ */
+export async function warmReplyPath(params: {
+  send: (text: string) => Promise<void>
+  latch: AgentSpeakingEndLatch
+  timeoutMs?: number
+}): Promise<number> {
+  const startedAt = Date.now()
+  const baseline = params.latch.endEventsSeen()
+  const ended = params.latch.waitAfterCount(baseline, params.timeoutMs ?? WARM_REPLY_TIMEOUT_MS)
+  void params.send(WARM_REPLY_PHRASE).catch(() => undefined)
+  try {
+    await ended
+  } catch {
+    throw new WarmReplyTimeoutError(Date.now() - startedAt)
+  }
+  return Date.now() - startedAt
+}
+
+/**
+ * Test-only fault injection for the reproduction of the cold first reply (ROUNDTRIP.md): when
+ * `NOISY_BYSTANDER_TEST_FIRST_TTS_DELAY_MS` is set, the first `sendTextToTTS` of each pass waits
+ * that long before it is sent. Unset (every CI and eu-load run) it is a plain pass-through.
+ */
+export function firstTtsDelayHook(
+  send: (text: string) => Promise<void>,
+  delayMs = Number(process.env.NOISY_BYSTANDER_TEST_FIRST_TTS_DELAY_MS ?? '0') || 0,
+): (text: string) => Promise<void> {
+  let pending = delayMs > 0
+  return async (text) => {
+    if (pending) {
+      pending = false
+      console.log(`[test-hook] delaying the first TTS of this pass by ${delayMs} ms`)
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
+    }
+    await send(text)
+  }
 }
 
 /** Interleaved stereo s16le @ 48 kHz payload of a wav file (the `data` chunk). */
@@ -866,10 +977,13 @@ export function evaluateTurns(
     if (barge == null) {
       // Still a failure, never a skip: a harness miss is named so a real miss cannot hide behind it.
       const ended = replyEndedBeforeQualifyingPartial(start, seen)
+      const late = replyStartedAfterQualifyingPartial(start, seen)
       failures.push(
         ended != null
           ? `${tag}: harness: reply ended at ${ended.endAtMs} ms before the qualifying partial at ${ended.partialAtMs} ms (lengthen AGENT_PHRASE)`
-          : `${tag}: no barge_in`,
+          : late != null
+            ? lateReplyHarnessFailure(tag, late)
+            : `${tag}: no barge_in`,
       )
     } else {
       const delay = barge.atMs - start.atMs

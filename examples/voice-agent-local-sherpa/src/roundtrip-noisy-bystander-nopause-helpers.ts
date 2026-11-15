@@ -31,6 +31,8 @@ import { normalizeForCompare, wordSimilarity } from './roundtrip-counting.js'
 import {
   CHECK_SPEECH_MS,
   callerWindowSimilarity,
+  lateReplyHarnessFailure,
+  replyStartedAfterQualifyingPartial,
   splitDecidingWindowEndSceneMs,
   splitSceneMs,
   type Seen,
@@ -276,7 +278,12 @@ export function evaluateNoPauseScene(
       failures.push(`${tag}: final speaker ${String(callerFinal.speaker)}, expected caller`)
     }
     if (!barges.some((b) => b.utteranceId === callerId)) {
-      failures.push(`${tag}: no barge_in on caller utterance ${callerId}`)
+      const late = replyStartedAfterQualifyingPartial({ utteranceId: callerId }, seen)
+      failures.push(
+        late != null
+          ? lateReplyHarnessFailure(tag, late)
+          : `${tag}: no barge_in on caller utterance ${callerId}`,
+      )
     }
     if (caller.kind === 'qualified') {
       const sim = callerWindowSimilarity(caller.text, callerFinal.text ?? '')

@@ -6,11 +6,14 @@ import {
   evaluateTurns,
   exactThresholdCount,
   expectedBargeAtMs,
+  firstReplyLatency,
+  firstTtsDelayHook,
   glueCounts,
   matchTurnUtterances,
   maxBystanderLeadMs,
   mergedCallerFinals,
   pairTurnUtterances,
+  replyStartedAfterQualifyingPartial,
   similaritySummary,
   splitDecidingWindowEndSceneMs,
   splitDistances,
@@ -18,9 +21,13 @@ import {
   unscoredBystanderLeaks,
   sttPartialTokenCount,
   voicedMsBetween,
+  warmReplyPath,
+  WARM_REPLY_PHRASE,
+  WarmReplyTimeoutError,
   type Seen,
   type Turn,
 } from './roundtrip-noisy-bystander-helpers.js'
+import { AgentSpeakingEndLatch } from './roundtrip-counting.js'
 
 const caller: Turn = {
   role: 'main',
@@ -392,6 +399,47 @@ describe('evaluateTurns', () => {
     const restarted = evaluateTurns(TURNS, withReply(10_500, 10_800), 'p').join('\n')
     expect(restarted).toMatch(/no barge_in/)
     expect(restarted).not.toMatch(/harness/)
+  })
+
+  it('names a missing barge-in as a harness failure when the reply started after the qualifying partial (decision ii)', () => {
+    const noBarge = healthy().filter((e) => e.type !== 'barge_in')
+    // eu-load 43744251995 shape: the cold first reply started 571 ms after turn 0's qualifying partial.
+    const late = [
+      ...noBarge,
+      ev('agent_speaking_start', 11_971),
+      ev('agent_speaking_end', 30_000),
+    ].sort((a, b) => a.atMs - b.atMs)
+    const lateOut = evaluateTurns(TURNS, late, 'p').join('\n')
+    expect(lateOut).toMatch(
+      /harness: no reply playing at the qualifying partial at 11400 ms \(reply started at 11971 ms\)/,
+    )
+    expect(lateOut).not.toMatch(/no barge_in/)
+    expect(replyStartedAfterQualifyingPartial({ utteranceId: 'u1' }, late)).toEqual({
+      partialAtMs: 11_400,
+      replyStartAtMs: 11_971,
+    })
+    // Reply playing at the partial and no barge-in: a real miss.
+    const playing = [
+      ...noBarge,
+      ev('agent_speaking_start', 11_000),
+      ev('agent_speaking_end', 30_000),
+    ].sort((a, b) => a.atMs - b.atMs)
+    const playingOut = evaluateTurns(TURNS, playing, 'p').join('\n')
+    expect(playingOut).toMatch(/no barge_in/)
+    expect(playingOut).not.toMatch(/harness/)
+    expect(replyStartedAfterQualifyingPartial({ utteranceId: 'u1' }, playing)).toBeUndefined()
+    // No reply at all in the pass: stays a real miss.
+    expect(replyStartedAfterQualifyingPartial({ utteranceId: 'u1' }, noBarge)).toBeUndefined()
+  })
+
+  it('reports the first reply latency from the first final to the next agent_speaking_start', () => {
+    const seen = [...healthy(), ev('agent_speaking_start', 13_450)].sort((a, b) => a.atMs - b.atMs)
+    expect(firstReplyLatency(seen)).toEqual({
+      finalAtMs: 13_000,
+      startAtMs: 13_450,
+      latencyMs: 450,
+    })
+    expect(firstReplyLatency(healthy())).toBeUndefined()
   })
 
   it('fails a caller turn without barge-in, and a misrecognized qualified phrase', () => {
@@ -1722,5 +1770,54 @@ describe('unscored-bystander leak (decision ee; iteration-20 shape)', () => {
     ]
     expect(unscoredBystanderLeaks(T, seen)).toEqual([])
     expect(evaluateTurns(T, seen, 'p').join('\n')).toMatch(/final speaker caller, expected other/)
+  })
+})
+
+describe('warm reply path before the scene anchor (decision ii)', () => {
+  it('ends on agent_speaking_end of the warm-up reply', async () => {
+    const latch = new AgentSpeakingEndLatch()
+    const sent: string[] = []
+    const send = (text: string): Promise<void> => {
+      sent.push(text)
+      setTimeout(() => latch.observe({ type: 'agent_speaking_end' } as never), 5)
+      return Promise.resolve()
+    }
+    const waited = await warmReplyPath({ send, latch, timeoutMs: 1_000 })
+    expect(sent).toEqual([WARM_REPLY_PHRASE])
+    expect(waited).toBeGreaterThanOrEqual(0)
+    expect(waited).toBeLessThan(1_000)
+  })
+
+  it('fails by name when agent_speaking_end does not come within the bound', async () => {
+    const latch = new AgentSpeakingEndLatch()
+    await expect(
+      warmReplyPath({ send: () => Promise.resolve(), latch, timeoutMs: 20 }),
+    ).rejects.toBeInstanceOf(WarmReplyTimeoutError)
+  })
+
+  it('test hook delays only the first send of a pass, and is a pass-through when unset', async () => {
+    vi.useFakeTimers()
+    try {
+      const sent: string[] = []
+      const send = firstTtsDelayHook((t) => {
+        sent.push(t)
+        return Promise.resolve()
+      }, 6_000)
+      const first = send('a')
+      await vi.advanceTimersByTimeAsync(5_999)
+      expect(sent).toEqual([])
+      await vi.advanceTimersByTimeAsync(1)
+      await first
+      await send('b')
+      expect(sent).toEqual(['a', 'b'])
+      const plain: string[] = []
+      await firstTtsDelayHook((t) => {
+        plain.push(t)
+        return Promise.resolve()
+      }, 0)('c')
+      expect(plain).toEqual(['c'])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

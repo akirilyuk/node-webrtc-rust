@@ -46,12 +46,15 @@ import {
 
 import { PCM_FRAME_DURATION_MS, PCM_FULL_FRAME_BYTES } from '../../shared/pcm-streaming.js'
 import { createBidirectionalLoopback } from '../../voice-agent/src/shared-loopback.js'
-import { installRoundtripWallClockTimeout } from './roundtrip-counting.js'
+import { AgentSpeakingEndLatch, installRoundtripWallClockTimeout } from './roundtrip-counting.js'
 import {
   MIN_STT_PARTIAL_TOKENS,
   WARMUP_S,
   readWavPcm,
   type Seen,
+  firstReplyLatency,
+  firstTtsDelayHook,
+  warmReplyPath,
 } from './roundtrip-noisy-bystander-helpers.js'
 import {
   ENROLL_PAUSE_MS,
@@ -65,7 +68,7 @@ import {
   type NoPauseLeak,
   type NoPauseSegment,
 } from './roundtrip-noisy-bystander-nopause-helpers.js'
-import { streamSilence } from './pcm-relay.js'
+import { streamSilence, streamSilenceWhile } from './pcm-relay.js'
 import { resolveRoundtripVoiceConfig } from './resolve-voice-config.js'
 import { exitSherpaRoundtripFailure } from './roundtrip-failure-debug.js'
 import { logRoundtripSpeechEvent } from './roundtrip-speech-events.js'
@@ -224,15 +227,23 @@ async function runScene(params: {
   await streamSilence(agentOut, WARMUP_S)
   await streamSilence(userOut, WARMUP_S)
 
+  // Test-only reproduction hook (ROUNDTRIP.md): delays the pass's first sendTextToTTS when
+  // NOISY_BYSTANDER_TEST_FIRST_TTS_DELAY_MS is set; a pass-through otherwise.
+  const sendReply = firstTtsDelayHook((text) => listener.sendTextToTTS(text))
   let anchorEpoch = Date.now()
   const seen: Seen[] = []
   let running = true
+  // Decision ii: events before the scene anchor (the warm-up reply) are never seen by the oracle.
+  let sceneStarted = false
+  const warmLatch = new AgentSpeakingEndLatch()
   void (async () => {
     try {
       for await (const event of listener.speechEvents()) {
         logRoundtripSpeechEvent(label, event)
+        warmLatch.observe(event)
+        if (!sceneStarted) continue
         if (event.type === SPEECH_EVENT_TYPE.userSpeechFinal) {
-          void listener.sendTextToTTS(AGENT_PHRASE).catch(() => undefined)
+          void sendReply(AGENT_PHRASE).catch(() => undefined)
         }
         seen.push({
           type: event.type,
@@ -257,13 +268,31 @@ async function runScene(params: {
   })()
   void drainInbound(userInbound, () => running)
 
+  // Decision ii: load the TTS engine and synthesize once before the scene clock, so the first
+  // reply of the scene is warm. Ends on the warm-up's agent_speaking_end (bounded, named error);
+  // the caller leg keeps streaming silence meanwhile (its only writer until the scene).
+  let warming = true
+  const callerSilence = streamSilenceWhile(userOut, () => warming)
+  try {
+    const waitedMs = await warmReplyPath({ send: sendReply, latch: warmLatch })
+    console.log(`${label}: warm-up reply ended waitedMs=${waitedMs}`)
+  } finally {
+    warming = false
+    await callerSilence
+  }
+
   const sceneStartMediaMs = await listener.inboundMediaMs()
   anchorEpoch = Date.now()
+  sceneStarted = true
   await playPaced(userOut, pcm)
   await streamSilence(userOut, 3)
   running = false
   await listener.stop().catch(() => undefined)
   await cleanup().catch(() => undefined)
+  const firstReply = firstReplyLatency(seen)
+  console.log(
+    `${label}: first reply ${firstReply != null ? `agent_speaking_start ${firstReply.latencyMs} ms after the first final (final ${firstReply.finalAtMs}, start ${firstReply.startAtMs})` : 'none'}`,
+  )
   const r = evaluateNoPauseScene(segments, seen, label, sceneStartMediaMs)
   return {
     failures: r.failures,

@@ -47,6 +47,7 @@ fn lid_config(dir: &Path) -> LanguageIdConfig {
         enabled: Some(true),
         model_path: Some(dir.to_str().expect("utf8").into()),
         allowlist: None,
+        allowlist_max_gap: None,
         min_speech_ms: None,
         continuous: None,
         lid_max_clip_ms: None,

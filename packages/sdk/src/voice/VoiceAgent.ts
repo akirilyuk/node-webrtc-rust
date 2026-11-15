@@ -264,6 +264,7 @@ export function toJsConfig(config?: VoiceAgentConfig): JsVoiceAgentConfig | unde
           enabled: config.languageId.enabled,
           modelPath: config.languageId.modelPath,
           allowlist: config.languageId.allowlist,
+          allowlistMaxGap: languageIdAllowlistMaxGap(config.languageId.allowlistMaxGap),
           minSpeechMs: config.languageId.minSpeechMs,
           continuous: config.languageId.continuous,
           timing: config.languageId.timing,
@@ -434,6 +435,17 @@ function jsEventTypeToString(eventType: JsSpeechEventType): SpeechEventType {
     default:
       return 'error'
   }
+}
+
+/** Validates `languageId.allowlistMaxGap` (finite, >= 0); undefined keeps the native default. */
+export function languageIdAllowlistMaxGap(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new TypeError(
+      `languageId.allowlistMaxGap must be a finite number >= 0, got ${String(value)}`,
+    )
+  }
+  return value
 }
 
 /**

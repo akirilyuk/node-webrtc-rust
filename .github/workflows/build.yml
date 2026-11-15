@@ -78,6 +78,7 @@ jobs:
       needs_native_for_test: ${{ steps.pr_gates.outputs.needs_native }}
       needs_ts_for_test: ${{ steps.pr_gates.outputs.needs_ts }}
       test_suites: ${{ steps.pr_gates.outputs.test_suites }}
+      run_musl_lid: ${{ steps.musl_lid_gate.outputs.run_musl_lid }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -102,6 +103,18 @@ jobs:
             echo "run_integration_test=true" >> "$GITHUB_OUTPUT"
           else
             echo "run_integration_test=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Derive musl LID gate
+        id: musl_lid_gate
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || 'origin/main' }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if git diff --name-only "$PR_BASE_SHA...$PR_HEAD_SHA" | grep -qE '^(crates/vendor-sherpa-onnx/|crates/speech/|scripts/ci/build-sherpa-onnx-musl-libs\.sh$|[d]ocker/ci/Dockerfile\.alpine$|\.github/workflows/build\.yml$)'; then
+            echo "run_musl_lid=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_musl_lid=false" >> "$GITHUB_OUTPUT"
           fi
 
   quality:
@@ -204,6 +217,115 @@ jobs:
   # Reusable workflow_call checks are named "<caller> / <job>" (e.g. "Integration
   # tests / Rust tests"). Branch protection requires a check named exactly "Test"; without
   # a thin gate job PRs stick on "Expected — Waiting for status to be reported".
+  # The runner ships on musl (node:alpine, bindings-linux-x64-musl): Sherpa there links Alpine's
+  # distro onnxruntime, and the LID allowed-set scorer (ort) calls into that same runtime. Run the
+  # LID tests natively on x86_64 musl (real runtime, not a fake). Each test step runs even when an
+  # earlier one failed, so a crash in one does not hide the next; the job fails if any fails.
+  musl-lid:
+    name: LID on x86_64 musl
+    needs: [changes]
+    if: needs.changes.outputs.run_musl_lid == 'true'
+    runs-on: ${{ vars.NWR_RUNNER_LARGE || 'nwr-large' }}
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build-alpine:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      RUST_BACKTRACE: '1'
+      # Same linkage as the shipped .node: napi build adds -crt-static for musl. Without it the test
+      # binaries link musl libc statically while sherpa/onnxruntime/libstdc++ load the shared libc,
+      # and sherpa's LID create calls a NULL pointer (origin/main crashed the same way).
+      RUSTFLAGS: '-C target-feature=-crt-static'
+      SHERPA_ONNX_LIB_DIR: /opt/sherpa-musl/lib
+      LD_LIBRARY_PATH: /opt/sherpa-musl/lib:/usr/lib
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/ram-target-dir
+
+      - name: Alpine onnxruntime version
+        run: |
+          apk info -v onnxruntime
+          apk list --installed 2>/dev/null | grep onnxruntime
+
+      - name: Ensure Sherpa ONNX musl shared libs
+        run: bash scripts/ci/build-sherpa-onnx-musl-libs.sh
+
+      - name: Ensure Sherpa models (Whisper tiny LID)
+        run: |
+          # ci-step.sh uses GNU `timeout --foreground`; BusyBox timeout has no such option.
+          apk add --no-cache coreutils >/dev/null
+          bash scripts/ci/ensure-sherpa-models.sh
+          echo "SHERPA_LID_MODEL_PATH=$GITHUB_WORKSPACE/examples/voice-agent-local-sherpa/.models/sherpa-onnx-whisper-tiny" >> "$GITHUB_ENV"
+          # lid_shared_model_test also overlaps an STT load with the LID load.
+          SHERPA_EXPORT_SKIP_VALIDATE=1 source scripts/export-sherpa-local-models.sh
+          echo "SHERPA_STT_MODEL_PATH=$SHERPA_STT_MODEL_PATH" >> "$GITHUB_ENV"
+
+      - name: Install gdb (native stack on a crash)
+        run: apk add --no-cache gdb binutils >/dev/null && gdb --version | head -1
+
+      - name: Build LID test binaries (release)
+        run: |
+          cargo test -p node-webrtc-rust-vendor-sherpa-onnx --release --no-run --message-format=json \
+            --test lid_shared_model_test --test lid_allowed_set_test --lib \
+            | grep -o '"executable":"[^"]*"' | sed 's/"executable":"\(.*\)"/\1/' > lid-test-bins.txt
+          cat lid-test-bins.txt
+          echo "LID_CONTROL_BIN=$(grep '/release/deps/lid_shared_model_test-' lid-test-bins.txt | tail -1)" >> "$GITHUB_ENV"
+
+      # The test binary must only import ONNX Runtime symbols (OrtGetApiBase from the libonnxruntime
+      # sherpa uses), never define its own: a defined Ort* symbol would interpose the library's.
+      - name: (diag) Ort symbols in the control binary
+        if: always()
+        run: |
+          echo "--- nm -D --defined-only | Ort"; nm -D --defined-only "$LID_CONTROL_BIN" | grep -i ' Ort' || echo none
+          echo "--- nm (all) | OrtGetApiBase"; nm "$LID_CONTROL_BIN" | grep -i 'OrtGetApiBase' || echo none
+          echo "--- nm -D --undefined-only | Ort"; nm -D --undefined-only "$LID_CONTROL_BIN" | grep -i ' Ort' || echo none
+          echo "--- NEEDED"; readelf -d "$LID_CONTROL_BIN" | grep NEEDED || true
+          echo "--- ldd"; ldd "$LID_CONTROL_BIN" || true
+          for so in /opt/sherpa-musl/lib/libsherpa-onnx-c-api.so /usr/lib/libonnxruntime.so.1; do
+            echo "--- $so NEEDED"; readelf -d "$so" | grep NEEDED || true
+            echo "--- $so OrtGetApiBase"; nm -D "$so" | grep OrtGetApiBase || echo none
+          done
+
+      # The shipped musl .node (as the runner image installs it from npm) and this branch's build:
+      # which libonnxruntime they need and whether they import or define OrtGetApiBase.
+      - name: shipped and branch musl .node link the same libonnxruntime
+        if: always()
+        run: |
+          mkdir -p /tmp/shipped && cd /tmp/shipped
+          npm pack @node-webrtc-rust/bindings-linux-x64-musl@latest >/dev/null 2>&1 && tar xzf ./*.tgz
+          node_file=$(find /tmp/shipped -name '*.node' | head -1)
+          echo "--- shipped: $node_file"
+          readelf -d "$node_file" | grep -E 'NEEDED|RPATH|RUNPATH' || true
+          ldd "$node_file" 2>/dev/null | grep -E 'onnxruntime|sherpa' || true
+          nm -D "$node_file" | grep -E ' Ort' || echo "no Ort symbols"
+          cd "$GITHUB_WORKSPACE"
+          cargo build -p node-webrtc-rust-bindings --release --features otel,rnnoise,silero-vad
+          so=$(ls target/release/libnode_webrtc_rust_bindings.so)
+          echo "--- branch: $so"
+          readelf -d "$so" | grep -E 'NEEDED|RPATH|RUNPATH' || true
+          ldd "$so" 2>/dev/null | grep -E 'onnxruntime|sherpa' || true
+          nm -D "$so" | grep -E ' Ort' || echo "no Ort symbols"
+
+      - name: (a) control, release, under gdb
+        if: always()
+        run: |
+          gdb -batch -ex run -ex bt -ex 'info sharedlibrary' -return-child-result \
+            --args "$LID_CONTROL_BIN" --ignored --nocapture --test-threads=1
+
+      - name: (b) allowed-set scorer on fixtures, release
+        if: always()
+        run: |
+          cargo test -p node-webrtc-rust-vendor-sherpa-onnx --release --test lid_allowed_set_test -- \
+            --ignored --nocapture --test-threads=1
+
+      - name: (c) scorer failure falls back to sherpa, release
+        if: always()
+        run: |
+          cargo test -p node-webrtc-rust-vendor-sherpa-onnx --release --lib lid::tests -- \
+            --ignored --nocapture --test-threads=1
+
   integration-test:
     name: Integration tests
     # Does not wait for build-ts: run-pr-integration.sh builds the TS dist itself on a cache miss

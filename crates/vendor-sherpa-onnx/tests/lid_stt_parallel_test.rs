@@ -44,6 +44,7 @@ fn lid_config(model_path: String) -> LanguageIdConfig {
         enabled: Some(true),
         model_path: Some(model_path),
         allowlist: None,
+        allowlist_max_gap: None,
         min_speech_ms: None,
         continuous: None,
         lid_max_clip_ms: None,

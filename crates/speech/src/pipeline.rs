@@ -308,9 +308,25 @@ pub trait TtsProvider: Send + Sync {
 }
 
 /// Result from offline spoken-language identification.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct LanguageIdResult {
+    /// Decided language (ISO 639-1). May be outside the allowlist; the agent then skips it.
     pub language: String,
+    /// The identifier's unrestricted top language, when it decided among an allowlist.
+    pub raw_language: Option<String>,
+    /// Logit gap between `raw_language` and the best allowlisted language (0 when the top was
+    /// allowed), when the identifier exposes scores.
+    pub gap: Option<f32>,
+}
+
+impl LanguageIdResult {
+    /// A plain decision without scores.
+    pub fn new(language: impl Into<String>) -> Self {
+        Self {
+            language: language.into(),
+            ..Self::default()
+        }
+    }
 }
 
 /// Offline spoken-language identification (e.g. Sherpa Whisper tiny).

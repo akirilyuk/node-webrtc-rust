@@ -42,8 +42,10 @@ fn read_wav_16k(name: &str) -> Vec<i16> {
         16_000
     );
     bytes[44..]
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| i16::from_le_bytes(*b))
         .collect()
 }
 

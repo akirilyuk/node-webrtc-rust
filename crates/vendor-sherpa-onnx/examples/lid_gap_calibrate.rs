@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use bytes::Bytes;
 use node_webrtc_rust_speech::config::LanguageIdConfig;
-use node_webrtc_rust_speech::pipeline::{LanguageIdProvider, VendorFactory};
+use node_webrtc_rust_speech::pipeline::VendorFactory;
 use node_webrtc_rust_vendor_sherpa_onnx::{SherpaFactory, WhisperLanguageScorer};
 
 fn read_wav_16k(path: &Path) -> Vec<i16> {
@@ -25,8 +25,10 @@ fn read_wav_16k(path: &Path) -> Vec<i16> {
         path.display()
     );
     bytes[44..]
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| i16::from_le_bytes(*b))
         .collect()
 }
 

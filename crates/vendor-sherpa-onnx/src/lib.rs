@@ -10,6 +10,7 @@ mod pool;
 mod sentences;
 mod speaker;
 mod stt;
+mod stt_batch;
 mod tts;
 mod tts_model_paths;
 mod tts_slots;
@@ -26,9 +27,10 @@ pub use sentences::engine_pieces;
 pub use speaker::SherpaSpeakerEmbedder;
 pub use stt::{
     reset_sherpa_get_result_count, reset_sherpa_poll_blocking_hops,
-    reset_sherpa_push_blocking_hops, sherpa_get_result_count, sherpa_poll_blocking_hops,
-    sherpa_push_blocking_hops, SherpaStt, FINALIZE_TAIL_PADDING_MS,
+    reset_sherpa_push_blocking_hops, set_stt_batch_decode, sherpa_get_result_count,
+    sherpa_poll_blocking_hops, sherpa_push_blocking_hops, SherpaStt, FINALIZE_TAIL_PADDING_MS,
 };
+pub use stt_batch::{reset_sherpa_batch_counters, sherpa_batch_rounds, sherpa_batch_stream_steps};
 pub use tts::{reset_tts_generate_count, tts_generate_count};
 #[doc(hidden)]
 pub use tts_model_paths::{resolve_tts_model_paths, TtsModelFamily};

@@ -26,6 +26,10 @@ on:
       cargo_args:
         description: 'mode=cargo only: arguments after `cargo test`, e.g. -p node-webrtc-rust-conference --test mix_frame_continuity -- --test-threads=1'
         default: ''
+      prepare_models:
+        description: 'mode=cargo only: download the Sherpa models and export their paths before the loop (model-gated probes)'
+        type: boolean
+        default: false
       only:
         description: Comma list of roundtrip npm scripts to keep (SHERPA_E2E_ONLY); empty = all
         default: ''
@@ -128,6 +132,7 @@ jobs:
           PARALLEL: ${{ inputs.parallel }}
           CPU_BURN: ${{ inputs.cpu_burn }}
           CARGO_ARGS: ${{ inputs.cargo_args }}
+          PREPARE_MODELS: ${{ inputs.prepare_models && '1' || '0' }}
           NATIVE_TRACE: ${{ inputs.native_trace }}
           SPEAKER_FIXTURES_REROLL: ${{ inputs.reroll_fixtures && '1' || '0' }}
           FIRST_PASS_VOICE_DEBUG: ${{ inputs.voice_debug }}
@@ -149,6 +154,12 @@ jobs:
           if [[ "$MODE" == "cargo" && -z "$CARGO_ARGS" ]]; then
             echo "mode=cargo needs cargo_args" >&2
             exit 2
+          fi
+          if [[ "$MODE" == "cargo" && "$PREPARE_MODELS" == "1" ]]; then
+            bash scripts/ci/ensure-sherpa-models.sh || exit 1
+            # shellcheck source=/dev/null
+            source scripts/export-sherpa-local-models.sh
+            export SHERPA_LID_MODEL_PATH="${SHERPA_LID_MODEL_PATH:-$PWD/examples/voice-agent-local-sherpa/.models/sherpa-onnx-whisper-tiny}"
           fi
           if [[ "$MODE" == "cargo" ]]; then
             # Build once outside the loop so iteration times measure the tests, not compilation.

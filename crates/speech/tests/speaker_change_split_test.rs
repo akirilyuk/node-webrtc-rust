@@ -1964,3 +1964,99 @@ async fn skipped_other_to_caller_split_replay_overflow_upgrades() {
     assert_eq!(rig.barge_ids(), vec![Some(ids[2].clone())]);
     rig.agent.stop().await.unwrap();
 }
+
+// ---- split-born U2 caller floor (decision y) at agent level ----------------------------------
+
+/// A quiet gap: voiced for the VAD (RMS about 0.06, over its 0.05 threshold) so the utterance
+/// goes on, silence for the scripted embedder and STT (`'.'`), and far under both voices for the
+/// gate's quiet-run search.
+const GAP: i16 = 2_000;
+
+/// [`agent_config`] with the product's 1500 ms speaker check window (`checkSpeechMs` default),
+/// the window geometry of the gate-level n05 test.
+fn n05_config() -> VoiceAgentConfig {
+    let mut config = agent_config(true);
+    config.speaker_gate.check_speech_ms = 1_500;
+    config
+}
+
+/// The n05 shape at agent level (eu-load 43618944729), with 1500 ms windows: the bystander
+/// (1.6 s), a 400 ms quiet gap, a 900 ms caller phrase, then the bystander again. U1's window 2
+/// confirms the other -> caller change and the cut backs U2's start off into the bystander, so
+/// U2 opens with the bystander's tail and the quiet gap before the caller's onset (measured: cut
+/// at 1200 ms on U1's clock, U2 floor 1050 ms). U2's window 2 (0 .. 1500) is `caller`, windows
+/// 3-4 `other`: a caller -> other change whose search range (0 .. 2250) holds the gap. The agent
+/// passes U2's caller floor (`caller_floor_for` of U1's key) to `inherit_caller`, so the search
+/// starts at the floor and the cut lands after the phrase (measured 1950 ms): U2's caller final
+/// holds the whole phrase and U3 none of it. Without the floor the longest quiet run in the range
+/// is the gap and the cut lands at its end (measured 740 ms), moving the phrase to U3.
+async fn assert_split_born_u2_keeps_the_caller_phrase(mut rig: Rig) {
+    rig.enroll().await;
+    rig.start_speaking().await;
+    rig.feed_paced(B, 80).await;
+    rig.feed_paced(GAP, 20).await;
+    let caller = 45;
+    rig.feed_paced(A, caller).await;
+    rig.feed_paced(B, 240).await;
+    rig.wait_splits(2).await;
+    rig.feed(0, 60).await;
+    rig.idle().await;
+    rig.drain();
+    let splits: Vec<&SpeechEvent> = rig
+        .log
+        .iter()
+        .filter(|e| e.kind == SpeechEventKind::UserUtteranceSplit)
+        .collect();
+    assert!(splits.len() >= 2, "other -> caller, then caller -> other");
+    assert_eq!(
+        (
+            splits[0].split_from.as_deref(),
+            splits[0].split_to.as_deref()
+        ),
+        (Some("other"), Some("caller"))
+    );
+    assert_eq!(
+        (
+            splits[1].split_from.as_deref(),
+            splits[1].split_to.as_deref()
+        ),
+        (Some("caller"), Some("other"))
+    );
+    let u2 = splits[0].to_utterance_id.clone().unwrap();
+    assert_eq!(splits[1].from_utterance_id.as_deref(), Some(u2.as_str()));
+    let u3 = splits[1].to_utterance_id.clone().unwrap();
+    let (_, f2) = rig.final_of(&u2);
+    let (_, f3) = rig.final_of(&u3);
+    let streams = rig.script.lock().unwrap().streams.clone();
+    assert_eq!(f2.speaker.as_deref(), Some("caller"));
+    let ((a2, b2), (a3, b3)) = (ab(&f2), ab(&f3));
+    assert!(
+        a2 >= caller && a3 == 0,
+        "U2 holds the whole caller phrase ({caller} frames): U2 a{a2} b{b2}, U3 a{a3} b{b3}; \
+         split at {:?}; streams {streams:?}",
+        splits[1].split_at_ms
+    );
+    // Without the floor the cut lands in the gap and U3 (the phrase) is split again.
+    assert_eq!(splits.len(), 2, "two splits");
+    rig.agent.stop().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn split_born_u2_keeps_the_caller_phrase_inline() {
+    assert_split_born_u2_keeps_the_caller_phrase(rig_with(n05_config()).await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn split_born_u2_keeps_the_caller_phrase_deferred() {
+    assert_split_born_u2_keeps_the_caller_phrase(
+        rig_with_script(
+            n05_config(),
+            Script {
+                deferred: true,
+                ..Script::default()
+            },
+        )
+        .await,
+    )
+    .await;
+}

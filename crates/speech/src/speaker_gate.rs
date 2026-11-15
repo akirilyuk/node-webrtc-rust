@@ -4835,6 +4835,31 @@ mod tests {
         );
     }
 
+    /// U3 of a `caller` -> `other` split is judged from scratch: its first window is its own
+    /// (non-re-check) check. When that window is `other` but near the threshold (0.40, so no
+    /// window below `CONFIDENT_OTHER_MAX_SCORE`) and the next window is `caller`, the key is
+    /// upgraded to `caller` and not split (decision bb): the caller's own voice scored a little low.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_u3_near_threshold_first_window_then_caller_upgrades_without_a_split() {
+        let mut cfg = split_cfg(true, 12);
+        cfg.check_speech_ms = 1500;
+        let steps: Vec<Step> = vec![
+            (None, caller_v()),
+            (None, scored_v(0.40)),
+            (None, caller_v()),
+            (None, caller_v()), // unused
+        ];
+        let (gate, verdicts, _q) = run_script_steps(cfg, steps.into(), 2, 75).await;
+        assert!(gate.take_speaker_changes().is_empty(), "no split");
+        assert_eq!(gate.outcome_for(1), Some(Outcome::Caller), "upgraded");
+        let v = lock(&verdicts);
+        assert!(
+            v.iter()
+                .any(|v| v.window == 2 && v.recheck && v.outcome == Outcome::Caller),
+            "window 2 is the caller re-check: {v:?}"
+        );
+    }
+
     /// Decision bb: a U1 with one window below `CONFIDENT_OTHER_MAX_SCORE` (the 6j worst case
     /// [0.370, 0.215, 0.190]) still splits on the next `caller` window, U1 stays `other`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

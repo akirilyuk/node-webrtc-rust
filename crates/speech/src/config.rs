@@ -277,7 +277,9 @@ pub struct SpeakerGateConfig {
     /// releases the held barge-in and labels the final `caller` (`speakerRechecked: true`); any
     /// other result keeps `other`. It never runs after a `caller` or `unknown` verdict. Covers a
     /// bystander who opens the VAD before the caller and runs into the caller's words. Default
-    /// true; false is the one-check behaviour of 0.14.
+    /// true; false is the one-check behaviour of 0.14. With `split_on_speaker_change` on, the split
+    /// implies the re-check: windows keep being scored and an `other` utterance's barge-in is held,
+    /// whatever this flag says.
     pub recheck_on_other: bool,
     /// Windows scored per utterance, the first check included, while the verdict stays `other`
     /// (`recheck_on_other`). `2` is the one re-check of 0.15.0 (same window count and barge bound; a

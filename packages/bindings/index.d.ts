@@ -387,7 +387,7 @@ export interface JsSpeakerGateConfig {
   checkSpeechMs?: number
   minCheckSpeechMs?: number
   suppressShortBargeIn?: boolean
-  /** Keep re-checking an utterance while its verdict is `other` (default true). */
+  /** Keep re-checking an utterance while its verdict is `other` (default true). `splitOnSpeakerChange` implies the re-check. */
   recheckOnOther?: boolean
   /**
    * Windows scored per utterance, the first check included (default 12). `0` = no cap; `1` is

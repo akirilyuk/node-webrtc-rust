@@ -1921,6 +1921,16 @@ async fn skipped_other_to_caller_split_not_speaking_upgrades_inline() {
     assert_not_speaking_skip_upgrades(rig(true).await).await;
 }
 
+/// Split on with `recheckOnOther` off: the split implies the re-check hold. U1's barge-in is held
+/// (not suppressed) while the other -> caller split is pending, and the `not_speaking` skip's
+/// upgrade releases it exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skipped_split_without_recheck_upgrades_and_barges_in_once() {
+    let mut config = agent_config(true);
+    config.speaker_gate.recheck_on_other = false;
+    assert_not_speaking_skip_upgrades(rig_with(config).await).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn skipped_other_to_caller_split_not_speaking_upgrades_deferred() {
     assert_not_speaking_skip_upgrades(rig_deferred(true).await).await;

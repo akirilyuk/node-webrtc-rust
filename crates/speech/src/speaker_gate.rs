@@ -1293,7 +1293,10 @@ impl SpeakerGate {
     /// A re-check of `key` is in flight, or can still start (the utterance is live, its cap not
     /// reached, its final not read). Caller holds the feed lock.
     fn recheck_open_locked(&self, feed: &Feed, key: u64) -> bool {
-        if !self.cfg.recheck_on_other {
+        // The split watch keeps scoring an `other` key's windows whatever `recheck_on_other`
+        // says, so the split implies the re-check hold: U1's barge-in is held, not suppressed,
+        // until the change (or a skipped split's upgrade) decides it.
+        if !(self.cfg.recheck_on_other || self.cfg.split_on_speaker_change) {
             return false;
         }
         if self.recheck_in_flight(key) {

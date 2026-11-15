@@ -16,6 +16,13 @@
 //! bystander (TV, colleague) who opens the VAD before the caller and runs into the caller's words
 //! without a pause. A window is cut only when the previous one has settled, never queued.
 //!
+//! Other -> caller split ([`SpeakerGateConfig::split_on_speaker_change`]): a `caller` window after
+//! `other` windows splits the utterance only when one of those `other` windows scored under
+//! [`CONFIDENT_OTHER_MAX_SCORE`] (confident evidence of another voice). Without one, the `other`
+//! label may be the caller's own voice scored just under the threshold, so the change is not
+//! split: the `caller` window upgrades the whole utterance as a re-check does (no caller words are
+//! cut), and a near-miss confirm becomes a `caller` verdict.
+//!
 //! Embeddings, the reference vector and PCM are never logged, emitted or exported. Scores appear
 //! only in `VOICE_DEBUG` output, as a number.
 
@@ -71,6 +78,13 @@ pub const SPLIT_BACKOFF_MS: u32 = 300;
 /// `[NEAR_MISS_MIN_SCORE, threshold)` runs the sub-window scan; one `caller` sub-window confirms
 /// it as the `caller` window (`NEAR_MISS_BENCH.md`, band lower edge 0.30, need 1).
 pub const NEAR_MISS_MIN_SCORE: f32 = 0.30;
+/// Confident `other` evidence (decision bb): an `other` -> `caller` change splits only when U1
+/// holds an `other` window scoring below this. Without one, a near-threshold `other` verdict is
+/// not evidence of another speaker, and the change stays the re-check upgrade (the whole utterance
+/// becomes `caller`; decisions h, w and aa). Value from
+/// `crates/vendor-sherpa-onnx/examples/NEAR_MISS_BENCH.md` (6j): the fewest caller words lost
+/// above the floor over caller-only utterances and the held-out bystander-to-caller scenes.
+pub const CONFIDENT_OTHER_MAX_SCORE: f32 = 0.20;
 /// Frames of power smoothing in the quiet-run search (100 ms).
 const SPLIT_SMOOTH_FRAMES: usize = 5;
 
@@ -1687,6 +1701,9 @@ struct Watch {
     /// An `other` -> `caller` change: the audio the sub-window scan runs on (taken once by the
     /// verifier).
     refine: Option<Refine>,
+    /// `other` label: a window of U1 scored `other` below [`CONFIDENT_OTHER_MAX_SCORE`]
+    /// (decision bb); without one an `other` -> `caller` change is not a split.
+    confident_other: bool,
     /// U2 of an `other` -> `caller` split (decision y): the caller floor on this key's clock. The
     /// `caller` -> `other` cut searches from it and never lands before it. `None` for any key not
     /// born from such a split.
@@ -1702,6 +1719,7 @@ impl Watch {
             prev,
             done: false,
             refine: None,
+            confident_other: false,
             floor: None,
         }
     }
@@ -1883,15 +1901,23 @@ fn watch_step(
     watches: &mut VecDeque<(u64, Watch)>,
     key: u64,
     outcome: Outcome,
+    score: Option<f32>,
     recheck: bool,
     span: (u32, u32),
     clip: Vec<u8>,
 ) -> Option<SpeakerChange> {
     let scored = matches!(outcome, Outcome::Caller | Outcome::Other);
+    // Decision bb: an `other` window below CONFIDENT_OTHER_MAX_SCORE is confident evidence. A
+    // `None` score counts as confident: only the direct `watch_step` unit tests pass one (every
+    // `other` verdict of the verifier carries its score; `run` asserts it).
+    let confident =
+        outcome == Outcome::Other && score.is_none_or(|s| s < CONFIDENT_OTHER_MAX_SCORE);
     if !recheck {
         if scored {
             watches.retain(|(k, _)| *k != key);
-            watches.push_back((key, Watch::armed(outcome, Some((span.0, span.1, clip)))));
+            let mut w = Watch::armed(outcome, Some((span.0, span.1, clip)));
+            w.confident_other = confident;
+            watches.push_back((key, w));
             while watches.len() > BOOK_CAP {
                 watches.pop_front();
             }
@@ -1908,6 +1934,13 @@ fn watch_step(
         if scored {
             w.prev = Some((span.0, span.1, clip));
         }
+        w.confident_other |= confident;
+        return None;
+    }
+    if w.label == Outcome::Other && !w.confident_other {
+        // Decision bb: no confident `other` window in U1, so no split. The watch ends and the
+        // window's `caller` verdict upgrades the utterance (the re-check upgrade).
+        w.done = true;
         return None;
     }
     if w.label == Outcome::Other {
@@ -2414,9 +2447,28 @@ async fn run(
                 } else {
                     outcome
                 };
+                debug_assert!(
+                    outcome != Outcome::Other || window_score.is_some(),
+                    "an `other` verdict carries its score (key={key})"
+                );
                 let mut change = clip.and_then(|clip| {
-                    watch_step(&mut watches, key, watch_outcome, recheck, span, clip)
+                    watch_step(
+                        &mut watches,
+                        key,
+                        watch_outcome,
+                        window_score,
+                        recheck,
+                        span,
+                        clip,
+                    )
                 });
+                // Decision bb: a near-miss confirm that is not a split (no confident `other`
+                // window in U1) is the re-check upgrade: this window counts as `caller`.
+                let outcome = if near_found.is_some() && change.is_none() {
+                    Outcome::Caller
+                } else {
+                    outcome
+                };
                 // `other` -> `caller`: the cut comes from the sub-window scan (the near-miss
                 // scan's result when it confirmed the change; else a new scan on the verifier
                 // task, bounded); no `caller` sub-window or a budget stop keeps the previous
@@ -3073,11 +3125,28 @@ mod tests {
     #[test]
     fn caller_to_other_after_two_opposite_windows_splits_at_the_quiet_run() {
         let mut w = VecDeque::new();
-        assert!(watch_step(&mut w, 1, Outcome::Caller, false, (0, 200), tone(500, 9000)).is_none());
+        assert!(watch_step(
+            &mut w,
+            1,
+            Outcome::Caller,
+            None,
+            false,
+            (0, 200),
+            tone(500, 9000)
+        )
+        .is_none());
         let first = clip_with_quiet_frame(500, 260 + 100);
-        assert!(watch_step(&mut w, 1, Outcome::Other, true, (200, 400), first).is_none());
-        let change = watch_step(&mut w, 1, Outcome::Other, true, (400, 600), tone(500, 9000))
-            .expect("two opposite windows confirm the change");
+        assert!(watch_step(&mut w, 1, Outcome::Other, None, true, (200, 400), first).is_none());
+        let change = watch_step(
+            &mut w,
+            1,
+            Outcome::Other,
+            None,
+            true,
+            (400, 600),
+            tone(500, 9000),
+        )
+        .expect("two opposite windows confirm the change");
         assert_eq!(
             change,
             SpeakerChange {
@@ -3088,7 +3157,16 @@ mod tests {
             }
         );
         // Reported once.
-        assert!(watch_step(&mut w, 1, Outcome::Other, true, (600, 800), tone(500, 9000)).is_none());
+        assert!(watch_step(
+            &mut w,
+            1,
+            Outcome::Other,
+            None,
+            true,
+            (600, 800),
+            tone(500, 9000)
+        )
+        .is_none());
     }
 
     /// Mono s16le on the utterance clock: each part is `(ms, amp, alternating)`; alternating parts
@@ -3112,7 +3190,9 @@ mod tests {
         for (k, o) in outcomes.iter().enumerate() {
             let (start, end) = (k * 1500, (k + 1) * 1500);
             let clip = pcm[start * BYTES_PER_MS..(end + 300) * BYTES_PER_MS].to_vec();
-            if let Some(c) = watch_step(&mut w, 1, *o, k > 0, (start as u32, end as u32), clip) {
+            if let Some(c) =
+                watch_step(&mut w, 1, *o, None, k > 0, (start as u32, end as u32), clip)
+            {
                 change = Some(c);
             }
         }
@@ -3135,7 +3215,8 @@ mod tests {
         for (k, o) in outcomes.iter().enumerate() {
             let (start, end) = (k * 1500, (k + 1) * 1500);
             let clip = pcm[start * BYTES_PER_MS..(end + 300) * BYTES_PER_MS].to_vec();
-            if let Some(c) = watch_step(&mut w, 1, *o, true, (start as u32, end as u32), clip) {
+            if let Some(c) = watch_step(&mut w, 1, *o, None, true, (start as u32, end as u32), clip)
+            {
                 change = Some(c);
             }
         }
@@ -3392,7 +3473,16 @@ mod tests {
     #[test]
     fn one_false_opposite_window_does_not_split() {
         let mut w = VecDeque::new();
-        assert!(watch_step(&mut w, 1, Outcome::Caller, false, (0, 200), tone(500, 9000)).is_none());
+        assert!(watch_step(
+            &mut w,
+            1,
+            Outcome::Caller,
+            None,
+            false,
+            (0, 200),
+            tone(500, 9000)
+        )
+        .is_none());
         for i in 1..=8_u32 {
             // other, caller, other, caller ...: never two opposite windows in a row.
             let outcome = if i % 2 == 1 {
@@ -3402,34 +3492,72 @@ mod tests {
             };
             let span = (i * 200, i * 200 + 200);
             assert!(
-                watch_step(&mut w, 1, outcome, true, span, tone(500, 9000)).is_none(),
+                watch_step(&mut w, 1, outcome, None, true, span, tone(500, 9000)).is_none(),
                 "window {i}"
             );
         }
         // An unscored window also ends the run.
-        assert!(watch_step(&mut w, 2, Outcome::Caller, false, (0, 200), tone(500, 9000)).is_none());
-        assert!(watch_step(&mut w, 2, Outcome::Other, true, (200, 400), tone(500, 9000)).is_none());
+        assert!(watch_step(
+            &mut w,
+            2,
+            Outcome::Caller,
+            None,
+            false,
+            (0, 200),
+            tone(500, 9000)
+        )
+        .is_none());
+        assert!(watch_step(
+            &mut w,
+            2,
+            Outcome::Other,
+            None,
+            true,
+            (200, 400),
+            tone(500, 9000)
+        )
+        .is_none());
         assert!(watch_step(
             &mut w,
             2,
             Outcome::Unknown,
+            None,
             true,
             (400, 600),
             tone(500, 9000)
         )
         .is_none());
-        assert!(watch_step(&mut w, 2, Outcome::Other, true, (600, 800), tone(500, 9000)).is_none());
+        assert!(watch_step(
+            &mut w,
+            2,
+            Outcome::Other,
+            None,
+            true,
+            (600, 800),
+            tone(500, 9000)
+        )
+        .is_none());
     }
 
     /// `other` -> `caller` is confirmed by one `caller` window; the key is not watched further.
     #[test]
     fn other_to_caller_confirms_on_one_window() {
         let mut w = VecDeque::new();
-        assert!(watch_step(&mut w, 5, Outcome::Other, false, (0, 200), tone(500, 9000)).is_none());
+        assert!(watch_step(
+            &mut w,
+            5,
+            Outcome::Other,
+            None,
+            false,
+            (0, 200),
+            tone(500, 9000)
+        )
+        .is_none());
         let change = watch_step(
             &mut w,
             5,
             Outcome::Caller,
+            None,
             true,
             (200, 400),
             tone(500, 9000),
@@ -3443,34 +3571,73 @@ mod tests {
             &mut w,
             5,
             Outcome::Caller,
+            None,
             true,
             (400, 600),
             tone(500, 9000)
         )
         .is_none());
-        assert!(watch_step(&mut w, 5, Outcome::Other, true, (600, 800), tone(500, 9000)).is_none());
+        assert!(watch_step(
+            &mut w,
+            5,
+            Outcome::Other,
+            None,
+            true,
+            (600, 800),
+            tone(500, 9000)
+        )
+        .is_none());
     }
 
     /// A single `other` window never splits `caller` -> `other`; two in a row do.
     #[test]
     fn a_single_other_window_never_splits_caller_to_other() {
         let mut w = VecDeque::new();
-        assert!(watch_step(&mut w, 6, Outcome::Caller, false, (0, 200), tone(500, 9000)).is_none());
-        assert!(watch_step(&mut w, 6, Outcome::Other, true, (200, 400), tone(500, 9000)).is_none());
         assert!(watch_step(
             &mut w,
             6,
             Outcome::Caller,
+            None,
+            false,
+            (0, 200),
+            tone(500, 9000)
+        )
+        .is_none());
+        assert!(watch_step(
+            &mut w,
+            6,
+            Outcome::Other,
+            None,
+            true,
+            (200, 400),
+            tone(500, 9000)
+        )
+        .is_none());
+        assert!(watch_step(
+            &mut w,
+            6,
+            Outcome::Caller,
+            None,
             true,
             (400, 600),
             tone(500, 9000)
         )
         .is_none());
-        assert!(watch_step(&mut w, 6, Outcome::Other, true, (600, 800), tone(500, 9000)).is_none());
+        assert!(watch_step(
+            &mut w,
+            6,
+            Outcome::Other,
+            None,
+            true,
+            (600, 800),
+            tone(500, 9000)
+        )
+        .is_none());
         let c = watch_step(
             &mut w,
             6,
             Outcome::Other,
+            None,
             true,
             (800, 1000),
             tone(500, 9000),
@@ -3489,11 +3656,12 @@ mod tests {
         let mut w = VecDeque::new();
         let mut first = tone(1500, 10_000);
         first[800 * BYTES_PER_MS..].fill(0);
-        assert!(watch_step(&mut w, 1, Outcome::Other, false, (0, 1500), first).is_none());
+        assert!(watch_step(&mut w, 1, Outcome::Other, None, false, (0, 1500), first).is_none());
         let change = watch_step(
             &mut w,
             1,
             Outcome::Caller,
+            None,
             true,
             (1500, 3000),
             tone(1500, 10_000),
@@ -4535,6 +4703,161 @@ mod tests {
             "the scan embedded all 19 sub-windows"
         );
         assert_eq!(gate.outcome_for(1), Some(Outcome::Other));
+    }
+
+    /// A vector scoring `s` against `caller_v`.
+    fn scored_v(s: f32) -> Vec<f32> {
+        vec![s, (1.0 - s * s).sqrt()]
+    }
+
+    /// Decision bb, the airport A utt-19 shape (chunk 7): window 1 scores 0.451 (`other`, just
+    /// under 0.459) at the caller's own onset and window 2 scores `caller`. U1 holds no window
+    /// below `CONFIDENT_OTHER_MAX_SCORE`, so there is no split: the window's `caller` verdict
+    /// upgrades the whole utterance. On 08e37677 this split and dropped U1 as `other`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_near_threshold_first_window_then_caller_upgrades_without_a_split() {
+        let mut cfg = split_cfg(true, 12);
+        cfg.check_speech_ms = 1500;
+        let steps: Vec<Step> = vec![
+            (None, caller_v()),
+            (None, scored_v(0.451)),
+            (None, caller_v()),
+        ];
+        let (gate, verdicts, _q) = run_script_steps(cfg, steps.into(), 2, 75).await;
+        assert!(gate.take_speaker_changes().is_empty(), "no split");
+        assert_eq!(gate.outcome_for(1), Some(Outcome::Caller), "upgraded");
+        let v = lock(&verdicts);
+        assert!(
+            v.iter()
+                .any(|v| v.window == 2 && v.recheck && v.outcome == Outcome::Caller),
+            "window 2 is the caller re-check: {v:?}"
+        );
+    }
+
+    /// Decision bb: a near-miss confirm (window 2 in the band, a `caller` sub-window) with no
+    /// confident `other` window in U1 (window 1 also in the band) is the re-check upgrade: the
+    /// window's verdict is `caller` and no change is booked.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_near_miss_confirm_without_confident_other_upgrades() {
+        let mut cfg = split_cfg(true, 12);
+        cfg.check_speech_ms = 1500;
+        let near = near_v(&cfg);
+        let mut steps: Vec<Step> = vec![(None, caller_v()), (None, near.clone()), (None, near)];
+        steps.extend((0..4).map(|_| (None, other_v()))); // window 2's scan: 0..375
+        steps.push((None, caller_v())); // 500 ms
+        steps.push((None, caller_v())); // unused
+        let (gate, verdicts, _q) = run_script_steps(cfg, steps.into(), 2, 75).await;
+        assert!(gate.take_speaker_changes().is_empty(), "no split");
+        assert_eq!(gate.outcome_for(1), Some(Outcome::Caller), "upgraded");
+        let v = lock(&verdicts);
+        assert!(
+            v.iter()
+                .any(|v| v.window == 2 && v.recheck && v.outcome == Outcome::Caller),
+            "window 2 is the caller re-check: {v:?}"
+        );
+    }
+
+    /// Decision bb: a U1 with one window below `CONFIDENT_OTHER_MAX_SCORE` (the 6j worst case
+    /// [0.370, 0.215, 0.190]) still splits on the next `caller` window, U1 stays `other`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_confident_other_window_in_u1_still_splits() {
+        let mut cfg = split_cfg(true, 12);
+        cfg.check_speech_ms = 1500;
+        let mut steps: Vec<Step> = vec![
+            (None, caller_v()),
+            (None, scored_v(0.370)),
+            (None, scored_v(0.215)),
+            (None, scored_v(0.190)),
+            (None, caller_v()),
+        ];
+        steps.extend((0..19).map(|_| (None, other_v()))); // the split scan
+        let (gate, _v, _q) = run_script_steps(cfg, steps.into(), 4, 75).await;
+        let changes = gate.take_speaker_changes();
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert_eq!(
+            (changes[0].from, changes[0].to),
+            (Outcome::Other, Outcome::Caller)
+        );
+        assert_eq!(gate.outcome_for(1), Some(Outcome::Other), "U1 stays other");
+    }
+
+    /// Decision bb on the watch itself: U1 [0.22, 0.41] (no window below 0.20) then `caller` is
+    /// no change, and the watch is done (a later `caller` window reports nothing either); the
+    /// same U1 with a 0.19 window splits.
+    #[test]
+    fn watch_needs_a_confident_other_window_to_split() {
+        let mut w = VecDeque::new();
+        assert!(watch_step(
+            &mut w,
+            1,
+            Outcome::Other,
+            Some(0.22),
+            false,
+            (0, 1500),
+            tone(1500, 9000)
+        )
+        .is_none());
+        assert!(watch_step(
+            &mut w,
+            1,
+            Outcome::Other,
+            Some(0.41),
+            true,
+            (1500, 3000),
+            tone(1500, 9000)
+        )
+        .is_none());
+        assert!(watch_step(
+            &mut w,
+            1,
+            Outcome::Caller,
+            Some(0.6),
+            true,
+            (3000, 4500),
+            tone(1500, 9000)
+        )
+        .is_none());
+        assert!(watch_step(
+            &mut w,
+            1,
+            Outcome::Caller,
+            Some(0.6),
+            true,
+            (4500, 6000),
+            tone(1500, 9000)
+        )
+        .is_none());
+        let mut w = VecDeque::new();
+        assert!(watch_step(
+            &mut w,
+            2,
+            Outcome::Other,
+            Some(0.22),
+            false,
+            (0, 1500),
+            tone(1500, 9000)
+        )
+        .is_none());
+        assert!(watch_step(
+            &mut w,
+            2,
+            Outcome::Other,
+            Some(0.19),
+            true,
+            (1500, 3000),
+            tone(1500, 9000)
+        )
+        .is_none());
+        let c = watch_step(
+            &mut w,
+            2,
+            Outcome::Caller,
+            Some(0.6),
+            true,
+            (3000, 4500),
+            tone(1500, 9000),
+        );
+        assert!(c.is_some_and(|c| c.from == Outcome::Other && c.to == Outcome::Caller));
     }
 
     /// A near-miss scan that runs out of the window's verify budget confirms nothing; the wait is

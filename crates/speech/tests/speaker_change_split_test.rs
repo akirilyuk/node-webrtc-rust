@@ -27,6 +27,10 @@ use tokio::time::{sleep, Duration};
 
 const REF: [f32; 4] = [0.9, 0.1, 0.2, 0.3];
 const OTHER: [f32; 4] = [-0.2, 0.9, -0.3, 0.1];
+/// A bystander whose voice is close to the caller's: cosine about 0.39 against [`REF`], under the
+/// 0.459 threshold (so `other`) but above `CONFIDENT_OTHER_MAX_SCORE` (0.20), so never the
+/// confident `other` evidence an other -> caller split needs.
+const NEAR: [f32; 4] = [0.3, 0.9, 0.0, 0.0];
 /// Caller amplitude.
 const A: i16 = i16::MAX / 3;
 /// Other speaker's amplitude (about 6 dB under the caller).
@@ -72,7 +76,10 @@ fn count(s: &str, c: char) -> usize {
 
 // ---- scripted gate (embedder) ---------------------------------------------------------------
 
-struct LevelEmbedder;
+struct LevelEmbedder {
+    /// `B` frames embed as [`NEAR`] instead of [`OTHER`].
+    near: bool,
+}
 
 #[async_trait]
 impl SpeakerEmbedder for LevelEmbedder {
@@ -82,7 +89,13 @@ impl SpeakerEmbedder for LevelEmbedder {
         if a == 0 && b == 0 {
             return Ok(None);
         }
-        Ok(Some(if a >= b { REF.to_vec() } else { OTHER.to_vec() }))
+        Ok(Some(if a >= b {
+            REF.to_vec()
+        } else if self.near {
+            NEAR.to_vec()
+        } else {
+            OTHER.to_vec()
+        }))
     }
 }
 
@@ -107,6 +120,8 @@ struct Script {
     /// Deferred mode: the answer to the finalize call with this index is withheld (and so is every
     /// later one, since answers keep request order) until the index leaves this list.
     held_calls: Vec<usize>,
+    /// The other speaker (`B`) embeds as [`NEAR`] (a not-confident `other`), not [`OTHER`].
+    near_other: bool,
     /// Frame classes of every abandoned (never decoded) stream, in abandon order.
     abandoned: Vec<String>,
 }
@@ -263,7 +278,8 @@ impl VendorFactory for SplitFactory {
         &self,
         _config: &SpeakerGateConfig,
     ) -> SpeechResult<Option<Box<dyn SpeakerEmbedder>>> {
-        Ok(Some(Box::new(LevelEmbedder)))
+        let near = self.script.lock().unwrap().near_other;
+        Ok(Some(Box::new(LevelEmbedder { near })))
     }
 }
 
@@ -1206,6 +1222,64 @@ async fn other_then_caller_upgrades_and_barges_in_without_a_split() {
     assert_eq!(speaker.as_deref(), Some("caller"));
     assert_eq!(reason, None);
     assert_eq!(counts, (0, 0, 0, 0, 0, 0));
+}
+
+/// Flag on, a near-threshold bystander (every `other` window scores about 0.39, never under
+/// `CONFIDENT_OTHER_MAX_SCORE`) then the caller, while the agent speaks: no split. The first
+/// `caller` window upgrades the whole utterance, which ends as one `caller` final, and the held
+/// barge-in is released for it (the airport utt-19 shape, chunk 6j).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn near_threshold_other_then_caller_upgrades_without_a_split() {
+    let mut rig = rig_with_script(
+        agent_config(true),
+        Script {
+            near_other: true,
+            ..Script::default()
+        },
+    )
+    .await;
+    rig.enroll().await;
+    rig.start_speaking().await;
+    rig.feed_paced(B, 20).await;
+    rig.drain();
+    assert!(
+        rig.barge_ids().is_empty(),
+        "near-threshold bystander barged in"
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        rig.drain();
+        if !rig.barge_ids().is_empty() || Instant::now() > deadline {
+            break;
+        }
+        rig.feed(A, 1).await;
+        sleep(Duration::from_millis(5)).await;
+    }
+    rig.feed_paced(A, 10).await;
+    rig.agent.flush_tts().await.unwrap();
+    rig.feed(0, 30).await;
+    rig.idle().await;
+    rig.drain();
+    assert!(!rig
+        .log
+        .iter()
+        .any(|e| e.kind == SpeechEventKind::UserUtteranceSplit
+            || e.reason.as_deref() == Some("speaker_split")));
+    assert_eq!(rig.agent.speaker_split_counts(), (0, 0, 0, 0, 0, 0));
+    let ids = rig.speaking_start_ids();
+    assert_eq!(ids.len(), 3, "one utterance after enrollment: {ids:?}");
+    let u = ids[2].clone();
+    let (_, f) = rig.final_of(&u);
+    assert_eq!(f.speaker.as_deref(), Some("caller"));
+    assert_eq!(f.reason, None);
+    let (a, b) = ab(&f);
+    assert!(
+        a > 0 && b > 0,
+        "the final keeps the whole utterance, text {:?}",
+        f.text
+    );
+    assert_eq!(rig.barge_ids(), vec![Some(u)]);
+    rig.agent.stop().await.unwrap();
 }
 
 /// `onMismatch: drop`: U1 (the other speaker) is ignored (`user_speech_ignored`, no final), U2 is

@@ -1322,7 +1322,7 @@ mod straddle {
             let mut cache = SubCache::default();
             let modes: Vec<ModeRec> = (0..O2C_MODES.len())
                 .map(|m| {
-                    let (o, st) = product_o2c(
+                    let (o, st, end_caller) = product_o2c(
                         &p.samples,
                         utt,
                         embedder,
@@ -1341,15 +1341,17 @@ mod straddle {
                                 nosplit_lost: 0,
                                 early: cut + 1500 < p.c_on,
                                 st,
+                                end_caller,
                             }
                         }
                         None => ModeRec {
                             k: None,
                             split: None,
                             u1: Vec::new(),
-                            nosplit_lost: floor_kept,
+                            nosplit_lost: if end_caller { 0 } else { floor_kept },
                             early: false,
                             st,
+                            end_caller,
                         },
                     }
                 })
@@ -2155,15 +2157,26 @@ mod straddle {
         modes: Vec<ModeRec>,
     }
 
-    /// 7f: LibriSpeech bystander-only utterances (set, eligible = window 1 `other` and 2+
-    /// windows, product other -> caller confirms per mode).
-    static FAR_O2C: std::sync::Mutex<Vec<(String, usize, [usize; 3])>> =
-        std::sync::Mutex::new(Vec::new());
+    /// 7f: LibriSpeech bystander-only utterances per set: eligible (window 1 `other`, 2+
+    /// windows), product other -> caller confirms per mode, utterances that end with the deferred
+    /// veto pending (all `caller`), and bystander words labelled `caller` (today: after the cut
+    /// of a split; deferred veto: after its cut, or the whole utterance when it ends pending).
+    #[derive(Default)]
+    struct FarO2c {
+        set: String,
+        eligible: usize,
+        hits: [usize; 4],
+        end_caller: usize,
+        caller_words: [usize; 2],
+    }
+
+    static FAR_O2C: std::sync::Mutex<Vec<FarO2c>> = std::sync::Mutex::new(Vec::new());
 
     fn far_o2c(
         set: &str,
         samples: &[f32],
         utt: &Utt,
+        (u, ue): (usize, usize),
         embedder: &Embedder,
         reference: &[f32],
         threshold: f32,
@@ -2171,22 +2184,48 @@ mod straddle {
         if utt.wins.len() < 2 || utt.wins[0].1 >= threshold {
             return;
         }
+        let words =
+            |from: usize| recognize_words(slice(samples, from, ue)).map_or(0, |(w, _)| w.len());
         let mut cache = SubCache::default();
-        let mut hit = [0usize; 3];
+        let mut hit = [0usize; 4];
+        let (mut end_caller, mut cw) = (0, [0usize; 2]);
         for (m, h) in hit.iter_mut().enumerate() {
-            let (o, _) = product_o2c(samples, utt, embedder, reference, threshold, m, &mut cache);
+            let (o, _, end) =
+                product_o2c(samples, utt, embedder, reference, threshold, m, &mut cache);
             *h = usize::from(o.is_some());
-        }
-        let mut far = FAR_O2C.lock().unwrap();
-        let set = format!("LS bystander-only {set}");
-        if let Some(e) = far.iter_mut().find(|e| e.0 == set) {
-            e.1 += 1;
-            for (acc, h) in e.2.iter_mut().zip(hit) {
-                *acc += h;
+            let cut = o.map(|(_, c, _)| c).or(end.then_some(u));
+            if m == 3 {
+                end_caller = usize::from(end);
             }
-        } else {
-            far.push((set, 1, hit));
+            let slot = match m {
+                0 => Some(0),
+                3 => Some(1),
+                _ => None,
+            };
+            if let (Some(c), Some(i)) = (cut, slot) {
+                cw[i] = words(c);
+            }
         }
+        let set = format!("LS bystander-only {set}");
+        let mut far = FAR_O2C.lock().unwrap();
+        let i = match far.iter().position(|e| e.set == set) {
+            Some(i) => i,
+            None => {
+                far.push(FarO2c {
+                    set,
+                    ..Default::default()
+                });
+                far.len() - 1
+            }
+        };
+        let e = &mut far[i];
+        e.eligible += 1;
+        for (acc, h) in e.hits.iter_mut().zip(hit) {
+            *acc += h;
+        }
+        e.end_caller += end_caller;
+        e.caller_words[0] += cw[0];
+        e.caller_words[1] += cw[1];
     }
 
     /// 7f table (decision gg): today vs the veto modes under the shipped split rule (decision bb,
@@ -2197,17 +2236,21 @@ mod straddle {
     fn veto_table(recs: &[EvRec], sets: &[(String, bool)]) -> String {
         let bb = |u: &[f32]| u.iter().any(|x| *x < 0.20);
         let mut md = String::from(
-            "## Scan-miss veto for other -> caller (chunk 7f, decision gg)\n\nShipped split rule (decision bb). Per set and mode: lost caller words above the floor (measure A: split loss + no-confirm loss) / leaked bystander words; confirms at today's window / at a later window (delayed by 1 / by 2+) / no longer confirmed; rule outcome changed (split -> upgrade / upgrade -> split); caller-only false splits; confirms more than 1500 ms before the caller onset (bystander-only window, the n02 shape); scans / sub-window embeds / total ms / longest scan ms.\n\n| set | mode | lost (A) | leaked | same window | delayed 1 / 2+ | no confirm | split->upgrade / upgrade->split | caller-only false splits | early confirms | scans / embeds / ms / max ms |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
+            "## Scan-miss veto for other -> caller (chunk 7f, decision gg)\n\nShipped split rule (decision bb). Per set and mode: lost caller words above the floor (measure A: split loss + no-confirm loss) / leaked bystander words; confirms at today's window / at a later window (delayed by 1 / by 2+) / no longer confirmed; rule outcome changed (split -> upgrade / upgrade -> split); caller-only false splits; confirms more than 1500 ms before the caller onset (bystander-only window, the n02 shape); scans / sub-window embeds / total ms / longest scan ms.\n\n| set | mode | lost (A) | leaked | same window | delayed 1 / 2+ | no confirm | split->upgrade / upgrade->split | caller-only false splits | early confirms | end of speech with the veto pending -> whole utterance `caller` (late barge) | scans / embeds / ms / max ms |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
         );
         for (set, co) in sets {
             let rs: Vec<&EvRec> = recs.iter().filter(|r| r.set == *set).collect();
             for (m, name) in O2C_MODES.iter().enumerate() {
                 let (mut lost, mut leak, mut same, mut d1, mut d2, mut gone) = (0, 0, 0, 0, 0, 0);
-                let (mut s2u, mut u2s, mut cofs, mut early) = (0, 0, 0, 0);
+                let (mut s2u, mut u2s, mut cofs, mut early, mut endc) = (0, 0, 0, 0, 0);
                 let (mut scans, mut embeds, mut ms, mut max_ms) = (0, 0, 0.0, 0f64);
                 for r in &rs {
                     let (t, x) = (&r.modes[0], &r.modes[m]);
                     lost += x.nosplit_lost;
+                    if x.end_caller {
+                        endc += 1;
+                        leak += r.upgrade_leak;
+                    }
                     if let Some((l, k)) = x.split {
                         if bb(&x.u1) {
                             lost += l;
@@ -2222,7 +2265,7 @@ mod straddle {
                         (Some(a), Some(b)) if a == b => same += 1,
                         (Some(a), Some(b)) if b == a + 1 => d1 += 1,
                         (Some(_), Some(_)) => d2 += 1,
-                        (Some(_), None) => gone += 1,
+                        (Some(_), None) if !x.end_caller => gone += 1,
                         _ => {}
                     }
                     if t.split.is_some() && x.split.is_some() {
@@ -2238,22 +2281,30 @@ mod straddle {
                     max_ms = max_ms.max(x.st.max_ms);
                 }
                 md.push_str(&format!(
-                    "| {set} | {name} | {lost} | {leak} | {same} | {d1} / {d2} | {gone} | {s2u} / {u2s} | {} | {early} | {scans} / {embeds} / {ms:.0} / {max_ms:.0} |\n",
+                    "| {set} | {name} | {lost} | {leak} | {same} | {d1} / {d2} | {gone} | {s2u} / {u2s} | {} | {early} | {endc} | {scans} / {embeds} / {ms:.0} / {max_ms:.0} |\n",
                     if *co { cofs.to_string() } else { "-".into() }
                 ));
             }
         }
         let far = FAR_O2C.lock().unwrap();
         if !far.is_empty() {
-            md.push_str("\n### Bystander-only false splits (LibriSpeech bystander-only utterances, window 1 `other`, 2+ windows)\n\n| set | eligible |");
+            md.push_str("\n### Bystander-only false splits (LibriSpeech bystander-only utterances, window 1 `other`, 2+ windows)\n\nConfirms per mode; deferred veto: utterances that end with the veto pending (whole utterance `caller`); bystander words labelled `caller` (today: after the split cut; deferred veto: after its cut, or the whole utterance when it ends pending).\n\n| set | eligible |");
             for n in O2C_MODES {
                 md.push_str(&format!(" {n} |"));
             }
-            md.push_str("\n| --- | --- | --- | --- | --- |\n");
-            for (set, n, h) in far.iter() {
+            md.push_str(" deferred: end pending -> caller | bystander words labelled caller, today / deferred |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n");
+            for e in far.iter() {
                 md.push_str(&format!(
-                    "| {set} | {n} | {} | {} | {} |\n",
-                    h[0], h[1], h[2]
+                    "| {} | {} | {} | {} | {} | {} | {} | {} / {} |\n",
+                    e.set,
+                    e.eligible,
+                    e.hits[0],
+                    e.hits[1],
+                    e.hits[2],
+                    e.hits[3],
+                    e.end_caller,
+                    e.caller_words[0],
+                    e.caller_words[1]
                 ));
             }
         }
@@ -2268,7 +2319,17 @@ mod straddle {
     /// completes (no budget stop) with no `caller` sub-window does not confirm, the window counts
     /// as `other` and the watch stays open; 2 narrow veto: the same, only when the window scored
     /// below threshold + [`NARROW_VETO_MARGIN`].
-    pub(super) const O2C_MODES: [&str; 3] = ["today", "veto", "narrow veto (< thr + 0.05)"];
+    /// 3 deferred veto (decision hh): the first such window is remembered with its fallback
+    /// cut; a later window with a `caller` sub-window splits there; a second `caller` window
+    /// whose scan finds none (completed or stopped on the budget) cuts at the remembered
+    /// window's fallback; the utterance ending with the veto pending falls back to `caller` whole
+    /// (the split is skipped as `not_speaking`; the barge is released at the end of speech).
+    pub(super) const O2C_MODES: [&str; 4] = [
+        "today",
+        "veto",
+        "narrow veto (< thr + 0.05)",
+        "deferred veto (hh)",
+    ];
     const NARROW_VETO_MARGIN: f32 = 0.05;
 
     /// Split-scan cost of one utterance under one mode: scans run, sub-window embeds the product
@@ -2293,9 +2354,13 @@ mod straddle {
         nosplit_lost: usize,
         early: bool,
         st: ScanStat,
+        /// Mode 3: the utterance ended with the veto pending and falls back to `caller` whole.
+        end_caller: bool,
     }
 
     type SubCache = std::collections::HashMap<usize, Vec<(usize, f32, f64)>>;
+    /// A product other -> caller confirm: (k, cut, U1 window scores).
+    type O2cConfirm = Option<(usize, usize, Vec<f32>)>;
 
     /// The product gate with the watch on (chunk 6g): window 1 `other`, then the first window
     /// `k >= 2` scoring `caller`, or a near-miss window (`[0.30, thr)`) whose 750/125 scan finds a
@@ -2311,11 +2376,13 @@ mod straddle {
         threshold: f32,
         mode: usize,
         cache: &mut SubCache,
-    ) -> (Option<(usize, usize, Vec<f32>)>, ScanStat) {
+    ) -> (O2cConfirm, ScanStat, bool) {
         let mut st = ScanStat::default();
         if utt.wins.first().is_none_or(|w| w.1 >= threshold) {
-            return (None, st);
+            return (None, st, false);
         }
+        let u1 = |k: usize| utt.wins[..k].iter().map(|w| w.1).collect::<Vec<f32>>();
+        let mut pending: Option<(usize, usize)> = None;
         for k in 1..utt.wins.len() {
             let (start, s, ms) = utt.wins[k];
             let lo = utt.wins[k - 1].0;
@@ -2362,13 +2429,20 @@ mod straddle {
             if veto && first.is_none() && !stopped {
                 continue;
             }
+            if mode == 3 && first.is_none() {
+                match pending {
+                    Some((pk, plo)) => return (Some((pk, plo, u1(pk))), st, false),
+                    None if !stopped => {
+                        pending = Some((k, lo));
+                        continue;
+                    }
+                    None => {}
+                }
+            }
             let cut = first.map_or(lo, |p| p.saturating_sub(P_BACK).max(lo));
-            return (
-                Some((k, cut, utt.wins[..k].iter().map(|w| w.1).collect())),
-                st,
-            );
+            return (Some((k, cut, u1(k))), st, false);
         }
-        (None, st)
+        (None, st, pending.is_some())
     }
 
     /// A caller-only utterance `[u, ue)` of `samples` (`clean` = the same timeline without the
@@ -2400,7 +2474,7 @@ mod straddle {
         let mut cache = SubCache::default();
         let modes: Vec<ModeRec> = (0..O2C_MODES.len())
             .map(|m| {
-                let (o, st) =
+                let (o, st, end_caller) =
                     product_o2c(samples, &utt, embedder, reference, threshold, m, &mut cache);
                 match o {
                     Some((k, cut, u1)) => ModeRec {
@@ -2410,6 +2484,7 @@ mod straddle {
                         nosplit_lost: 0,
                         early: false,
                         st,
+                        end_caller,
                     },
                     // Window 1 `other` and no `caller` window: the whole utterance is dropped
                     // (a gate false reject under today's rule), counted above the floor.
@@ -2417,13 +2492,16 @@ mod straddle {
                         k: None,
                         split: None,
                         u1: Vec::new(),
-                        nosplit_lost: if utt.wins.first().is_some_and(|w| w.1 < threshold) {
+                        nosplit_lost: if !end_caller
+                            && utt.wins.first().is_some_and(|w| w.1 < threshold)
+                        {
                             floor_kept
                         } else {
                             0
                         },
                         early: false,
                         st,
+                        end_caller,
                     },
                 }
             })
@@ -2986,7 +3064,7 @@ mod straddle {
                         if ue >= u + 3000 {
                             let utt = build_utt(&s, u, ue, embedder, &reference);
                             if EVIDENCE.get().is_some() {
-                                far_o2c(cname, &s, &utt, embedder, &reference, threshold);
+                                far_o2c(cname, &s, &utt, (u, ue), embedder, &reference, threshold);
                             }
                             far.push(utt);
                         }

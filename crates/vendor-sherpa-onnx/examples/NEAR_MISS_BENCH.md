@@ -286,3 +286,53 @@ Result: the bar fails for both modes. Lost caller words rise on every LibriSpeec
 | --- | --- | --- | --- | --- |
 | LS bystander-only Tocumen bed -12 dB | 322 | 0 | 0 | 0 |
 | LS bystander-only clean | 330 | 1 | 1 | 1 |
+
+### Deferred veto (decision hh), picked
+
+Mode 3: the vetoed window is remembered with its fallback cut; a later window with a `caller` sub-window splits there; a second `caller` window with no hit cuts at the remembered fallback; the end of speech with the veto pending falls back to `caller` whole (late barge). Same sets, run 2322 s, log `.test-logs/*-7f-bench-hh.log` (not committed).
+
+Bar of decision gg holds: lost caller words are at or below today on every set (LS straddle bed 45 / 45, clean 32 / 32; LS caller-only bed 220 / 220, clean 207 / 207; Piper merged no-pause 18 -> 13; Piper 0 / 0); bystander-only false splits unchanged (0 / 322, 1 / 330), no bystander-only utterance ends with the veto pending, caller-labelled bystander words unchanged (0 / 0, 9 / 9); early cuts of the n02 shape on Piper 6 + 4 -> 0 + 0. Cost: the LS utterances that end pending (bed 2 + 2, clean 1 + 1) become `caller` whole, with the barge at the end of speech, so leaked words rise (LS straddle bed 110 -> 130, clean 131 -> 140); decision w takes leaks over lost words.
+
+| set | mode | lost (A) | leaked | same window | delayed 1 / 2+ | no confirm | split->upgrade / upgrade->split | caller-only false splits | early confirms | end of speech with the veto pending -> whole utterance `caller` (late barge) | scans / embeds / ms / max ms |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Piper straddle | today | 0 | 396 | 355 | 0 / 0 | 0 | 0 / 0 | - | 6 | 0 | 380 / 5793 / 44621 / 153 |
+| Piper straddle | veto | 0 | 358 | 349 | 6 / 0 | 0 | 0 / 0 | - | 0 | 0 | 386 / 5842 / 44997 / 153 |
+| Piper straddle | narrow veto (< thr + 0.05) | 0 | 385 | 353 | 2 / 0 | 0 | 0 / 0 | - | 4 | 0 | 382 / 5810 / 44752 / 153 |
+| Piper straddle | deferred veto (hh) | 0 | 358 | 349 | 6 / 0 | 0 | 0 / 0 | - | 0 | 0 | 386 / 5842 / 44997 / 153 |
+| LibriSpeech straddle, Tocumen bed -12 dB | today | 45 | 110 | 69 | 0 / 0 | 0 | 0 / 0 | - | 1 | 0 | 85 / 1191 / 9429 / 184 |
+| LibriSpeech straddle, Tocumen bed -12 dB | veto | 51 | 104 | 66 | 1 / 0 | 2 | 0 / 0 | - | 0 | 0 | 86 / 1199 / 9494 / 184 |
+| LibriSpeech straddle, Tocumen bed -12 dB | narrow veto (< thr + 0.05) | 51 | 104 | 66 | 1 / 0 | 2 | 0 / 0 | - | 0 | 0 | 86 / 1199 / 9494 / 184 |
+| LibriSpeech straddle, Tocumen bed -12 dB | deferred veto (hh) | 45 | 130 | 66 | 1 / 0 | 0 | 0 / 0 | - | 0 | 2 | 86 / 1199 / 9494 / 184 |
+| LibriSpeech straddle, clean | today | 32 | 131 | 110 | 0 / 0 | 0 | 0 / 0 | - | 0 | 0 | 125 / 1606 / 12932 / 163 |
+| LibriSpeech straddle, clean | veto | 35 | 129 | 109 | 0 / 0 | 1 | 0 / 0 | - | 0 | 0 | 125 / 1606 / 12932 / 163 |
+| LibriSpeech straddle, clean | narrow veto (< thr + 0.05) | 35 | 129 | 109 | 0 / 0 | 1 | 0 / 0 | - | 0 | 0 | 125 / 1606 / 12932 / 163 |
+| LibriSpeech straddle, clean | deferred veto (hh) | 32 | 140 | 109 | 0 / 0 | 0 | 0 / 0 | - | 0 | 1 | 125 / 1606 / 12932 / 163 |
+| Piper fixtures, merged no-pause | today | 18 | 477 | 250 | 0 / 0 | 0 | 0 / 0 | - | 4 | 0 | 313 / 4345 / 36179 / 260 |
+| Piper fixtures, merged no-pause | veto | 13 | 477 | 246 | 2 / 2 | 0 | 0 / 0 | - | 0 | 0 | 317 / 4386 / 36516 / 260 |
+| Piper fixtures, merged no-pause | narrow veto (< thr + 0.05) | 13 | 477 | 247 | 1 / 2 | 0 | 0 / 0 | - | 1 | 0 | 316 / 4377 / 36442 / 260 |
+| Piper fixtures, merged no-pause | deferred veto (hh) | 13 | 477 | 246 | 2 / 2 | 0 | 0 / 0 | - | 0 | 0 | 317 / 4386 / 36516 / 260 |
+| Piper caller-only, fixture babble | today | 0 | 0 | 0 | 0 / 0 | 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 / 0 / 0 |
+| Piper caller-only, fixture babble | veto | 0 | 0 | 0 | 0 / 0 | 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 / 0 / 0 |
+| Piper caller-only, fixture babble | narrow veto (< thr + 0.05) | 0 | 0 | 0 | 0 / 0 | 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 / 0 / 0 |
+| Piper caller-only, fixture babble | deferred veto (hh) | 0 | 0 | 0 | 0 / 0 | 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 / 0 / 0 |
+| Piper caller-only, fixture babble + Tocumen bed -12 dB | today | 0 | 0 | 4 | 0 / 0 | 0 | 0 / 0 | 0 | 0 | 0 | 4 / 35 / 281 / 80 |
+| Piper caller-only, fixture babble + Tocumen bed -12 dB | veto | 0 | 0 | 4 | 0 / 0 | 0 | 0 / 0 | 0 | 0 | 0 | 4 / 35 / 281 / 80 |
+| Piper caller-only, fixture babble + Tocumen bed -12 dB | narrow veto (< thr + 0.05) | 0 | 0 | 4 | 0 / 0 | 0 | 0 / 0 | 0 | 0 | 0 | 4 / 35 / 281 / 80 |
+| Piper caller-only, fixture babble + Tocumen bed -12 dB | deferred veto (hh) | 0 | 0 | 4 | 0 / 0 | 0 | 0 / 0 | 0 | 0 | 0 | 4 / 35 / 281 / 80 |
+| LibriSpeech dev-clean caller-only, Tocumen bed -12 dB | today | 220 | 0 | 26 | 0 / 0 | 0 | 0 / 0 | 0 | 0 | 0 | 54 / 866 / 6748 / 152 |
+| LibriSpeech dev-clean caller-only, Tocumen bed -12 dB | veto | 248 | 0 | 21 | 3 / 0 | 2 | 0 / 0 | 0 | 0 | 0 | 58 / 921 / 7176 / 152 |
+| LibriSpeech dev-clean caller-only, Tocumen bed -12 dB | narrow veto (< thr + 0.05) | 248 | 0 | 22 | 2 / 0 | 2 | 0 / 0 | 0 | 0 | 0 | 57 / 906 / 7058 / 152 |
+| LibriSpeech dev-clean caller-only, Tocumen bed -12 dB | deferred veto (hh) | 220 | 0 | 21 | 3 / 0 | 0 | 0 / 0 | 0 | 0 | 2 | 58 / 921 / 7176 / 152 |
+| LibriSpeech dev-clean caller-only, clean | today | 207 | 0 | 9 | 0 / 0 | 0 | 0 / 0 | 1 | 0 | 0 | 29 / 500 / 3877 / 152 |
+| LibriSpeech dev-clean caller-only, clean | veto | 213 | 0 | 8 | 0 / 0 | 1 | 0 / 0 | 1 | 0 | 0 | 29 / 500 / 3877 / 152 |
+| LibriSpeech dev-clean caller-only, clean | narrow veto (< thr + 0.05) | 213 | 0 | 8 | 0 / 0 | 1 | 0 / 0 | 1 | 0 | 0 | 29 / 500 / 3877 / 152 |
+| LibriSpeech dev-clean caller-only, clean | deferred veto (hh) | 207 | 0 | 8 | 0 / 0 | 0 | 0 / 0 | 1 | 0 | 1 | 29 / 500 / 3877 / 152 |
+
+### Bystander-only false splits (LibriSpeech bystander-only utterances, window 1 `other`, 2+ windows)
+
+Confirms per mode; deferred veto: utterances that end with the veto pending (whole utterance `caller`); bystander words labelled `caller` (today: after the split cut; deferred veto: after its cut, or the whole utterance when it ends pending).
+
+| set | eligible | today | veto | narrow veto (< thr + 0.05) | deferred veto (hh) | deferred: end pending -> caller | bystander words labelled caller, today / deferred |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| LS bystander-only Tocumen bed -12 dB | 322 | 0 | 0 | 0 | 0 | 0 | 0 / 0 |
+| LS bystander-only clean | 330 | 1 | 1 | 1 | 1 | 0 | 9 / 9 |

@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **sherpa stt:** a final no longer drops up to ~0.8 s of trailing speech. `finalize_utterance` now feeds zeros after the 640 ms tail padding until every sample of the utterance has gone through a decode step. Before, the Kroko English model ("delta seven eight nine" came out as "Delta seven") lost the words after its last full 1.28 s chunk. The added padding is capped by `FINALIZE_MAX_EXTRA_PADDING_MS`.
+
 ## [0.18.5] - 2026-11-14
 
 ### Changed

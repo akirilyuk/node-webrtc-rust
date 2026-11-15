@@ -2988,6 +2988,16 @@ mod straddle {
                 Box::new(move |u: &[f32]| min(u) < x || u.len() >= 2),
             ));
         }
+        // 7i (decision kk): bb's < 0.20 (and 0.25 for reference), or a long `other` run in U1.
+        for x in [0.20f32, 0.25] {
+            let tag = if (x - 0.20).abs() < 1e-6 { "R5" } else { "R5'" };
+            for n in [3usize, 4, 5] {
+                v.push((
+                    format!("{tag}({n}): a U1 window < {x:.2}, or >= {n} other windows"),
+                    Box::new(move |u: &[f32]| min(u) < x || u.len() >= n),
+                ));
+            }
+        }
         v
     }
 
@@ -3103,7 +3113,9 @@ mod straddle {
             ));
         }
         for (name, rule) in &rules {
-            if !(name.contains("< 0.25") || name.starts_with("R1:")) || name.contains(">=") {
+            if !name.starts_with("R5")
+                && (!(name.contains("< 0.25") || name.starts_with("R1:")) || name.contains(">="))
+            {
                 continue;
             }
             md.push_str(&format!(

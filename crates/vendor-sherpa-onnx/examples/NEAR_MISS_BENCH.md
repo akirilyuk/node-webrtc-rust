@@ -404,3 +404,47 @@ Result: the bar of decision jj holds. On the tail scenes, caller words cut out o
 | takeover -6 dB, dev-clean (held out) LibriSpeech straddle, clean              | today                                          | 91  | 67                     | 40 (25)                             | 166 / 723                            | 0 / 0                              |
 | takeover -6 dB, dev-clean (held out) LibriSpeech straddle, clean              | jj: pre-floor windows reset the run            | 91  | 67                     | 40 (25)                             | 166 / 723                            | 0 / 0                              |
 | takeover -6 dB, dev-clean (held out) LibriSpeech straddle, clean              | option 2: forward to the next closed quiet run | 91  | 67                     | 40 (25)                             | 166 / 723                            | 0 / 0                              |
+
+## Chunk 7i: bb or a long `other` run (decision kk), not shipped
+
+Run: the 6j command (`near_miss_bench --evidence`, same sets, threshold 0.459) on e5d01c86 with the R5 rows added; hh and jj are on. Today's row (bb, R1' < 0.20) is identical to 6j. R5(N): split if a U1 window is below 0.20 or U1 holds at least N `other` windows; R5'(N) the same with 0.25.
+
+Bar (decision kk), against bb on every held-out set: caller-only lost words above the floor and caller-only false splits do not go up, true splits upgraded and leaked words go down. **No N meets it.**
+
+- N = 5: LibriSpeech dev-clean caller-only with the Tocumen bed goes from 0 to 20 caller words lost and 0 to 1 false split (U1 [0.426,0.282,0.332,0.455,0.308,0.412]). Upgrades and leaks do not move on any bystander set (69 / 1114 in total, the same as bb): no held-out bystander utterance has 5 `other` windows with none below 0.20.
+- N = 4: the same set loses 36 words (2 false splits); leaks go down on two sets (LibriSpeech straddle clean, Piper merged no-pause; 897 in total), not on Piper straddle or LibriSpeech straddle with the bed.
+- N = 3: 57 words lost on that set (4 false splits) and 33 on dev-clean clean (17 today).
+- The 0.25 variants fail the same way on dev-clean (and the clean set adds a 2-word false split, U1 [0.221,0.413]).
+
+### Per set (split lost above floor / leaked words / splits kept / splits upgraded)
+
+| rule                                              | Piper straddle     | LibriSpeech straddle, Tocumen bed -12 dB | LibriSpeech straddle, clean | Piper fixtures, merged no-pause | Piper caller-only, fixture babble | Piper caller-only, fixture babble + Tocumen bed -12 dB | LibriSpeech dev-clean caller-only, Tocumen bed -12 dB | LibriSpeech dev-clean caller-only, clean |
+| ------------------------------------------------- | ------------------ | ---------------------------------------- | --------------------------- | ------------------------------- | --------------------------------- | ------------------------------------------------------ | ----------------------------------------------------- | ---------------------------------------- |
+| R1': a U1 window < 0.20                           | 0 / 396 / 329 / 26 | 4 / 110 / 62 / 7                         | 6 / 131 / 101 / 9           | 18 / 477 / 223 / 27             | 0 / 0 / 0 / 0                     | 0 / 0 / 0 / 4                                          | 0 / 0 / 0 / 26                                        | 17 / 0 / 1 / 8                           |
+| R1': a U1 window < 0.25                           | 0 / 166 / 349 / 6  | 4 / 72 / 65 / 4                          | 6 / 85 / 104 / 6            | 19 / 224 / 238 / 12             | 0 / 0 / 0 / 0                     | 0 / 0 / 0 / 4                                          | 0 / 0 / 0 / 26                                        | 19 / 0 / 2 / 7                           |
+| R5(3): a U1 window < 0.20, or >= 3 other windows  | 0 / 396 / 329 / 26 | 4 / 61 / 65 / 4                          | 6 / 99 / 103 / 7            | 21 / 55 / 248 / 2               | 0 / 0 / 0 / 0                     | 0 / 0 / 0 / 4                                          | 57 / 0 / 4 / 22                                       | 33 / 0 / 2 / 7                           |
+| R5(4): a U1 window < 0.20, or >= 4 other windows  | 0 / 396 / 329 / 26 | 4 / 110 / 62 / 7                         | 6 / 114 / 102 / 8           | 18 / 277 / 235 / 15             | 0 / 0 / 0 / 0                     | 0 / 0 / 0 / 4                                          | 36 / 0 / 2 / 24                                       | 17 / 0 / 1 / 8                           |
+| R5(5): a U1 window < 0.20, or >= 5 other windows  | 0 / 396 / 329 / 26 | 4 / 110 / 62 / 7                         | 6 / 131 / 101 / 9           | 18 / 477 / 223 / 27             | 0 / 0 / 0 / 0                     | 0 / 0 / 0 / 4                                          | 20 / 0 / 1 / 25                                       | 17 / 0 / 1 / 8                           |
+| R5'(3): a U1 window < 0.25, or >= 3 other windows | 0 / 166 / 349 / 6  | 4 / 39 / 67 / 2                          | 6 / 85 / 104 / 6            | 21 / 55 / 248 / 2               | 0 / 0 / 0 / 0                     | 0 / 0 / 0 / 4                                          | 57 / 0 / 4 / 22                                       | 35 / 0 / 3 / 6                           |
+| R5'(4): a U1 window < 0.25, or >= 4 other windows | 0 / 166 / 349 / 6  | 4 / 72 / 65 / 4                          | 6 / 85 / 104 / 6            | 19 / 142 / 243 / 7              | 0 / 0 / 0 / 0                     | 0 / 0 / 0 / 4                                          | 36 / 0 / 2 / 24                                       | 19 / 0 / 2 / 7                           |
+| R5'(5): a U1 window < 0.25, or >= 5 other windows | 0 / 166 / 349 / 6  | 4 / 72 / 65 / 4                          | 6 / 85 / 104 / 6            | 19 / 224 / 238 / 12             | 0 / 0 / 0 / 0                     | 0 / 0 / 0 / 4                                          | 20 / 0 / 1 / 25                                       | 19 / 0 / 2 / 7                           |
+
+### Ranked (both sets)
+
+| rank | rule                                              | caller-only lost above floor | caller-only false splits left | bystander->caller lost above floor | true splits upgraded | leaked words | total lost above floor |
+| ---- | ------------------------------------------------- | ---------------------------- | ----------------------------- | ---------------------------------- | -------------------- | ------------ | ---------------------- |
+| 2    | R1': a U1 window < 0.20                           | 17                           | 1                             | 28                                 | 69                   | 1114         | 45                     |
+| 3    | R1': a U1 window < 0.25                           | 19                           | 2                             | 29                                 | 28                   | 547          | 48                     |
+| 4    | R5(5): a U1 window < 0.20, or >= 5 other windows  | 37                           | 2                             | 28                                 | 69                   | 1114         | 65                     |
+| 5    | R5'(5): a U1 window < 0.25, or >= 5 other windows | 39                           | 3                             | 29                                 | 28                   | 547          | 68                     |
+| 6    | R5(4): a U1 window < 0.20, or >= 4 other windows  | 53                           | 3                             | 28                                 | 56                   | 897          | 81                     |
+| 7    | R5'(4): a U1 window < 0.25, or >= 4 other windows | 55                           | 4                             | 29                                 | 23                   | 465          | 84                     |
+| 10   | R5(3): a U1 window < 0.20, or >= 3 other windows  | 90                           | 6                             | 31                                 | 39                   | 611          | 121                    |
+| 11   | R5'(3): a U1 window < 0.25, or >= 3 other windows | 92                           | 7                             | 31                                 | 16                   | 345          | 123                    |
+
+### Caller-only false splits under R5(5) (set, U1 scores, caller words lost above floor)
+
+- LibriSpeech dev-clean caller-only, Tocumen bed -12 dB: U1 [0.426,0.282,0.332,0.455,0.308,0.412], lost 20
+- LibriSpeech dev-clean caller-only, clean: U1 [0.370,0.215,0.190,0.306], lost 17
+
+So the eu-load n01 shape (five `other` windows 0.213-0.351, about 7 s) stays an upgrade. Product unchanged; the question goes to the user (decision kk).

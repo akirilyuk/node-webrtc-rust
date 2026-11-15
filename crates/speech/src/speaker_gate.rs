@@ -101,6 +101,11 @@ pub const CALLER_TO_OTHER_OPEN_CUT_MAX_MS: u32 = 450;
 
 /// Frame length (ms) of the split-point energy search.
 const SPLIT_FRAME_MS: usize = 20;
+/// The `other` -> `caller` sub-window scan ends at least this long before a final awaiting the
+/// same window gives up ([`SpeakerGate::await_outcome`], `verify_timeout_ms`), so the change is
+/// booked before the final reads the verdict. The scan's bound counts from the window's enqueue,
+/// which is never later than the final's wait start (a window is sent during speech).
+const SCAN_AWAIT_MARGIN_MS: u64 = 50;
 
 /// Adaptive reference ([`SpeakerGateConfig::adapt_reference`], only with
 /// `split_on_speaker_change`): a scored window is a candidate only when its score is at least
@@ -349,6 +354,9 @@ enum Msg {
         /// pre-roll before the onset excluded). The scored span is
         /// `[end_ms - speech_bytes / 32, end_ms)`; the clip itself reaches back further (pre-roll).
         end_ms: u32,
+        /// When the check was sent: the sub-window scan's total bound counts from here
+        /// ([`SCAN_AWAIT_MARGIN_MS`]).
+        enqueued: Instant,
     },
     /// An utterance that starts as the `caller` after an `other` -> `caller` split
     /// ([`SpeakerGate::inherit_caller`]): arms its watch with label `caller`.
@@ -1100,6 +1108,7 @@ impl SpeakerGate {
                 window,
                 attempt,
                 end_ms,
+                enqueued: Instant::now(),
             });
         }
     }
@@ -1203,6 +1212,7 @@ impl SpeakerGate {
                 window: cur.windows_sent + 1,
                 attempt: feed.attempts,
                 end_ms: (cur.media_bytes / BYTES_PER_MS) as u32,
+                enqueued: Instant::now(),
             });
         } else if self.cfg.recheck_on_other
             && self.outcome_for(cur.key) == Some(Outcome::Other)
@@ -2081,10 +2091,11 @@ fn other_to_caller_cut(lo: i64, found: Option<i64>) -> u32 {
 /// [`SPLIT_STAGE2_HOP_MS`] hop from the start of the range and returns the start of the first one
 /// that scores `caller`. `what` names the use in the logs (`split` for a confirmed change,
 /// `near-miss` for the re-check of a window just under the threshold). Runs on the verifier task,
-/// inside the window's own verify budget: the whole scan has `verify` minus what the window's
-/// verify (started at `window_started`) already spent, each embed `min(verify, left)`, so the
-/// window's verdict never lands later than `verify_timeout_ms` after its check started (a final
-/// awaits only that long). No budget left skips the scan. `None` on a budget stop, an embed
+/// inside the window's own verify budget counted from the check's enqueue: the whole scan has
+/// `verify - SCAN_AWAIT_MARGIN_MS` minus what has passed since `enqueued` (queue wait and the
+/// window's own embed), each embed `min(verify, left)`, so the window's verdict lands at least
+/// [`SCAN_AWAIT_MARGIN_MS`] before a final awaiting it gives up, even when the check queued behind
+/// another embed. No budget left skips the scan. `None` on a budget stop, an embed
 /// failure, or when no sub-window is `caller`; `waitedMs` is logged either way.
 #[allow(clippy::too_many_arguments)]
 async fn scan_caller_sub_window(
@@ -2093,13 +2104,15 @@ async fn scan_caller_sub_window(
     threshold: f32,
     refine: &Refine,
     verify: Duration,
-    window_started: Instant,
+    enqueued: Instant,
     shared: &Shared,
     key: u64,
     what: &str,
 ) -> Option<i64> {
     let started = Instant::now();
-    let total = verify.saturating_sub(window_started.elapsed());
+    let total = verify
+        .saturating_sub(Duration::from_millis(SCAN_AWAIT_MARGIN_MS))
+        .saturating_sub(enqueued.elapsed());
     let sub = i64::from(SPLIT_STAGE2_SUB_MS);
     let mut found = None;
     let mut failed = None;
@@ -2332,6 +2345,7 @@ async fn run(
                 window,
                 attempt,
                 end_ms,
+                enqueued,
             } => {
                 let superseded = lock(&shared.book)
                     .reopened_after
@@ -2452,7 +2466,7 @@ async fn run(
                             cfg.threshold,
                             &refine,
                             verify,
-                            started,
+                            enqueued,
                             &shared,
                             key,
                             if near { "near-miss" } else { "split" },
@@ -3823,6 +3837,20 @@ mod tests {
         Arc<Mutex<Vec<(Verdict, Instant)>>>,
         Arc<DelayEmbedder>,
     ) {
+        delay_gate_with(verify, script, None).await
+    }
+
+    /// [`delay_gate`], sending `before_window2` to the verifier right before window 2 fills (a
+    /// check window 2 queues behind).
+    async fn delay_gate_with(
+        verify: u32,
+        script: Vec<(u64, Vec<f32>)>,
+        before_window2: Option<Msg>,
+    ) -> (
+        Arc<SpeakerGate>,
+        Arc<Mutex<Vec<(Verdict, Instant)>>>,
+        Arc<DelayEmbedder>,
+    ) {
         let mut cfg = split_cfg(true, 12);
         cfg.check_speech_ms = 1500;
         cfg.verify_timeout_ms = verify;
@@ -3874,6 +3902,9 @@ mod tests {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        if let Some(msg) = before_window2 {
+            gate.send(msg);
         }
         for f in 0..75 {
             gate.push_frame(&alternating(f));
@@ -4623,6 +4654,55 @@ mod tests {
             "within verify_timeout_ms"
         );
         assert_eq!(lock(&sink).len(), 2);
+    }
+
+    /// Window 2 queues 600 ms behind another check's embed, then confirms an `other` -> `caller`
+    /// change whose sub-window scan is slow (19 embeds of 100 ms, none `caller`). The scan's bound
+    /// counts from window 2's enqueue and ends [`SCAN_AWAIT_MARGIN_MS`] before the final's await
+    /// gives up, so the change (fallback cut) is booked before the final reads `other`. Counted
+    /// from the dequeue (55fc6cb4), the scan ran ~600 ms past the await and the final saw no change.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_scan_queued_behind_another_embed_ends_before_the_final_gives_up() {
+        let mut script = vec![
+            (0, caller_v()),
+            (0, other_v()),
+            (600, other_v()),
+            (0, caller_v()),
+        ];
+        script.extend((0..19).map(|_| (100, other_v())));
+        let dummy = Msg::Check {
+            key: 99,
+            pcm: vec![1_u8; (PRE_ROLL_MS + 1500) * BYTES_PER_MS],
+            speech_bytes: 1500 * BYTES_PER_MS,
+            recheck: false,
+            window: 1,
+            attempt: 0,
+            end_ms: 1500,
+            enqueued: Instant::now(),
+        };
+        let (gate, _sink, _emb) = delay_gate_with(1000, script, Some(dummy)).await;
+        let t0 = Instant::now();
+        gate.end_utterance();
+        let outcome = gate.await_outcome(1).await;
+        assert_eq!(outcome, Outcome::Other);
+        assert!(
+            !gate.recheck_in_flight(1),
+            "the await gave up with window 2 still in flight"
+        );
+        let changes = gate.take_speaker_changes();
+        assert_eq!(
+            changes.len(),
+            1,
+            "change booked before the final reads Other"
+        );
+        assert_eq!(
+            changes[0].split_at_ms, 0,
+            "fallback cut: previous window's start"
+        );
+        assert!(
+            t0.elapsed() < Duration::from_millis(1000),
+            "within verify_timeout_ms"
+        );
     }
 
     /// With 1500 ms windows the cut can land up to start(k) + 450 ms: the last 750 ms sub-window

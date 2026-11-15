@@ -311,8 +311,17 @@ jobs:
       - name: (a) control, release, under gdb
         if: always()
         run: |
+          # gdb -batch -return-child-result can exit 0 after a crash (the child died on a signal), so the
+          # log is checked: the inferior must report a normal exit.
+          rc=0
           gdb -batch -ex run -ex bt -ex 'info sharedlibrary' -return-child-result \
-            --args "$LID_CONTROL_BIN" --ignored --nocapture --test-threads=1
+            --args "$LID_CONTROL_BIN" --ignored --nocapture --test-threads=1 >/tmp/lid-control-gdb.log 2>&1 || rc=$?
+          cat /tmp/lid-control-gdb.log
+          if [ "$rc" -ne 0 ]; then echo "control exited with gdb status $rc"; exit "$rc"; fi
+          if grep -qE 'Program (received signal|terminated with signal)' /tmp/lid-control-gdb.log; then
+            echo "control crashed under gdb"; exit 1
+          fi
+          grep -q 'exited normally' /tmp/lid-control-gdb.log || { echo "control did not exit normally"; exit 1; }
 
       - name: (b) allowed-set scorer on fixtures, release
         if: always()

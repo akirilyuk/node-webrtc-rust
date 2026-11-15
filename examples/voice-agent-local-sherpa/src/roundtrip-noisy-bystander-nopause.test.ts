@@ -303,11 +303,42 @@ describe('evaluateNoPauseScene', () => {
       expect(bad.failures.some((f) => f.includes('leading glue'))).toBe(true)
     })
 
-    it('bounded leak with both head words lost fails on the head check', () => {
-      const r = evaluateNoPauseScene(segments, bounded(11_664, 'madrid my order'), 's', MEDIA0)
-      expect(
-        r.failures.some((f) => f.includes('bounded leak with lost caller head (please check)')),
-      ).toBe(true)
+    it('bounded leak with the cut 50 ms after the caller onset fails on the onset check', () => {
+      const r = evaluateNoPauseScene(
+        segments,
+        bounded(12_350, 'madrid check my order'),
+        's',
+        MEDIA0,
+      )
+      expect(r.boundedLeaks).toHaveLength(1)
+      expect(r.failures.some((f) => f.includes('cut after caller onset (+50 ms)'))).toBe(true)
+    })
+
+    it('the same final with the cut before the onset passes (a lost "please" is STT, not the cut)', () => {
+      // Similarity of "check my order" vs "please check my order" is 0.75, the threshold.
+      const r = evaluateNoPauseScene(
+        segments,
+        bounded(11_664, 'madrid check my order'),
+        's',
+        MEDIA0,
+      )
+      expect(r.boundedLeaks.map((l) => l.words)).toEqual([['madrid']])
+      expect(r.failures).toEqual([])
+    })
+
+    it('bounded leak with a missing caller onset fails closed', () => {
+      const md = segments.map((s) =>
+        s.role === 'main' && !s.enroll
+          ? { ...s, startMs: Number.NaN, voicedStartMs: undefined }
+          : s,
+      )
+      const r = evaluateNoPauseScene(
+        md,
+        bounded(11_664, 'madrid please check my order'),
+        's',
+        MEDIA0,
+      )
+      expect(r.failures.some((f) => f.includes('unknown cut or caller onset'))).toBe(true)
     })
 
     const longSegs = segments.map((s) =>
@@ -321,7 +352,6 @@ describe('evaluateNoPauseScene', () => {
     )
     it('long caller with a bounded leak and no caller words fails', () => {
       const r = evaluateNoPauseScene(longSegs, bounded(11_664, 'madrid tonight'), 's', MEDIA0)
-      expect(r.failures.some((f) => f.includes('lost caller head'))).toBe(true)
       expect(r.failures.some((f) => f.includes('lost caller words'))).toBe(true)
     })
 

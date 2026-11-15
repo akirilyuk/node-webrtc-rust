@@ -402,17 +402,23 @@ export function evaluateNoPauseScene(
     }
   }
 
-  // A bounded leak means the cut was early, so it can only have removed the caller's head, never
-  // mid-sentence words. Check that on the caller final (also for `long` callers), without an exact
-  // every-word match (one STT substitution must not fail the scene).
+  // A bounded leak means the cut was early, so it cannot have removed caller words: a cut removes
+  // caller words only when it lands after the caller's onset. The check is timing, not STT of the
+  // first word. No tolerance: the product backs the cut off, so a cut at or before the onset is the
+  // expected case. A missing split time or onset fails closed. The similarity check below covers
+  // lost words (also for `long` callers) without an exact every-word match.
   const callerBounded = boundedLeaks.filter((l) => l.utteranceId === callerId)
   if (callerId != null && callerFinal != null && callerBounded.length > 0) {
     const leakWords = new Set(callerBounded.flatMap((l) => l.words))
     const fw = words(callerFinal.text ?? '')
-    const head = words(caller.text).slice(0, 2)
-    if (head.length > 0 && !head.some((w) => fw.includes(w))) {
+    const splitMs = sceneSplitOf(callerSplit)
+    if (splitMs == null || !Number.isFinite(callerOnsetMs)) {
       failures.push(
-        `${tag}: bounded leak with lost caller head (${head.join(' ')}): "${callerFinal.text ?? ''}"`,
+        `${tag}: bounded leak with unknown cut or caller onset (split ${String(splitMs)} ms, onset ${callerOnsetMs} ms)`,
+      )
+    } else if (splitMs > callerOnsetMs) {
+      failures.push(
+        `${tag}: bounded leak with cut after caller onset (+${splitMs - callerOnsetMs} ms): "${callerFinal.text ?? ''}"`,
       )
     }
     const kept = fw.filter((w) => !leakWords.has(w)).join(' ')

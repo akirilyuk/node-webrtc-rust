@@ -28,6 +28,12 @@ pub(crate) const DATA_SEND_TIMEOUT: Duration = Duration::from_millis(100);
 /// How long the controlling agent waits for a success response to its nomination before it nominates the next pair.
 pub(crate) const NOMINATION_FAILOVER_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// How long `dial()` / `accept()` wait, once a pair is selected, for the state-change handler to
+/// have been called with every connection state queued before that point (Checking, Connected).
+/// webrtc's `RTCIceTransport` mirrors the state only inside that handler, and `start_transports`
+/// starts DTLS right after `dial()` returns; without the wait it saw `New` and never started DTLS.
+pub(crate) const STATE_DELIVERY_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// The interval used to keep candidates alive.
 pub(crate) const DEFAULT_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
 

@@ -25,6 +25,8 @@ pub(crate) const SAMPLE_RATE: i32 = 16_000;
 /// an utterance was dropped or cut ("four five six" -> "four five" / "four five si") depending
 /// on how the utterance length fell on the chunk grid. 100 ms fixed the captured CI turn; 640 ms
 /// covers every 20 ms alignment in `tests/stt_finalize_last_word_test.rs` with margin.
+/// 640 ms is shorter than one chunk of the Kroko English model, so `finalize_flush` then appends
+/// more zeros until every sample the stream holds was decoded (`FINALIZE_MAX_EXTRA_PADDING_MS`).
 /// The `stt_replay` / `phrase_sweep` examples (`examples/support/mod.rs` `recognize`) feed the
 /// same padding before `InputFinished`, so offline replays decode like the product.
 pub const FINALIZE_TAIL_PADDING_MS: usize = 640;
@@ -138,6 +140,7 @@ impl SttSessionState {
             }
             decode_steps
         });
+        crate::finalize_flush::count_utterance_decode_steps(steps);
         if steps > 0 {
             self.decoded_since_result = true;
             self.unread.store(true, Ordering::Release);
@@ -188,6 +191,9 @@ impl SttSessionState {
     /// stream got InputFinished and Reset keeps the encoder state and the last tokens as context,
     /// so reusing it can repeat the previous utterance's first word ("okay okay").
     fn finish_finalize_with(&mut self, recognizer: &OnlineRecognizer) {
+        // Decode everything the stream holds (the tail padding is already in it), then finish.
+        let geometry = self.shared.chunk_geometry(recognizer);
+        crate::finalize_flush::flush_finalize_tail(recognizer, &self.stream, geometry);
         SHERPA_GET_RESULT_COUNT.fetch_add(1, Ordering::SeqCst);
         let result = recognizer.get_result(&self.stream);
         let text = result
@@ -642,7 +648,6 @@ impl SttProvider for SherpaStt {
                 let tail_padding =
                     vec![0.0_f32; SAMPLE_RATE as usize * FINALIZE_TAIL_PADDING_MS / 1000];
                 session.stream.accept_waveform(SAMPLE_RATE, &tail_padding);
-                session.stream.input_finished();
             }
             // The final sits in `pending`; the returned vector is empty for `Finalize`.
             Self::submit_to_batcher(guard, AfterDecode::Finalize).await?;
@@ -667,19 +672,8 @@ impl SttProvider for SherpaStt {
             let tail_padding =
                 vec![0.0_f32; SAMPLE_RATE as usize * FINALIZE_TAIL_PADDING_MS / 1000];
             session.stream.accept_waveform(SAMPLE_RATE, &tail_padding);
-            session.stream.input_finished();
             let shared = Arc::clone(&session.shared);
-            shared.with_recognizer(|recognizer| {
-                let mut decode_steps = 0u32;
-                while recognizer.is_ready(&session.stream) {
-                    recognizer.decode(&session.stream);
-                    decode_steps = decode_steps.saturating_add(1);
-                    if decode_steps >= 64 {
-                        break;
-                    }
-                }
-                session.finish_finalize_with(recognizer);
-            });
+            shared.with_recognizer(|recognizer| session.finish_finalize_with(recognizer));
             Ok(())
         })
         .await

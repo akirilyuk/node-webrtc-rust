@@ -41,6 +41,8 @@ impl Agent {
                     return Err(Error::ErrCanceledByCaller);
                 }
             }
+            // The handler must have seen Checking/Connected before the caller acts on "connected".
+            self.internal.wait_states_delivered(&mut cancel_rx).await?;
         }
         Ok(agent_conn)
     }
@@ -76,6 +78,8 @@ impl Agent {
                     return Err(Error::ErrCanceledByCaller);
                 }
             }
+            // The handler must have seen Checking/Connected before the caller acts on "connected".
+            self.internal.wait_states_delivered(&mut cancel_rx).await?;
         }
 
         Ok(agent_conn)

@@ -18,6 +18,9 @@ bash scripts/ci/run-ci-shell-tests.sh
 echo "==> sherpa-onnx archive baked in the ci-build image matches Cargo.lock"
 bash scripts/ci/check-sherpa-onnx-archive.sh --static
 
+echo "==> fork PRs never run on self-hosted runners (workflow guard)"
+bash scripts/ci/check-fork-pr-self-hosted.sh
+
 echo "==> validate package-lock optional bindings"
 bash scripts/ci/validate-package-lock-optional-bindings.sh
 

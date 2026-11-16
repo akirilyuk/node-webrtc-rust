@@ -363,12 +363,17 @@ jobs:
 
   # Required check "Test". A skipped required check counts as passing, so it never skips: a fork PR
   # gets a GitHub-hosted runner here (never our self-hosted ones) and this job fails with an explanation.
-  # No `container:`: this job only runs a bash gate.
+  # The container stays: ARC Kubernetes container mode rejects jobs without a job container.
   test:
     name: Test
     needs: [quality, build-ts, integration-test]
     if: always() && !cancelled()
     runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || vars.NWR_RUNNER_SMALL || 'nwr-small' }}
+    container:
+      image: ghcr.io/${{ github.repository }}/ci-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Refuse fork PRs
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository

@@ -19,6 +19,7 @@ pub fn speech_event_to_js(event: SpeechEvent) -> JsSpeechEvent {
             SpeechEventKind::UserUtteranceSplit => JsSpeechEventType::UserUtteranceSplit,
             SpeechEventKind::UserLanguage => JsSpeechEventType::UserLanguage,
             SpeechEventKind::LanguageIdSkipped => JsSpeechEventType::LanguageIdSkipped,
+            SpeechEventKind::SpeakerGateReady => JsSpeechEventType::SpeakerGateReady,
             SpeechEventKind::AgentSpeakingStart => JsSpeechEventType::AgentSpeakingStart,
             SpeechEventKind::AgentSpeakingEnd => JsSpeechEventType::AgentSpeakingEnd,
             SpeechEventKind::VadTriggered => JsSpeechEventType::VadTriggered,
@@ -149,6 +150,14 @@ mod speech_event_to_js_tests {
         assert_eq!(js.event_type, JsSpeechEventType::LanguageIdSkipped);
         assert_eq!(js.reason.as_deref(), Some("deferred_tts"));
         assert_eq!(js.speech_ms, Some(80));
+        assert!(js.text.is_none());
+    }
+
+    #[test]
+    fn speaker_gate_ready_maps_wait_ms() {
+        let js = speech_event_to_js(SpeechEvent::speaker_gate_ready(340));
+        assert_eq!(js.event_type, JsSpeechEventType::SpeakerGateReady);
+        assert_eq!(js.wait_ms, Some(340));
         assert!(js.text.is_none());
     }
 

@@ -469,6 +469,7 @@ export const enum JsSpeechEventType {
   UserUtteranceSplit = 'user_utterance_split',
   UserLanguage = 'user_language',
   LanguageIdSkipped = 'language_id_skipped',
+  SpeakerGateReady = 'speaker_gate_ready',
   AgentSpeakingStart = 'agent_speaking_start',
   AgentSpeakingEnd = 'agent_speaking_end',
   VadTriggered = 'vad_triggered',

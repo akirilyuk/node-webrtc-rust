@@ -1262,6 +1262,7 @@ fn agent_with_counting_lid_timing_min(
         min_speech_ms,
         min_silence_ms,
         None,
+        Some(true),
     )
 }
 
@@ -1279,6 +1280,7 @@ fn agent_with_counting_lid_gate(
     min_speech_ms: u32,
     min_silence_ms: Option<u32>,
     lid_gate_max_wait_ms: Option<u32>,
+    tts_exclusion: Option<bool>,
 ) -> Arc<VoiceAgent> {
     let factory = Arc::new(CountingLidTestFactory {
         stt_bytes: Arc::clone(&stt_bytes),
@@ -1344,7 +1346,7 @@ fn agent_with_counting_lid_gate(
             lid_max_clip_ms: None,
             lid_gate_max_wait_ms,
             timing,
-            tts_exclusion: Some(true),
+            tts_exclusion,
         }),
         vad,
         ..Default::default()
@@ -3514,6 +3516,7 @@ async fn low_margin_gate_expiry_emits_early_pick_once() {
         200,
         None,
         Some(300),
+        Some(true),
     );
     let mut rx = agent.subscribe_events();
     let mut events = run_one_utterance_events(&agent, &mut rx, 40).await;
@@ -3540,6 +3543,52 @@ async fn low_margin_gate_expiry_emits_early_pick_once() {
     tokio::time::sleep(Duration::from_millis(1800)).await;
     events.extend(drain_events(&mut rx));
     assert_eq!(user_language_codes(&events), vec!["en".to_string()]);
+    assert_one_first_outcome(&events);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn low_margin_gate_off_second_pass_decides_after_speaking_end() {
+    // Staging shape (SPEECH_POOL_MODE, cluster TTS): the LID gate is off, so the utterance
+    // closes without waiting; the held low-margin `en` is decided by the 600 ms second pass,
+    // which reports `es` after `user_speaking_end`. No early `en` is emitted.
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = agent_with_counting_lid_gate(
+        Arc::new(Mutex::new(0)),
+        Arc::clone(&lid_calls),
+        false,
+        None,
+        false,
+        vec![
+            "en|en|en=15.142,es=14.2837".to_string(),
+            "es|es|es=22.7962,en=17.9841@600".to_string(),
+        ],
+        Some(vec!["en".to_string(), "es".to_string()]),
+        Some(LanguageIdTiming::Early),
+        200,
+        None,
+        None,
+        Some(false),
+    );
+    let mut rx = agent.subscribe_events();
+    let mut events = run_one_utterance_events(&agent, &mut rx, 40).await;
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    events.extend(drain_events(&mut rx));
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(user_language_codes(&events), vec!["es".to_string()]);
+    let lang_at = events
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::UserLanguage)
+        .expect("user_language");
+    let end_at = events
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::UserSpeakingEnd)
+        .expect("user_speaking_end");
+    assert!(
+        end_at < lang_at,
+        "gate off: pass 2 decides after user_speaking_end"
+    );
+    assert_eq!(agent.lid_gate_bound_hits(), 0);
     assert_one_first_outcome(&events);
     agent.stop().await.unwrap();
 }

@@ -985,16 +985,23 @@ pub fn resolved_lid_allowlist_min_margin(config: &LanguageIdConfig) -> f32 {
 }
 
 /// Combine two identify passes over the allowlist: the allowlisted language with the highest
-/// summed logit across `early` and `full` (codes present in both). `None` when either side has
-/// no scores or they share no code.
+/// summed logit across `early` and `full` (codes present in both). `None` when fewer than two
+/// codes are scored on both sides: one shared code is no evidence against the others, so the
+/// early pick stands.
 pub fn combine_allowed_passes(early: &[(String, f32)], full: &[(String, f32)]) -> Option<String> {
-    early
+    let shared: Vec<(&String, f32)> = early
         .iter()
         .filter_map(|(code, e)| {
             full.iter()
                 .find(|(c, _)| c == code)
                 .map(|(_, f)| (code, e + f))
         })
+        .collect();
+    if shared.len() < 2 {
+        return None;
+    }
+    shared
+        .into_iter()
         .fold(
             None,
             |best: Option<(&String, f32)>, (code, sum)| match best {
@@ -1348,6 +1355,18 @@ mod language_id_config_tests {
     #[test]
     fn combined_passes_without_shared_scores_is_none() {
         assert_eq!(combine_allowed_passes(&logits(&[("en", 1.0)]), &[]), None);
+    }
+
+    #[test]
+    fn combined_passes_with_one_shared_code_keeps_early() {
+        // Only `en` is scored on both clips: no evidence against `es`, the early pick stands.
+        assert_eq!(
+            combine_allowed_passes(
+                &logits(&[("en", 10.0), ("es", 15.0)]),
+                &logits(&[("en", 12.0)])
+            ),
+            None
+        );
     }
 
     #[test]

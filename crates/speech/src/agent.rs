@@ -5376,7 +5376,6 @@ impl VoiceAgent {
         }
     }
 
-    /// Emit `language_id_skipped` once per utterance. Carries buffered speech ms, no transcript.
     /// Makes the held early LID outcome of record `key` final, exactly once, at the point that
     /// decides the second pass will not run (or can no longer change the outcome): the held
     /// low-margin in-set pick is emitted as `user_language`; a held out-of-set retry becomes
@@ -5418,6 +5417,7 @@ impl VoiceAgent {
         self.emit(SpeechEvent::user_language(code, utterance_id));
     }
 
+    /// Emit `language_id_skipped` once per utterance. Carries buffered speech ms, no transcript.
     fn emit_language_id_skipped_once(&self, rec: &mut SttUtterance, reason: &str) {
         let speech_ms = rec.lid.voiced_ms;
         self.emit_language_id_skipped_with_ms(rec, reason, speech_ms);

@@ -48,7 +48,7 @@ jobs:
   rust:
     name: Rust tests
     # Defense in depth: github.event is the caller's event; fork PRs never run on self-hosted runners.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: ${{ !github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository }}
     # Runs on the EU runners (label eu-ci): this job builds from scratch and wrote ~13-20 GB per run
     # to the disk the ARC runners share with their host.
     # Set repo variable NWR_RUNNER_RUST=nwr-large to move it back without a PR.
@@ -139,7 +139,7 @@ jobs:
   node-sherpa:
     name: Node + Sherpa tests
     # Defense in depth: github.event is the caller's event; fork PRs never run on self-hosted runners.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: ${{ !github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ inputs.runner || vars.NWR_RUNNER_LARGE || 'nwr-large' }}
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:test

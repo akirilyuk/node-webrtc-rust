@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-11-16
+
 ### Added
 
 - **speech, sdk:** new speech event `speaker_gate_ready` (`waitMs` = model load time): emitted once when the speaker model has loaded, on start for a gate built enabled and after `setSpeakerGate` enables a deferred load. A failed load still emits `error` with `reason: speaker_model_load_failed` and no ready event.

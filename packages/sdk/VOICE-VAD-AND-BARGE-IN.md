@@ -409,6 +409,25 @@ When an other-to-caller split is skipped, the utterance falls back to the older 
 
 - If the re-decode does not finish in its bound, an `error` event with `reason: 'speaker_split_redecode_timeout'` is emitted for the first part. No split happens when the audio buffer overflowed or does not cover the utterance (logged and counted).
 
+#### What the split guarantees, and what it does not
+
+The split is built to keep the caller's words first. When the evidence is unclear, the audio stays with the caller, so words from other voices can end up in a caller final. Nothing below is a bug to report; these are the known paths.
+
+Other voices' words that reach a caller final:
+
+- **No pause before the caller.** When the other voice runs straight into the caller, the second part can start with the other voice's last words. The cut is 300 ms before the first `caller` sub-window and never before the previous check window's start, so it is only as sharp as that scan.
+- **No window that clearly says someone else.** The other-to-caller split needs an `other` window that scored under 0.20. When none did, the whole utterance, the other person's sentence included, is upgraded to `caller`. This is more likely with similar voices. In the library's bench on real speech, 69 of 784 other-to-caller handovers (about 9 %) took this path (`crates/vendor-sherpa-onnx/examples/NEAR_MISS_BENCH.md`, section "6j", row "R1': a U1 window < 0.20", the four bystander-to-caller sets).
+- **A short, quiet piece of other speech before the caller rejoins.** Verdicts on short stretches are not scored, so that piece stays in the caller's utterance.
+- **Voices the model cannot tell apart.** A different voice that scores above the threshold is `caller` to the gate. On real speech, per-window false accepts are 0.1 % pooled, but the worst voice pair reached 32.4 % with a noise bed (`crates/vendor-sherpa-onnx/examples/FALSE_ACCEPT_BENCH.md`, section "Real speech", row "1.5s raw @0.459").
+
+Caller words that can still be lost:
+
+- **The gate rejects the real caller's window.** With the default model, a 1.5 s window and threshold 0.459, 9.3 % of a caller's windows (8.1 % without noise bed) scored below the threshold on real speech recorded in a different session than the enrollment, and 3.0 % (2.0 %) in the same session (same file and section, "Today's gate, FRR is mostly a cross-session effect"). A few callers are far worse than the average.
+- **A caller phrase shorter than about one check window right after another voice.** There is no window to score it, so it stays with the other voice's part.
+- **A cut that lands late on a real takeover.** With a second voice starting right after the caller phrase at 0 dB over a noise bed, 56 of 63 utterances were split, 28 caller words were cut out of the caller's part (in 22 scenes), and 92 of 480 words of the second voice stayed in it (`crates/vendor-sherpa-onnx/examples/NEAR_MISS_BENCH.md`, section "Chunk 7h", takeover 0 dB, test-clean LibriSpeech straddle, Tocumen bed -12 dB).
+
+What the application can do: set `onMismatch: 'flag'` to receive `other` finals instead of dropping them, so a bystander's part is visible rather than lost. With a pause between the speakers they are separate utterances, and each is judged on its own.
+
 #### Adaptive reference (`adaptReference`)
 
 Off by default, and only used with `splitOnSpeakerChange` (no effect while that is off). With `adaptReference: true` the reference voice moves slowly toward confident caller windows, so a caller whose channel drifts during a long call (EQ, codec, level) is rejected less often. A window counts only when it scores clearly above the threshold, and only an utterance that ended with no split and with every window `caller` contributes. Each update is small and is rejected if the reference would move too far from the enrolled voice. `resetSpeakerEnrollment()` clears both. Nothing is stored, logged or emitted beyond counts and the cosine to the enrolled voice.

@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **sdk docs:** `VOICE-VAD-AND-BARGE-IN.md` lists what the speaker-change split guarantees and where other voices' words can still reach a caller final.
+
 ## [0.20.0] - 2026-11-16
 
 ### Changed

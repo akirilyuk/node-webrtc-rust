@@ -50,6 +50,23 @@ export async function relayRemoteAudioToLocal(
  * Sends silent 20 ms frames at real-time pace (one frame every {@link PCM_FRAME_DURATION_MS} ms).
  * Matches browser cosine / live capture timing so VAD hold and silence endpoint behave like production.
  */
+/**
+ * Streams 20 ms silent frames while `active()` is true, frame n due at anchor + n x 20 ms (one
+ * writer per track: the caller must not write `sink` until this resolves).
+ */
+export async function streamSilenceWhile(
+  sink: LocalAudioTrack,
+  active: () => boolean,
+): Promise<void> {
+  const silent = Buffer.alloc(PCM_FULL_FRAME_BYTES)
+  const anchor = performance.now()
+  for (let i = 0; active(); i++) {
+    const waitMs = anchor + i * PCM_FRAME_DURATION_MS - performance.now()
+    if (waitMs > 0) await sleep(waitMs)
+    await sink.writeSample(silent, PCM_FRAME_DURATION_MS)
+  }
+}
+
 export async function streamSilence(sink: LocalAudioTrack, seconds: number): Promise<void> {
   if (seconds <= 0) return
   const frameCount = Math.ceil((seconds * 1000) / PCM_FRAME_DURATION_MS)

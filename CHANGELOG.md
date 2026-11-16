@@ -8,6 +8,22 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **speech, sdk:** behaviour change for projects that already set `speakerGate.splitOnSpeakerChange: true`. The option now splits in both directions. Before, someone else followed by the caller upgraded the whole utterance to `caller` and released the barge-in, so the other voice's words ended up in the caller's final. Now that change splits the utterance: the first part stays `other` (never barges in, ignored with `onMismatch: 'drop'`), the second part is `caller` and its barge-in fires on the confirming window. The cut goes back to the end of the longest quiet stretch before the caller's first word; when the voices run together, shorter sub-windows locate the change, bounded by `verifyTimeoutMs`. Other-to-caller confirms on one `caller` window, caller-to-other still on two. An other-to-caller split also needs one `other` window that scored under 0.20 before the caller's; when every `other` window was close to the threshold, the whole utterance is upgraded to `caller` instead, so the caller's own words are not cut. A `caller` window whose sub-window scan finds no caller audio postpones the split to the next `caller` window; if the utterance ends first, it falls back to `caller` with the barge-in released at the end of speech. With the option off nothing changes.
+- **speech:** when an other-to-caller split is skipped (`not_speaking`, `replay_overflow`, `replay_not_aligned`, `no_replay_pcm`, `split_out_of_range`, `stt_unavailable`), the utterance falls back to `caller` with the other voice's words in it, the held barge-in is released, and that utterance is not split again. With `onMismatch: 'drop'` it gives a `caller` final, never `user_speech_ignored`.
+- **sdk:** `user_utterance_split` `from` and `to` can be either label (`caller` to `other`, or `other` to `caller`); they are no longer fixed to `caller` and `other`.
+- **speech:** `splitOnSpeakerChange: true` now implies the re-check hold (`recheckOnOther`). With the split on and `recheckOnOther: false`, an `other` first window used to suppress the barge-in for good, so an utterance that fell back to `caller` after a skipped split never barged in.
+
+### Added
+
+- **speech, sdk:** `user_utterance_split.speakerCheckWindows` (other-to-caller and caller-to-other splits with `splitOnSpeakerChange`): the cut utterance's (`fromUtteranceId`) check windows at the cut, the deciding window included. It is the same count that utterance's final reports, and it is set even when that utterance emits no final because its re-decode found no text.
+- **speech, sdk:** `speakerGate.adaptReference` (default `false`, only with `splitOnSpeakerChange`): the in-memory reference voice moves slowly toward confident caller windows of utterances that ended with no split and with every window `caller`. The update is small, is rejected when it would drift too far from the enrolled voice, and nothing is stored or emitted. It defaults to off because of the bench in `crates/vendor-sherpa-onnx/examples/ADAPT_REFERENCE_BENCH.md` (LibriSpeech test-clean, 40 speakers): it trades bystander accepts for a lower false-reject rate under drift. The false-reject rate under drift fell from 13.6 % to 2.2 %, but the false-accept rate rose on every set (0.014 % to 0.085 % clean, 0.057 % to 0.184 % with a bed, 1.5 % to 4.2 % with the 3 bystanders whose voices are closest to each caller). Also in the voice catalog (`VOICE_AGENT_SETTINGS`) and as `SPEAKER_GATE_ADAPT_REFERENCE` in the SDK.
+
+### Fixed
+
+- **speech:** a split change for an utterance that is no longer live is counted as stale before any STT check, so a stale other-to-caller change can no longer upgrade the gate.
+
 ## [0.19.1] - 2026-11-16
 
 ### Fixed

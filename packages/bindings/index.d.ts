@@ -387,7 +387,7 @@ export interface JsSpeakerGateConfig {
   checkSpeechMs?: number
   minCheckSpeechMs?: number
   suppressShortBargeIn?: boolean
-  /** Keep re-checking an utterance while its verdict is `other` (default true). */
+  /** Keep re-checking an utterance while its verdict is `other` (default true). `splitOnSpeakerChange` implies the re-check. */
   recheckOnOther?: boolean
   /**
    * Windows scored per utterance, the first check included (default 12). `0` = no cap; `1` is
@@ -395,11 +395,18 @@ export interface JsSpeakerGateConfig {
    */
   recheckMaxWindows?: number
   /**
-   * Split an utterance when the voice changes from the caller to another voice (default false).
-   * Another voice followed by the caller upgrades the utterance to the caller instead. Costs one
-   * extra STT stream per split.
+   * Split an utterance when the voice changes, in both directions: caller to another voice and
+   * another voice to the caller (default false). Costs one extra STT stream per split. Another
+   * voice to the caller splits only when one of the other voice's windows scored below 0.20;
+   * otherwise the whole utterance is upgraded to caller, as before 0.19.0.
    */
   splitOnSpeakerChange?: boolean
+  /**
+   * Refine the in-memory reference from confident caller speech (default false). Only with
+   * `split_on_speaker_change`. Trades bystander accepts for a lower false-reject rate under
+   * channel drift.
+   */
+  adaptReference?: boolean
   /** `flag` (default) | `drop`. */
   onMismatch?: string
   verifyTimeoutMs?: number

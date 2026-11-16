@@ -277,7 +277,9 @@ pub struct SpeakerGateConfig {
     /// releases the held barge-in and labels the final `caller` (`speakerRechecked: true`); any
     /// other result keeps `other`. It never runs after a `caller` or `unknown` verdict. Covers a
     /// bystander who opens the VAD before the caller and runs into the caller's words. Default
-    /// true; false is the one-check behaviour of 0.14.
+    /// true; false is the one-check behaviour of 0.14. With `split_on_speaker_change` on, the split
+    /// implies the re-check: windows keep being scored and an `other` utterance's barge-in is held,
+    /// whatever this flag says.
     pub recheck_on_other: bool,
     /// Windows scored per utterance, the first check included, while the verdict stays `other`
     /// (`recheck_on_other`). `2` is the one re-check of 0.15.0 (same window count and barge bound; a
@@ -287,13 +289,46 @@ pub struct SpeakerGateConfig {
     pub recheck_max_windows: u32,
     /// Opt-in, default false (byte-identical to earlier releases when off). While an utterance is
     /// live the gate keeps scoring `check_speech_ms` windows (up to `recheck_max_windows`) and
-    /// reports a speaker change after `speaker_gate::SPEAKER_CHANGE_CONFIRM_WINDOWS` consecutive
-    /// `other` windows of a `caller`-labelled utterance, with a split point in utterance media time
-    /// (`speaker_gate::SpeakerChange`, `from` always `Caller`). The caller stays caller: `other`
-    /// followed by `caller` never splits; the first `caller` re-check upgrades the verdict as with
-    /// the flag off. A split re-decodes the first part on one extra STT stream, which is why this
-    /// defaults off.
+    /// reports a speaker change in both directions, with a split point in utterance media time
+    /// (`speaker_gate::SpeakerChange`, `from` and `to` are `Caller` or `Other`):
+    /// - `caller` -> `other` after `speaker_gate::SPEAKER_CHANGE_CONFIRM_WINDOWS` consecutive
+    ///   `other` windows. The split is the end of the longest quiet run from the previous `caller`
+    ///   window's start to the middle of the first `other` window: a closed run cuts right before
+    ///   the next speaker's first loud frame, an open run at its end but no later than
+    ///   `speaker_gate::CALLER_TO_OTHER_OPEN_CUT_MAX_MS` (450 ms) after the first `other` window's
+    ///   start. Without a quiet run, the lowest-energy frame near that window's start.
+    ///   On a split-born second part, a window whose middle lies before its caller floor (the
+    ///   end of the first `caller` sub-window, or the part's start plus
+    ///   `speaker_gate::SPLIT_BACKOFF_MS` on a fallback cut without one) is no evidence for this
+    ///   change and resets the run like a `caller` window (decision jj); if the utterance ends
+    ///   first it stays `caller`.
+    /// - `other` -> `caller` after one `caller` window
+    ///   (`speaker_gate::OTHER_TO_CALLER_CONFIRM_WINDOWS`), only when one `other` window of the
+    ///   utterance scored below `speaker_gate::CONFIDENT_OTHER_MAX_SCORE` (0.20; otherwise the
+    ///   `caller` window upgrades the utterance), or after one window just under the
+    ///   threshold (from `speaker_gate::NEAR_MISS_MIN_SCORE`) with a `caller` sub-window. The split
+    ///   comes from sub-window embeddings (`SPLIT_STAGE2_SUB_MS` 750 ms on a `SPLIT_STAGE2_HOP_MS`
+    ///   125 ms hop) on the verifier task from the previous scored window's
+    ///   start: the first `caller` sub-window's start minus `speaker_gate::SPLIT_BACKOFF_MS`, never
+    ///   before that window's start, which is also the split on a timeout (bounded by
+    ///   `verify_timeout_ms`). A split is postponed when the scan finds no caller audio in the
+    ///   range (decision hh): it is decided by the next `caller` window (its first `caller`
+    ///   sub-window, else the postponed window's cut) or, at the end of the utterance, falls back
+    ///   to the `caller` upgrade as a `not_speaking` skip. The first
+    ///   part stays `other` (never upgraded, never barges); the second part inherits the `caller`
+    ///   verdict (`SpeakerGate::inherit_caller`) and gets its own watch.
+    ///
+    /// A split re-decodes the first part on one extra STT stream, which is why this defaults off.
     pub split_on_speaker_change: bool,
+    /// Adaptive reference, only with `split_on_speaker_change` (no effect while it is off). The
+    /// reference moves toward confident caller windows (score at least threshold +
+    /// `speaker_gate::ADAPT_MARGIN`) of utterances that ended with no split and with every scored
+    /// window `caller`, committed when the agent emits the final: an EMA of weight
+    /// `speaker_gate::ADAPT_ALPHA`, re-normalized, rejected when it falls below
+    /// `speaker_gate::ANCHOR_MIN_COSINE` against the enrolled embedding (the anchor). Reset clears
+    /// both. In memory only: nothing is persisted, logged or emitted except counts and the cosine
+    /// to the anchor. Default decided by `crates/vendor-sherpa-onnx/examples/ADAPT_REFERENCE_BENCH.md`.
+    pub adapt_reference: bool,
     pub on_mismatch: SpeakerMismatchAction,
     /// Bound (ms) on one embedding call and on a final waiting for its verdict.
     pub verify_timeout_ms: u32,
@@ -303,6 +338,10 @@ pub struct SpeakerGateConfig {
     /// (`set_speaker_gate`); the load runs off the frame path. Default 10000.
     pub model_load_timeout_ms: u32,
 }
+
+/// Default for [`SpeakerGateConfig::adapt_reference`], set from the adaptation bench
+/// (`crates/vendor-sherpa-onnx/examples/ADAPT_REFERENCE_BENCH.md`).
+pub const DEFAULT_ADAPT_REFERENCE: bool = false;
 
 impl Default for SpeakerGateConfig {
     fn default() -> Self {
@@ -317,6 +356,7 @@ impl Default for SpeakerGateConfig {
             recheck_on_other: true,
             recheck_max_windows: crate::speaker_gate::DEFAULT_RECHECK_MAX_WINDOWS,
             split_on_speaker_change: false,
+            adapt_reference: DEFAULT_ADAPT_REFERENCE,
             on_mismatch: SpeakerMismatchAction::Flag,
             verify_timeout_ms: 500,
             barge_in: SpeakerGateBargeIn::CallerOnly,

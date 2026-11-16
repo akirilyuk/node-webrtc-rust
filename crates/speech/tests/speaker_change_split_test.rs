@@ -27,6 +27,10 @@ use tokio::time::{sleep, Duration};
 
 const REF: [f32; 4] = [0.9, 0.1, 0.2, 0.3];
 const OTHER: [f32; 4] = [-0.2, 0.9, -0.3, 0.1];
+/// A bystander whose voice is close to the caller's: cosine about 0.39 against [`REF`], under the
+/// 0.459 threshold (so `other`) but above `CONFIDENT_OTHER_MAX_SCORE` (0.20), so never the
+/// confident `other` evidence an other -> caller split needs.
+const NEAR: [f32; 4] = [0.3, 0.9, 0.0, 0.0];
 /// Caller amplitude.
 const A: i16 = i16::MAX / 3;
 /// Other speaker's amplitude (about 6 dB under the caller).
@@ -72,17 +76,34 @@ fn count(s: &str, c: char) -> usize {
 
 // ---- scripted gate (embedder) ---------------------------------------------------------------
 
-struct LevelEmbedder;
+struct LevelEmbedder {
+    /// `B` frames embed as [`NEAR`] instead of [`OTHER`].
+    near: bool,
+    /// Every 750 ms split-scan sub-window embeds as [`OTHER`] (a scan with no `caller` sub-window).
+    sub_other: bool,
+}
+
+/// Bytes of one 750 ms split-scan sub-window (16 kHz mono s16le).
+const SUB_WINDOW_BYTES: usize = 750 * 32;
 
 #[async_trait]
 impl SpeakerEmbedder for LevelEmbedder {
     async fn embed(&self, pcm: Bytes, _rate: u32) -> SpeechResult<Option<Vec<f32>>> {
+        if self.sub_other && pcm.len() == SUB_WINDOW_BYTES {
+            return Ok(Some(OTHER.to_vec()));
+        }
         let c = classes(&pcm);
         let (a, b) = (count(&c, 'A'), count(&c, 'B'));
         if a == 0 && b == 0 {
             return Ok(None);
         }
-        Ok(Some(if a >= b { REF.to_vec() } else { OTHER.to_vec() }))
+        Ok(Some(if a >= b {
+            REF.to_vec()
+        } else if self.near {
+            NEAR.to_vec()
+        } else {
+            OTHER.to_vec()
+        }))
     }
 }
 
@@ -107,8 +128,12 @@ struct Script {
     /// Deferred mode: the answer to the finalize call with this index is withheld (and so is every
     /// later one, since answers keep request order) until the index leaves this list.
     held_calls: Vec<usize>,
+    /// The other speaker (`B`) embeds as [`NEAR`] (a not-confident `other`), not [`OTHER`].
+    near_other: bool,
     /// Frame classes of every abandoned (never decoded) stream, in abandon order.
     abandoned: Vec<String>,
+    /// Split-scan sub-windows embed as [`OTHER`] ([`LevelEmbedder::sub_other`]).
+    sub_other: bool,
 }
 
 struct LevelStt {
@@ -263,7 +288,11 @@ impl VendorFactory for SplitFactory {
         &self,
         _config: &SpeakerGateConfig,
     ) -> SpeechResult<Option<Box<dyn SpeakerEmbedder>>> {
-        Ok(Some(Box::new(LevelEmbedder)))
+        let (near, sub_other) = {
+            let s = self.script.lock().unwrap();
+            (s.near_other, s.sub_other)
+        };
+        Ok(Some(Box::new(LevelEmbedder { near, sub_other })))
     }
 }
 
@@ -456,6 +485,12 @@ impl Rig {
             assert!(Instant::now() < deadline, "no speaker split");
             sleep(Duration::from_millis(5)).await;
         }
+    }
+
+    /// [`Self::speaking_start_ids`] after draining the events received so far.
+    fn speaking_start_ids_now(&mut self) -> Vec<String> {
+        self.drain();
+        self.speaking_start_ids()
     }
 
     fn speaking_start_ids(&self) -> Vec<String> {
@@ -999,19 +1034,17 @@ async fn change_on_a_c1_terminal_record_is_dropped_as_stale() {
     rig.agent.stop().await.unwrap();
 }
 
-/// Other then caller while the agent speaks: the caller stays caller. The first `caller` re-check
-/// window upgrades the whole utterance to `caller` and releases the barge-in, exactly as with the
-/// flag off. Nothing is split.
-async fn other_then_caller(
-    split: bool,
-) -> (
+/// Other then caller with the flag off, while the agent speaks: the first `caller` re-check window
+/// upgrades the whole utterance to `caller` and releases the held barge-in. Nothing is split.
+/// (Today's behaviour, unchanged with `splitOnSpeakerChange` off.)
+async fn other_then_caller_flag_off() -> (
     Vec<Option<String>>,
     Option<String>,
     Option<String>,
     usize,
     (u64, u64, u64, u64, u64, u64),
 ) {
-    let mut rig = rig(split).await;
+    let mut rig = rig(false).await;
     rig.enroll().await;
     rig.start_speaking().await;
     rig.feed_paced(B, 20).await;
@@ -1048,24 +1081,502 @@ async fn other_then_caller(
     out
 }
 
+/// Flag on, other then caller while the agent speaks: feeds the other speaker (`B`), then the
+/// caller (`A`) until the gate's one-window `other` -> `caller` change splits the utterance, then
+/// more caller speech and silence. Returns the drained rig (not stopped).
+async fn other_then_caller_split(mut rig: Rig) -> Rig {
+    rig.enroll().await;
+    rig.start_speaking().await;
+    rig.feed_paced(B, 20).await;
+    rig.drain();
+    assert!(rig.barge_ids().is_empty(), "other speaker barged in");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while rig.agent.speaker_split_counts().0 == 0 {
+        assert!(Instant::now() < deadline, "no other -> caller split");
+        rig.feed(A, 1).await;
+        sleep(Duration::from_millis(5)).await;
+    }
+    rig.feed_paced(A, 10).await;
+    rig.agent.flush_tts().await.unwrap();
+    rig.feed(0, 30).await;
+    rig.idle().await;
+    rig.drain();
+    rig
+}
+
+/// The one `user_utterance_split` of the run: (U1, U2) ids, checked against `from`/`to`.
+fn one_split(rig: &Rig, from: &str, to: &str) -> (String, String) {
+    let splits: Vec<&SpeechEvent> = rig
+        .log
+        .iter()
+        .filter(|e| e.kind == SpeechEventKind::UserUtteranceSplit)
+        .collect();
+    assert_eq!(splits.len(), 1, "one user_utterance_split");
+    let se = splits[0];
+    assert_eq!(se.split_from.as_deref(), Some(from));
+    assert_eq!(se.split_to.as_deref(), Some(to));
+    assert!(se.split_at_ms.is_some_and(|ms| ms > 0));
+    (
+        se.from_utterance_id.clone().expect("U1 id"),
+        se.to_utterance_id.clone().expect("U2 id"),
+    )
+}
+
+/// Shared checks of an other -> caller split with `onMismatch: flag`: U1 is re-decoded from the
+/// pre-split PCM only (the other speaker) and its final (`speaker: "other"`) comes before U2's;
+/// U2's text comes only from the post-split PCM (the caller); U1 never barges in, U2 does, once.
+/// Pairing is by utterance id (`oracle-relies-only-on-promised-order`).
+fn assert_other_to_caller_split(rig: &Rig) -> (String, String) {
+    let (u1, u2) = one_split(rig, "other", "caller");
+    assert_eq!(split_ids(rig), (u1.clone(), u2.clone()));
+    let (i1, f1) = rig.final_of(&u1);
+    let (i2, f2) = rig.final_of(&u2);
+    // The split event carries U1's windows at the cut (the deciding window included), the count
+    // U1's final reports: an oracle can bound U2's barge-in even when U1 emits no final.
+    let se = rig
+        .log
+        .iter()
+        .find(|e| e.kind == SpeechEventKind::UserUtteranceSplit)
+        .expect("split event");
+    assert!(
+        se.speaker_check_windows.is_some_and(|n| n >= 1),
+        "split event speaker_check_windows: {:?}",
+        se.speaker_check_windows
+    );
+    assert_eq!(se.speaker_check_windows, f1.speaker_check_windows);
+    assert!(i1 < i2, "U1 final before U2 final");
+    assert_eq!(f1.reason.as_deref(), Some("speaker_split"));
+    assert_eq!(f1.speaker.as_deref(), Some("other"));
+    assert_eq!(f2.speaker.as_deref(), Some("caller"));
+    let ((a1, b1), (a2, b2)) = (ab(&f1), ab(&f2));
+    assert!(a1 <= 2, "U1 holds caller frames: a{a1} b{b1}");
+    assert!(b2 <= 2, "U2 holds other-speaker frames: a{a2} b{b2}");
+    assert!((19..=21).contains(&(b1 + b2)), "other frames {b1}+{b2}");
+    assert!(a2 >= 10, "U2 carries the caller's speech: a{a2} b{b2}");
+    assert_eq!(
+        rig.barge_ids(),
+        vec![Some(u2.clone())],
+        "only the caller's U2 barges in"
+    );
+    // U2's barge-in follows its user_speaking_start; no U2 transcript precedes U1's final.
+    let u2_start = rig
+        .log
+        .iter()
+        .position(|e| {
+            e.kind == SpeechEventKind::UserSpeakingStart
+                && e.utterance_id.as_deref() == Some(u2.as_str())
+        })
+        .expect("U2 speaking start");
+    let barge = rig
+        .log
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::BargeIn)
+        .expect("barge-in");
+    assert!(u2_start < barge, "U2 speaking_start before its barge-in");
+    assert!(!rig.log[..i1].iter().any(|e| {
+        matches!(
+            e.kind,
+            SpeechEventKind::UserSpeechFinal | SpeechEventKind::UserSpeechPartial
+        ) && e.utterance_id.as_deref() == Some(u2.as_str())
+    }));
+    (u1, u2)
+}
+
+/// Flag on, Inline provider: other then caller splits. The mixed live stream is abandoned without
+/// a decode (it holds both speakers), U1 is re-decoded from the other speaker's PCM, U2 is the
+/// caller and barges in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn other_then_caller_splits_and_only_u2_barges_in() {
+    let rig = other_then_caller_split(rig(true).await).await;
+    assert_other_to_caller_split(&rig);
+    let (splits, _, _, stale, _, timeouts) = rig.agent.speaker_split_counts();
+    assert_eq!((splits, stale, timeouts), (1, 0, 0));
+    {
+        let script = rig.script.lock().unwrap();
+        assert_eq!(script.abandoned.len(), 1, "{:?}", script.abandoned);
+        let mixed = &script.abandoned[0];
+        assert!(
+            count(mixed, 'A') >= 1 && count(mixed, 'B') >= 19,
+            "the abandoned live stream mixed both speakers: {mixed}"
+        );
+    }
+    rig.agent.stop().await.unwrap();
+}
+
+/// Flag on, Deferred provider: the same split; the mixed live stream is finalized and its text
+/// discarded (no abandon), and the finals keep U1 -> U2 order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_other_then_caller_splits_and_only_u2_barges_in() {
+    let rig = other_then_caller_split(rig_deferred(true).await).await;
+    let (u1, _) = assert_other_to_caller_split(&rig);
+    assert_eq!(
+        rig.log
+            .iter()
+            .filter(|e| e.kind == SpeechEventKind::UserSpeechFinal
+                && e.utterance_id.as_deref() == Some(u1.as_str()))
+            .count(),
+        1,
+        "exactly one final for U1"
+    );
+    let (splits, _, _, stale, discarded, timeouts) = rig.agent.speaker_split_counts();
+    assert_eq!((splits, stale, timeouts), (1, 0, 0));
+    assert!(discarded >= 1, "the mixed live stream's final is dropped");
+    assert!(rig.script.lock().unwrap().abandoned.is_empty());
+    rig.agent.stop().await.unwrap();
+}
+
+/// Flag off: the same audio keeps today's upgrade. One utterance, labelled `caller`, its held
+/// barge-in released by the first `caller` re-check window, nothing split or counted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn other_then_caller_upgrades_and_barges_in_without_a_split() {
-    let (barges, speaker, reason, utterances, counts) = other_then_caller(true).await;
+    let (barges, speaker, reason, utterances, counts) = other_then_caller_flag_off().await;
     assert_eq!(utterances, 3, "one utterance after enrollment");
     assert_eq!(barges.len(), 1, "{barges:?}");
     assert_eq!(speaker.as_deref(), Some("caller"));
     assert_eq!(reason, None);
-    assert_eq!(counts.0, 0);
     assert_eq!(counts, (0, 0, 0, 0, 0, 0));
-    // Same behaviour with the flag off.
-    let (barges_off, speaker_off, reason_off, utterances_off, counts_off) =
-        other_then_caller(false).await;
-    assert_eq!(barges_off.len(), barges.len());
-    assert_eq!(
-        (speaker_off, reason_off, utterances_off),
-        (Some("caller".into()), None, 3)
+}
+
+/// Flag on, a near-threshold bystander (every `other` window scores about 0.39, never under
+/// `CONFIDENT_OTHER_MAX_SCORE`) then the caller, while the agent speaks: no split. The first
+/// `caller` window upgrades the whole utterance, which ends as one `caller` final, and the held
+/// barge-in is released for it (the airport utt-19 shape, chunk 6j).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn near_threshold_other_then_caller_upgrades_without_a_split() {
+    let mut rig = rig_with_script(
+        agent_config(true),
+        Script {
+            near_other: true,
+            ..Script::default()
+        },
+    )
+    .await;
+    rig.enroll().await;
+    rig.start_speaking().await;
+    rig.feed_paced(B, 20).await;
+    rig.drain();
+    assert!(
+        rig.barge_ids().is_empty(),
+        "near-threshold bystander barged in"
     );
-    assert_eq!(counts_off, counts);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        rig.drain();
+        if !rig.barge_ids().is_empty() || Instant::now() > deadline {
+            break;
+        }
+        rig.feed(A, 1).await;
+        sleep(Duration::from_millis(5)).await;
+    }
+    rig.feed_paced(A, 10).await;
+    rig.agent.flush_tts().await.unwrap();
+    rig.feed(0, 30).await;
+    rig.idle().await;
+    rig.drain();
+    assert!(!rig
+        .log
+        .iter()
+        .any(|e| e.kind == SpeechEventKind::UserUtteranceSplit
+            || e.reason.as_deref() == Some("speaker_split")));
+    assert_eq!(rig.agent.speaker_split_counts(), (0, 0, 0, 0, 0, 0));
+    let ids = rig.speaking_start_ids();
+    assert_eq!(ids.len(), 3, "one utterance after enrollment: {ids:?}");
+    let u = ids[2].clone();
+    let (_, f) = rig.final_of(&u);
+    assert_eq!(f.speaker.as_deref(), Some("caller"));
+    assert_eq!(f.reason, None);
+    let (a, b) = ab(&f);
+    assert!(
+        a > 0 && b > 0,
+        "the final keeps the whole utterance, text {:?}",
+        f.text
+    );
+    assert_eq!(rig.barge_ids(), vec![Some(u)]);
+    rig.agent.stop().await.unwrap();
+}
+
+/// `onMismatch: drop`: U1 (the other speaker) is ignored (`user_speech_ignored`, no final), U2 is
+/// the caller's final and the only barge-in.
+async fn assert_other_to_caller_drop(rig: Rig) {
+    let rig = other_then_caller_split(rig).await;
+    let (u1, u2) = one_split(&rig, "other", "caller");
+    assert!(rig
+        .log
+        .iter()
+        .any(|e| e.kind == SpeechEventKind::UserSpeechIgnored
+            && e.utterance_id.as_deref() == Some(u1.as_str())));
+    assert!(!rig
+        .log
+        .iter()
+        .any(|e| e.kind == SpeechEventKind::UserSpeechFinal
+            && e.utterance_id.as_deref() == Some(u1.as_str())));
+    let (_, f2) = rig.final_of(&u2);
+    assert_eq!(f2.speaker.as_deref(), Some("caller"));
+    assert!(ab(&f2).1 <= 2, "U2 text {:?}", f2.text);
+    assert_eq!(rig.barge_ids(), vec![Some(u2)]);
+    rig.agent.stop().await.unwrap();
+}
+
+fn drop_config() -> VoiceAgentConfig {
+    let mut config = agent_config(true);
+    config.speaker_gate.on_mismatch = SpeakerMismatchAction::Drop;
+    config
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn other_then_caller_drop_ignores_u1() {
+    assert_other_to_caller_drop(rig_with(drop_config()).await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_other_then_caller_drop_ignores_u1() {
+    assert_other_to_caller_drop(
+        rig_with_script(
+            drop_config(),
+            Script {
+                deferred: true,
+                ..Script::default()
+            },
+        )
+        .await,
+    )
+    .await;
+}
+
+/// U1's re-decode gets no final within the vendor's finalize wait: the named error is emitted
+/// once for U1, U1 ends without a final, and U2 (the caller) still finalizes and barges in.
+async fn assert_other_to_caller_redecode_timeout(mut rig: Rig, deferred: bool) {
+    {
+        let mut script = rig.script.lock().unwrap();
+        // Inline: 2 enrollment, 3 U1's re-decode (the live stream is abandoned). Deferred: 3 is
+        // the discarded live stream, 4 the re-decode.
+        if deferred {
+            script.no_final_on_call = Some(4);
+        } else {
+            script.block_on_call = Some((3, Arc::new(Notify::new())));
+        }
+        script.finalize_wait_ms = Some(400);
+    }
+    rig.enroll().await;
+    rig.start_speaking().await;
+    rig.feed_paced(B, 20).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while rig.agent.speaker_split_counts().0 == 0 {
+        assert!(Instant::now() < deadline, "no other -> caller split");
+        rig.feed(A, 1).await;
+        sleep(Duration::from_millis(5)).await;
+    }
+    rig.feed_paced(A, 10).await;
+    rig.feed(0, 30).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while rig.agent.speaker_split_counts().5 == 0 {
+        assert!(Instant::now() < deadline, "re-decode timeout not counted");
+        sleep(Duration::from_millis(10)).await;
+    }
+    if !deferred {
+        rig.idle().await;
+    }
+    rig.drain();
+    let (u1, u2) = one_split(&rig, "other", "caller");
+    let errors: Vec<_> = rig
+        .log
+        .iter()
+        .filter(|e| {
+            e.kind == SpeechEventKind::Error
+                && e.reason.as_deref()
+                    == Some(node_webrtc_rust_speech::agent::SPEAKER_SPLIT_REDECODE_TIMEOUT)
+        })
+        .collect();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].utterance_id.as_deref(), Some(u1.as_str()));
+    assert!(!rig
+        .log
+        .iter()
+        .any(|e| e.kind == SpeechEventKind::UserSpeechFinal
+            && e.utterance_id.as_deref() == Some(u1.as_str())));
+    if !deferred {
+        // Inline answers are not ordered behind the timed-out call: U2 finalizes.
+        let (_, f2) = rig.final_of(&u2);
+        assert!(ab(&f2).1 <= 2);
+    }
+    assert_eq!(rig.barge_ids(), vec![Some(u2)]);
+    assert_eq!(rig.agent.speaker_split_counts().5, 1);
+    rig.agent.stop().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn other_to_caller_redecode_timeout_emits_named_error() {
+    assert_other_to_caller_redecode_timeout(rig(true).await, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_other_to_caller_redecode_timeout_emits_named_error() {
+    assert_other_to_caller_redecode_timeout(rig_deferred(true).await, true).await;
+}
+
+/// other -> caller -> other on one stream: two splits, three utterances, each final from its own
+/// speaker's PCM and in stream order; only the caller's middle utterance barges in.
+async fn assert_other_caller_other(mut rig: Rig) {
+    rig.enroll().await;
+    rig.start_speaking().await;
+    rig.feed_paced(B, 20).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while rig.agent.speaker_split_counts().0 == 0 {
+        assert!(Instant::now() < deadline, "no other -> caller split");
+        rig.feed(A, 1).await;
+        sleep(Duration::from_millis(5)).await;
+    }
+    rig.feed_paced(A, 15).await;
+    rig.feed_paced(0, 1).await;
+    rig.feed_paced(B, 40).await;
+    rig.wait_splits(2).await;
+    rig.feed(0, 30).await;
+    rig.idle().await;
+    rig.drain();
+    let splits: Vec<&SpeechEvent> = rig
+        .log
+        .iter()
+        .filter(|e| e.kind == SpeechEventKind::UserUtteranceSplit)
+        .collect();
+    assert_eq!(splits.len(), 2, "two splits");
+    assert_eq!(
+        (
+            splits[0].split_from.as_deref(),
+            splits[0].split_to.as_deref()
+        ),
+        (Some("other"), Some("caller"))
+    );
+    assert_eq!(
+        (
+            splits[1].split_from.as_deref(),
+            splits[1].split_to.as_deref()
+        ),
+        (Some("caller"), Some("other"))
+    );
+    let u1 = splits[0].from_utterance_id.clone().unwrap();
+    let u2 = splits[0].to_utterance_id.clone().unwrap();
+    assert_eq!(splits[1].from_utterance_id.as_deref(), Some(u2.as_str()));
+    let u3 = splits[1].to_utterance_id.clone().unwrap();
+    let ids = rig.speaking_start_ids();
+    assert_eq!(ids[2..], [u1.clone(), u2.clone(), u3.clone()], "{ids:?}");
+    let (i1, f1) = rig.final_of(&u1);
+    let (i2, f2) = rig.final_of(&u2);
+    let (i3, f3) = rig.final_of(&u3);
+    assert!(i1 < i2 && i2 < i3, "finals in stream order");
+    assert_eq!(
+        (
+            f1.speaker.as_deref(),
+            f2.speaker.as_deref(),
+            f3.speaker.as_deref()
+        ),
+        (Some("other"), Some("caller"), Some("other"))
+    );
+    let ((a1, b1), (a2, b2), (a3, b3)) = (ab(&f1), ab(&f2), ab(&f3));
+    assert!(a1 <= 2 && b1 >= 18, "U1 a{a1} b{b1}");
+    // Decisions r and s (chunk 6e): a steady quieter next speaker with no pause is not told apart
+    // from a fading last word, so the caller -> other cut runs to the end of the open quiet run and
+    // a few `other` frames stay in the caller part; we prefer that over clipping the caller. The
+    // general bound (the cut at most CALLER_TO_OTHER_OPEN_CUT_MAX_MS, 450 ms, after the first
+    // `other` window's start unless the caller is still speaking) is covered by the worst-case
+    // unit test in speaker_gate.rs. Here the leak is a regression detector at its measured 9
+    // frames (180 ms); together U2 and U3 lose no more `other` frames than the original
+    // `b3 >= 38` allowed.
+    assert!(b2 <= 9 && a2 >= 13, "U2 a{a2} b{b2}");
+    assert!(a3 <= 2 && b3 >= 31, "U3 a{a3} b{b3}");
+    assert!(b2 + b3 >= 38, "U2 + U3 b{}", b2 + b3);
+    assert_eq!(rig.barge_ids(), vec![Some(u2)]);
+    assert_eq!(rig.agent.speaker_split_counts().3, 0, "nothing stale");
+    rig.agent.stop().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn other_caller_other_yields_three_utterances() {
+    assert_other_caller_other(rig(true).await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_other_caller_other_yields_three_utterances() {
+    assert_other_caller_other(rig_deferred(true).await).await;
+}
+
+/// Verifier backlog: U1's confirming `caller` window is scored only after U1 finalized. The
+/// verifier task is parked in the delivery of U1's first window (`other`, stored), so U1's second
+/// window (the caller) waits in its queue unscored; U1's final reads the stored `other` verdict
+/// and ends U1 as `other`. The next utterance goes live, then the verifier is released: it scores
+/// U1's second window and books the other -> caller change for U1's key after U1's final. The
+/// agent counts it as stale and never applies it to the next utterance
+/// (`rt.stale-event-by-key`): nothing is split, and the next utterance keeps its own id and one
+/// final.
+async fn assert_late_other_to_caller_change_is_stale(mut rig: Rig) {
+    rig.enroll().await;
+    rig.agent.speaker_gate_park_verdicts(true);
+    // A window's clip is the latest pre-roll + check (200 ms): window 1 (10 speech frames) is
+    // mostly `B`, window 2 (20 speech frames) mostly `A`.
+    rig.feed_paced(B, 8).await;
+    rig.feed_paced(A, 15).await;
+    rig.feed(0, 30).await;
+    let u1 = rig.speaking_start_ids_now()[2].clone();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        rig.drain();
+        if rig.log.iter().any(|e| {
+            e.kind == SpeechEventKind::UserSpeechFinal && e.utterance_id.as_deref() == Some(&u1)
+        }) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "U1 did not finalize");
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(rig.agent.speaker_split_counts().0, 0);
+    // The next utterance is live when the late change arrives.
+    rig.feed_paced(B, 15).await;
+    rig.agent.speaker_gate_park_verdicts(false);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while rig.agent.speaker_split_counts().3 == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "late change not counted as stale"
+        );
+        rig.feed_paced(B, 1).await;
+    }
+    rig.feed(0, 30).await;
+    rig.idle().await;
+    rig.drain();
+    let (splits, _, _, stale, _, _) = rig.agent.speaker_split_counts();
+    assert_eq!((splits, stale), (0, 1));
+    assert!(!rig
+        .log
+        .iter()
+        .any(|e| e.kind == SpeechEventKind::UserUtteranceSplit
+            || e.reason.as_deref() == Some("speaker_split")));
+    let ids = rig.speaking_start_ids();
+    assert_eq!(ids.len(), 4, "U1 and the next utterance: {ids:?}");
+    assert_eq!(ids[2], u1);
+    let (_, f1) = rig.final_of(&u1);
+    assert_eq!(f1.speaker.as_deref(), Some("other"));
+    let finals_next = rig
+        .log
+        .iter()
+        .filter(|e| {
+            e.kind == SpeechEventKind::UserSpeechFinal
+                && e.utterance_id.as_deref() == Some(ids[3].as_str())
+        })
+        .count();
+    assert_eq!(
+        finals_next, 1,
+        "the next utterance keeps its own single final"
+    );
+    rig.agent.stop().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn late_other_to_caller_change_is_stale_inline() {
+    assert_late_other_to_caller_change_is_stale(rig(true).await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn late_other_to_caller_change_is_stale_deferred() {
+    assert_late_other_to_caller_change_is_stale(rig_deferred(true).await).await;
 }
 
 // ---- Deferred finalize mode -----------------------------------------------------------------
@@ -1316,4 +1827,347 @@ async fn runtime_enabled_gate_with_split_off_keeps_one_utterance() {
     assert_eq!(f.reason, None);
     assert_eq!(rig.agent.speaker_split_counts(), (0, 0, 0, 0, 0, 0));
     rig.agent.stop().await.unwrap();
+}
+
+// ---- skipped other -> caller split falls back to the upgrade (decision h) --------------------
+
+/// Other (`B`) then caller (`A`) while the agent speaks, with verdict delivery parked until the
+/// gate stored the one-window `other` -> `caller` change: the split is still pending on return.
+async fn park_with_pending_other_to_caller(rig: &mut Rig) {
+    rig.enroll().await;
+    rig.start_speaking().await;
+    rig.feed_paced(B, 20).await;
+    rig.drain();
+    assert!(rig.barge_ids().is_empty(), "other speaker barged in");
+    // Hold only the confirming `caller` window's delivery: the change is stored and pending.
+    rig.agent.speaker_gate_park_change_verdicts(true);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while rig.agent.speaker_gate_pending_changes() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "no other -> caller change stored"
+        );
+        rig.feed(A, 1).await;
+        sleep(Duration::from_millis(2)).await;
+    }
+}
+
+/// The skipped split's single utterance: one final, `caller`, holding both speakers' words, and
+/// its barge-in released once. No `user_utterance_split`, no `user_speech_ignored`.
+fn assert_skip_upgraded(rig: &Rig) {
+    let ids = rig.speaking_start_ids();
+    assert_eq!(ids.len(), 3, "one utterance after enrollment: {ids:?}");
+    let u1 = ids[2].clone();
+    let (_, f) = rig.final_of(&u1);
+    assert_eq!(f.speaker.as_deref(), Some("caller"), "{f:?}");
+    assert_eq!(f.reason, None);
+    let (a, b) = ab(&f);
+    assert!(
+        b >= 19 && a >= 1,
+        "the upgraded final keeps both speakers: a{a} b{b}"
+    );
+    assert_eq!(
+        rig.barge_ids(),
+        vec![Some(u1.clone())],
+        "barge-in released once"
+    );
+    assert!(!rig
+        .log
+        .iter()
+        .any(|e| e.kind == SpeechEventKind::UserUtteranceSplit));
+    assert!(!rig
+        .log
+        .iter()
+        .any(|e| e.kind == SpeechEventKind::UserSpeechIgnored
+            && e.utterance_id.as_deref() == Some(u1.as_str())));
+}
+
+/// `not_speaking`: the change is applied after VAD ended speech while the record is still open
+/// (STT gate hold). The barge-in stays held while the split is pending; the skip falls back to
+/// the upgrade.
+async fn assert_not_speaking_skip_upgrades(mut rig: Rig) {
+    park_with_pending_other_to_caller(&mut rig).await;
+    let mut n = 0;
+    loop {
+        let (open, speaking) = rig.agent.live_open_and_vad_speaking_for_test().await;
+        assert!(open, "the record closed before VAD ended speech");
+        if !speaking {
+            break;
+        }
+        rig.feed(0, 1).await;
+        n += 1;
+        assert!(n < 200, "VAD never ended speech");
+    }
+    rig.drain();
+    assert!(
+        rig.barge_ids().is_empty(),
+        "barge-in released while the split was pending"
+    );
+    rig.agent.speaker_gate_park_change_verdicts(false);
+    // The skip is final once applied; the barge-in is released after it, by the verdict handler.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while rig.barge_ids().is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "no barge-in after the skipped split"
+        );
+        sleep(Duration::from_millis(2)).await;
+        rig.drain();
+    }
+    assert_eq!(
+        rig.agent.speaker_split_counts().1,
+        1,
+        "the not_speaking skip"
+    );
+    rig.agent.flush_tts().await.unwrap();
+    rig.feed(0, 30).await;
+    rig.idle().await;
+    rig.drain();
+    let (splits, skipped, overflow, stale, _, _) = rig.agent.speaker_split_counts();
+    assert_eq!((splits, skipped, overflow, stale), (0, 1, 0, 0));
+    assert_skip_upgraded(&rig);
+    rig.agent.stop().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skipped_other_to_caller_split_not_speaking_upgrades_inline() {
+    assert_not_speaking_skip_upgrades(rig(true).await).await;
+}
+
+/// Split on with `recheckOnOther` off: the split implies the re-check hold. U1's barge-in is held
+/// (not suppressed) while the other -> caller split is pending, and the `not_speaking` skip's
+/// upgrade releases it exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skipped_split_without_recheck_upgrades_and_barges_in_once() {
+    let mut config = agent_config(true);
+    config.speaker_gate.recheck_on_other = false;
+    assert_not_speaking_skip_upgrades(rig_with(config).await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skipped_other_to_caller_split_not_speaking_upgrades_deferred() {
+    assert_not_speaking_skip_upgrades(rig_deferred(true).await).await;
+}
+
+/// `onMismatch: drop`: the skipped split gives a `caller` final, never `user_speech_ignored`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skipped_other_to_caller_split_with_drop_gives_a_caller_final() {
+    assert_not_speaking_skip_upgrades(rig_with(drop_config()).await).await;
+}
+
+/// Decision hh: the caller's window scores `caller` but its split scan completes with no `caller`
+/// sub-window, so the split is deferred (the window is delivered as `other`, the barge-in stays
+/// held). The caller stops before another window: SpeechEnd with the split still deferred books
+/// `caller` for U1 before its final reads it. One `caller` final holds the whole utterance (both
+/// speakers), the barge-in is released exactly once, nothing is split.
+async fn assert_deferred_split_at_speech_end_upgrades(mut rig: Rig) {
+    rig.enroll().await;
+    rig.start_speaking().await;
+    rig.feed_paced(B, 30).await;
+    rig.drain();
+    assert!(rig.barge_ids().is_empty(), "other speaker barged in");
+    let mut a_fed = 0;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while rig.agent.speaker_gate_deferred_splits() == 0 {
+        assert!(Instant::now() < deadline, "no split deferred");
+        assert!(a_fed < 110, "no split deferred before the next window");
+        rig.feed(A, 1).await;
+        a_fed += 1;
+        sleep(Duration::from_millis(3)).await;
+    }
+    rig.drain();
+    assert!(
+        rig.barge_ids().is_empty(),
+        "barge-in released while the split was deferred"
+    );
+    assert_eq!(
+        rig.agent.speaker_gate_pending_changes(),
+        0,
+        "deferred, no change"
+    );
+    rig.feed(0, 30).await;
+    rig.idle().await;
+    rig.drain();
+    assert_eq!(
+        rig.agent.speaker_gate_deferred_splits(),
+        0,
+        "decided at SpeechEnd"
+    );
+    let ids = rig.speaking_start_ids();
+    assert_eq!(ids.len(), 3, "one utterance after enrollment: {ids:?}");
+    let u1 = ids[2].clone();
+    let (_, f) = rig.final_of(&u1);
+    assert_eq!(f.speaker.as_deref(), Some("caller"), "{f:?}");
+    let (a, b) = ab(&f);
+    assert!(
+        b >= 29 && a >= a_fed - 1,
+        "the final holds the whole utterance: a{a} b{b}"
+    );
+    assert_eq!(
+        rig.barge_ids(),
+        vec![Some(u1.clone())],
+        "barge-in released once"
+    );
+    let (splits, _, _, stale, _, _) = rig.agent.speaker_split_counts();
+    assert_eq!((splits, stale), (0, 0));
+    assert!(!rig
+        .log
+        .iter()
+        .any(|e| e.kind == SpeechEventKind::UserUtteranceSplit));
+    rig.agent.stop().await.unwrap();
+}
+
+fn deferred_split_script(deferred: bool) -> Script {
+    Script {
+        sub_other: true,
+        deferred,
+        ..Script::default()
+    }
+}
+
+fn deferred_split_config() -> VoiceAgentConfig {
+    let mut config = agent_config(true);
+    config.speaker_gate.check_speech_ms = 1000;
+    config
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_split_at_speech_end_upgrades_once() {
+    let rig = rig_with_script(deferred_split_config(), deferred_split_script(false)).await;
+    assert_deferred_split_at_speech_end_upgrades(rig).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_split_at_speech_end_upgrades_once_deferred_stt() {
+    let rig = rig_with_script(deferred_split_config(), deferred_split_script(true)).await;
+    assert_deferred_split_at_speech_end_upgrades(rig).await;
+}
+
+/// `replay_overflow`: the replay ring (test cap 600 ms) overflowed during the other speaker, so
+/// the split cannot be cut; the utterance falls back to the upgrade.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skipped_other_to_caller_split_replay_overflow_upgrades() {
+    let mut rig = rig(true).await;
+    rig.enroll().await;
+    rig.agent.set_utterance_replay_max_ms_for_test(600).await;
+    rig.start_speaking().await;
+    rig.feed_paced(B, 40).await;
+    rig.drain();
+    assert!(rig.barge_ids().is_empty(), "other speaker barged in");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while rig.agent.speaker_split_counts().2 == 0 {
+        assert!(Instant::now() < deadline, "no overflow skip counted");
+        rig.feed(A, 1).await;
+        sleep(Duration::from_millis(2)).await;
+    }
+    rig.feed_paced(A, 10).await;
+    rig.agent.flush_tts().await.unwrap();
+    rig.feed(0, 30).await;
+    rig.idle().await;
+    rig.drain();
+    let (splits, skipped, overflow, stale, _, _) = rig.agent.speaker_split_counts();
+    assert_eq!((splits, skipped, overflow, stale), (0, 1, 1, 0));
+    let ids = rig.speaking_start_ids();
+    let (_, f) = rig.final_of(&ids[2]);
+    assert_eq!(f.speaker.as_deref(), Some("caller"), "{f:?}");
+    let (a, b) = ab(&f);
+    assert!(b >= 39 && a >= 1, "a{a} b{b}");
+    assert_eq!(rig.barge_ids(), vec![Some(ids[2].clone())]);
+    rig.agent.stop().await.unwrap();
+}
+
+// ---- split-born U2 caller floor (decision y) at agent level ----------------------------------
+
+/// A quiet gap: voiced for the VAD (RMS about 0.06, over its 0.05 threshold) so the utterance
+/// goes on, silence for the scripted embedder and STT (`'.'`), and far under both voices for the
+/// gate's quiet-run search.
+const GAP: i16 = 2_000;
+
+/// [`agent_config`] with the product's 1500 ms speaker check window (`checkSpeechMs` default),
+/// the window geometry of the gate-level n05 test.
+fn n05_config() -> VoiceAgentConfig {
+    let mut config = agent_config(true);
+    config.speaker_gate.check_speech_ms = 1_500;
+    config
+}
+
+/// The n05 shape at agent level (eu-load 43618944729), with 1500 ms windows: the bystander
+/// (1.6 s), a 400 ms quiet gap, a 900 ms caller phrase, then the bystander again. U1's window 2
+/// confirms the other -> caller change and the cut backs U2's start off into the bystander, so
+/// U2 opens with the bystander's tail and the quiet gap before the caller's onset (measured: cut
+/// at 1200 ms on U1's clock, U2 floor 1050 ms). U2's window 2 (0 .. 1500) is `caller`, windows
+/// 3-4 `other`: a caller -> other change whose search range (0 .. 2250) holds the gap. The agent
+/// passes U2's caller floor (`caller_floor_for` of U1's key) to `inherit_caller`, so the search
+/// starts at the floor and the cut lands after the phrase (measured 1950 ms): U2's caller final
+/// holds the whole phrase and U3 none of it. Without the floor the longest quiet run in the range
+/// is the gap and the cut lands at its end (measured 740 ms), moving the phrase to U3.
+async fn assert_split_born_u2_keeps_the_caller_phrase(mut rig: Rig) {
+    rig.enroll().await;
+    rig.start_speaking().await;
+    rig.feed_paced(B, 80).await;
+    rig.feed_paced(GAP, 20).await;
+    let caller = 45;
+    rig.feed_paced(A, caller).await;
+    rig.feed_paced(B, 240).await;
+    rig.wait_splits(2).await;
+    rig.feed(0, 60).await;
+    rig.idle().await;
+    rig.drain();
+    let splits: Vec<&SpeechEvent> = rig
+        .log
+        .iter()
+        .filter(|e| e.kind == SpeechEventKind::UserUtteranceSplit)
+        .collect();
+    assert!(splits.len() >= 2, "other -> caller, then caller -> other");
+    assert_eq!(
+        (
+            splits[0].split_from.as_deref(),
+            splits[0].split_to.as_deref()
+        ),
+        (Some("other"), Some("caller"))
+    );
+    assert_eq!(
+        (
+            splits[1].split_from.as_deref(),
+            splits[1].split_to.as_deref()
+        ),
+        (Some("caller"), Some("other"))
+    );
+    let u2 = splits[0].to_utterance_id.clone().unwrap();
+    assert_eq!(splits[1].from_utterance_id.as_deref(), Some(u2.as_str()));
+    let u3 = splits[1].to_utterance_id.clone().unwrap();
+    let (_, f2) = rig.final_of(&u2);
+    let (_, f3) = rig.final_of(&u3);
+    let streams = rig.script.lock().unwrap().streams.clone();
+    assert_eq!(f2.speaker.as_deref(), Some("caller"));
+    let ((a2, b2), (a3, b3)) = (ab(&f2), ab(&f3));
+    assert!(
+        a2 >= caller && a3 == 0,
+        "U2 holds the whole caller phrase ({caller} frames): U2 a{a2} b{b2}, U3 a{a3} b{b3}; \
+         split at {:?}; streams {streams:?}",
+        splits[1].split_at_ms
+    );
+    // Without the floor the cut lands in the gap and U3 (the phrase) is split again.
+    assert_eq!(splits.len(), 2, "two splits");
+    rig.agent.stop().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn split_born_u2_keeps_the_caller_phrase_inline() {
+    assert_split_born_u2_keeps_the_caller_phrase(rig_with(n05_config()).await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn split_born_u2_keeps_the_caller_phrase_deferred() {
+    assert_split_born_u2_keeps_the_caller_phrase(
+        rig_with_script(
+            n05_config(),
+            Script {
+                deferred: true,
+                ..Script::default()
+            },
+        )
+        .await,
+    )
+    .await;
 }

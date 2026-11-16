@@ -8,9 +8,13 @@ import { readFileSync } from 'fs'
 import { SPEECH_EVENT_TYPE, speakerRecheckBargeEarliestMs } from '@node-webrtc-rust/sdk/voice'
 
 import { DEFAULT_BARGE_PHRASE_MIN_SIMILARITY } from './roundtrip-barge-in-helpers.js'
-import { normalizeForCompare, wordSimilarity } from './roundtrip-counting.js'
+import {
+  normalizeForCompare,
+  wordSimilarity,
+  type AgentSpeakingEndLatch,
+} from './roundtrip-counting.js'
 
-/** Product default of `speakerGate.checkSpeechMs` (G1): the verdict needs this much speech. */
+/** Product default of `speakerGate.minCheckSpeechMs` (1500, equal to `checkSpeechMs`): a verdict needs this much speech. */
 export const CHECK_SPEECH_MS = 1500
 /**
  * `vad.bargeIn.minSttPartialTokens` the roundtrip sets on its agent (the product default, 2). With
@@ -77,6 +81,10 @@ export interface Seen {
    * media clock (product field `fromStartMs`). `fromStartMs + splitAtMs` is the split point.
    */
   fromStartMs?: number
+  /** `user_utterance_split`: speaker label before the split (product field `from`). */
+  from?: string
+  /** `user_utterance_split`: speaker label after the split (product field `to`). */
+  to?: string
 }
 
 /**
@@ -181,6 +189,148 @@ export function replyEndedBeforeQualifyingPartial(
   return endAtMs != null ? { endAtMs, partialAtMs: partial.atMs } : undefined
 }
 
+/**
+ * Harness check for a caller turn without barge-in (decision ii): no reply was playing at the
+ * turn's qualifying partial because the reply had not started yet (no `agent_speaking_start` at or
+ * before the partial) and started only afterwards. The agent checks a barge-in on a partial during
+ * playback, so there was nothing to barge into. Returns the partial and the late start, else
+ * `undefined`. A pass with no reply at all stays a real miss.
+ */
+export function replyStartedAfterQualifyingPartial(
+  start: Pick<Seen, 'utteranceId'>,
+  seen: Seen[],
+): { partialAtMs: number; replyStartAtMs: number } | undefined {
+  const partial = qualifyingPartial(start as Seen, seen)
+  if (partial == null) return undefined
+  const isAgentEvent = (e: Seen): boolean =>
+    e.type === SPEECH_EVENT_TYPE.agentSpeakingStart || e.type === SPEECH_EVENT_TYPE.agentSpeakingEnd
+  if (seen.some((e) => e.atMs <= partial.atMs && isAgentEvent(e))) return undefined
+  const late = seen.find(
+    (e) => e.atMs > partial.atMs && e.type === SPEECH_EVENT_TYPE.agentSpeakingStart,
+  )
+  if (late == null) return undefined
+  // A later qualifying partial of the same utterance while that reply played was a chance to
+  // barge in: a real miss, not a harness one.
+  const lateEnd =
+    seen.find((e) => e.atMs > late.atMs && e.type === SPEECH_EVENT_TYPE.agentSpeakingEnd)?.atMs ??
+    Number.POSITIVE_INFINITY
+  const partialDuringReply = seen.some(
+    (e) =>
+      e.type === SPEECH_EVENT_TYPE.userSpeechPartial &&
+      e.utteranceId === start.utteranceId &&
+      sttPartialTokenCount(e.text ?? '') >= MIN_STT_PARTIAL_TOKENS &&
+      e.atMs >= late.atMs &&
+      e.atMs <= lateEnd,
+  )
+  return partialDuringReply ? undefined : { partialAtMs: partial.atMs, replyStartAtMs: late.atMs }
+}
+
+/** Named harness failure for a caller turn whose qualifying partial came before the reply started. */
+export function lateReplyHarnessFailure(
+  tag: string,
+  late: { partialAtMs: number; replyStartAtMs: number },
+): string {
+  return `${tag}: harness: no reply playing at the qualifying partial at ${late.partialAtMs} ms (reply started at ${late.replyStartAtMs} ms)`
+}
+
+/**
+ * Diagnostics: the scene's first reply latency, first `user_speech_final` to the next
+ * `agent_speaking_start` (scene ms). `undefined` when either is missing.
+ */
+export function firstReplyLatency(
+  seen: Seen[],
+): { finalAtMs: number; startAtMs: number; latencyMs: number } | undefined {
+  const final = seen.find((e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal)
+  if (final == null) return undefined
+  const start = seen.find(
+    (e) => e.atMs >= final.atMs && e.type === SPEECH_EVENT_TYPE.agentSpeakingStart,
+  )
+  if (start == null) return undefined
+  return { finalAtMs: final.atMs, startAtMs: start.atMs, latencyMs: start.atMs - final.atMs }
+}
+
+/** Short warm-up reply synthesized before the scene anchor (decision ii). */
+export const WARM_REPLY_PHRASE = 'Hello, I am ready to help.'
+/**
+ * Total bound for the warm-up reply: Piper engine-pool load plus one short reply. Cold first replies
+ * measured up to 5581 ms after the preamble final while the gate embedded enrollment audio
+ * (eu-load 43744251995, 79 pass-1 samples); the warm-up runs with no enrollment load, so 30 s is
+ * a wide margin that still fails a wedged TTS by name.
+ */
+export const WARM_REPLY_TIMEOUT_MS = 30_000
+
+export class WarmReplyTimeoutError extends Error {
+  constructor(readonly waitedMs: number) {
+    super(
+      `harness: warm-up reply did not reach agent_speaking_end within ${WARM_REPLY_TIMEOUT_MS} ms (waitedMs=${waitedMs})`,
+    )
+    this.name = 'WarmReplyTimeoutError'
+  }
+}
+
+export class WarmReplySendError extends Error {
+  constructor(
+    readonly waitedMs: number,
+    cause: unknown,
+  ) {
+    super(
+      `harness: warm-up reply sendTextToTTS failed (waitedMs=${waitedMs}): ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    )
+    this.name = 'WarmReplySendError'
+  }
+}
+
+/**
+ * Synthesizes one short reply through `send` (the agent's `sendTextToTTS`) and waits for its
+ * `agent_speaking_end` on `latch`, bounded by `timeoutMs`. Ends on the event, never on a sleep.
+ * Returns the wait in ms; throws `WarmReplyTimeoutError` (named) on the bound.
+ */
+export async function warmReplyPath(params: {
+  send: (text: string) => Promise<void>
+  latch: AgentSpeakingEndLatch
+  timeoutMs?: number
+}): Promise<number> {
+  const startedAt = Date.now()
+  const baseline = params.latch.endEventsSeen()
+  const ended = params.latch
+    .waitAfterCount(baseline, params.timeoutMs ?? WARM_REPLY_TIMEOUT_MS)
+    .catch(() => {
+      throw new WarmReplyTimeoutError(Date.now() - startedAt)
+    })
+  // A rejected send fails at once with its cause, never after the timeout.
+  const sendFailed = new Promise<never>((_, reject) => {
+    params.send(WARM_REPLY_PHRASE).catch((cause: unknown) => {
+      reject(new WarmReplySendError(Date.now() - startedAt, cause))
+    })
+  })
+  // Neither loser of the race may surface later as an unhandled rejection.
+  ended.catch(() => undefined)
+  sendFailed.catch(() => undefined)
+  await Promise.race([ended, sendFailed])
+  return Date.now() - startedAt
+}
+
+/**
+ * Test-only fault injection for the reproduction of the cold first reply (ROUNDTRIP.md): when
+ * `NOISY_BYSTANDER_TEST_FIRST_TTS_DELAY_MS` is set, the first `sendTextToTTS` of each pass waits
+ * that long before it is sent. Unset (every CI and eu-load run) it is a plain pass-through.
+ */
+export function firstTtsDelayHook(
+  send: (text: string) => Promise<void>,
+  delayMs = Number(process.env.NOISY_BYSTANDER_TEST_FIRST_TTS_DELAY_MS ?? '0') || 0,
+): (text: string) => Promise<void> {
+  let pending = delayMs > 0
+  return async (text) => {
+    if (pending) {
+      pending = false
+      console.log(`[test-hook] delaying the first TTS of this pass by ${delayMs} ms`)
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
+    }
+    await send(text)
+  }
+}
+
 /** Interleaved stereo s16le @ 48 kHz payload of a wav file (the `data` chunk). */
 export function readWavPcm(path: string): Buffer {
   const buf = readFileSync(path)
@@ -252,11 +402,20 @@ export function utteranceEndMs(utteranceId: string, seen: Seen[]): number | unde
  * a bystander slot after that slot's own utterance, and the caller's onset joined it (no new
  * speech start). It goes to the immediately following caller turn under the same final, span and
  * deciding-window conditions; the bystander turn keeps its own utterance.
+ *
+ * Last, a caller turn whose paired utterance was cut by an other→caller `user_utterance_split`
+ * (`from: 'other'`, `to: 'caller'`, `fromUtteranceId` = its utteranceId) is judged on the split's
+ * to-utterance (U2), by utteranceId: its `user_speaking_start`, final and barge-in. Other→caller
+ * links are followed in a chain; a caller→other link ends it (the caller part stays on the last
+ * caller to-utterance). U1's text is never credited to the turn. `followed` maps the turn index to
+ * the cut utterance's id. A followed U2 is paired with that turn only: when U2's
+ * `user_speaking_start` also fell into a later turn's slot, that turn takes the next unpaired start
+ * in its slot instead (or none), so no U2 is judged for two turns.
  */
 export function pairTurnUtterances(
   turns: Turn[],
   seen: Seen[],
-): { starts: (Seen | undefined)[]; merged: Set<number> } {
+): { starts: (Seen | undefined)[]; merged: Set<number>; followed: Map<number, string> } {
   const allStarts = seen.filter(
     (e) => e.type === SPEECH_EVENT_TYPE.userSpeakingStart && e.utteranceId != null,
   )
@@ -325,7 +484,37 @@ export function pairTurnUtterances(
     pairedIds.add(unpaired.utteranceId!)
     merged.add(j)
   }
-  return { starts, merged }
+  // Follow other→caller splits from the paired utterance to its caller part, by utteranceId.
+  const splits = seen.filter((e) => e.type === SPEECH_EVENT_TYPE.userUtteranceSplit)
+  const followed = new Map<number, string>()
+  turns.forEach((turn, i) => {
+    const start = starts[i]
+    if (turn.role !== 'main' || start?.utteranceId == null) return
+    const visited = new Set<string>()
+    let cur = start.utteranceId
+    for (;;) {
+      visited.add(cur)
+      const next = splits.find(
+        (x) => x.fromUtteranceId === cur && x.from === 'other' && x.to === 'caller',
+      )
+      if (next?.toUtteranceId == null || visited.has(next.toUtteranceId)) break
+      cur = next.toUtteranceId
+    }
+    if (cur === start.utteranceId) return
+    const u2Start = allStarts.find((e) => e.utteranceId === cur)
+    if (u2Start == null) return
+    followed.set(i, start.utteranceId)
+    starts[i] = u2Start
+    pairedIds.add(cur)
+    starts.forEach((other, k) => {
+      if (k === i || other?.utteranceId !== cur) return
+      starts[k] = allStarts.find(
+        (e) => !pairedIds.has(e.utteranceId!) && e.atMs >= boundary(k) && e.atMs < boundary(k + 1),
+      )
+      if (starts[k] != null) pairedIds.add(starts[k]!.utteranceId!)
+    })
+  })
+  return { starts, merged, followed }
 }
 
 /**
@@ -460,6 +649,30 @@ export function similaritySummary(sims: number[]): {
   return { nearMissCount, minSimilarity }
 }
 
+/**
+ * End of the window that decided an other→caller split, in scene ms: the n-th check window needs
+ * n × checkSpeechMs of speech (types.ts `speakerCheckWindows`), so it ends no earlier than U1
+ * `fromStartMs` + k × checkSpeechMs on the media clock, k = the cut utterance's (U1's)
+ * `speakerCheckWindows` at the cut (it includes the deciding window). k comes from the split event
+ * (the product sets it at the cut, also when U1's re-decode yields no text and U1 emits no final);
+ * U1's final is the fallback only when the split event has no count. The split event wins on a
+ * mismatch: a U1 re-check in flight at the cut can book after it, so U1's final may report k + 1,
+ * while the deciding window is the one the split names. `undefined` when a field is missing or
+ * k < 1 (callers fail closed).
+ */
+export function splitDecidingWindowEndSceneMs(
+  split: Seen | undefined,
+  finals: Map<string, Seen>,
+  sceneStartMediaMs: number | undefined,
+): number | undefined {
+  if (split?.fromStartMs == null || split.fromUtteranceId == null || sceneStartMediaMs == null) {
+    return undefined
+  }
+  const k = split.speakerCheckWindows ?? finals.get(split.fromUtteranceId)?.speakerCheckWindows
+  if (k == null || k < 1) return undefined
+  return split.fromStartMs + k * CHECK_SPEECH_MS - sceneStartMediaMs
+}
+
 /** `user_utterance_split` -> scene-clock ms of the split point (undefined when a field is missing). */
 export function splitSceneMs(e: Seen, sceneStartMediaMs: number): number | undefined {
   if (e.fromStartMs == null || e.splitAtMs == null) return undefined
@@ -583,6 +796,104 @@ export function exactThresholdCount(sims: number[]): number {
   ).length
 }
 
+/**
+ * An unscored-bystander leak (decision ee, weaker than a window-based rule because the oracle
+ * cannot see `short` verdicts): the VAD opened on a bystander turn, the gate never scored it (only
+ * `short` checks), and the caller's onset joined the same utterance, so its first verdict came from
+ * a window that already held caller audio. Reported, not failing, only when ALL hold:
+ *
+ * 1. the bystander slot's utterance has a `caller` final with `speakerCheckWindows` >= 1;
+ * 2. the next caller turn's sentence is in that final: {@link wordSimilarity} of the caller text
+ *    against the final's words from the best caller-length window on, at least
+ *    {@link DEFAULT_BARGE_PHRASE_MIN_SIMILARITY} (the no-pause bounded-leak threshold); the leaked
+ *    words are the final's words before that window;
+ * 3. a `barge_in` exists for that utteranceId and every one is at or after the caller turn's scene
+ *    start (`Seen.atMs` is scene time, the clock the barge checks in {@link evaluateTurns} use; no
+ *    new slack). No barge at all fails closed (the turn involves agent TTS, a barge is expected);
+ * 4. the caller turn has no utterance of its own and no other final holds the caller sentence.
+ *
+ * Also required (keeps the zero-gap merge guard): the utterance's speech end is strictly after the
+ * caller turn's scene start.
+ *
+ * And the gate cannot have scored it: the manifest's voiced time from the utterance start to the
+ * caller onset is under {@link CHECK_SPEECH_MS} (the product's 1500 ms `minCheckSpeechMs` check
+ * window). A full window of bystander speech before the caller means the gate scored the
+ * bystander, so a `caller` label there is a real failure, not the unscored `short` shape.
+ *
+ * Anything else keeps failing (barge before the caller onset, sentence missing, a bystander-only
+ * `caller` final, a second caller utterance). Pairing is by utteranceId.
+ */
+export interface UnscoredBystanderLeak {
+  bystanderTurnIndex: number
+  callerTurnIndex: number
+  utteranceId: string
+  words: string[]
+  text: string
+}
+
+export function unscoredBystanderLeaks(
+  turns: Turn[],
+  seen: Seen[],
+  starts: (Seen | undefined)[] = pairTurnUtterances(turns, seen).starts,
+): UnscoredBystanderLeak[] {
+  const out: UnscoredBystanderLeak[] = []
+  const finals = seen.filter(
+    (e) => e.type === SPEECH_EVENT_TYPE.userSpeechFinal && e.utteranceId != null,
+  )
+  const barges = seen.filter((e) => e.type === SPEECH_EVENT_TYPE.bargeIn)
+  turns.forEach((turn, i) => {
+    const id = starts[i]?.utteranceId
+    if (turn.role !== 'bystander' || id == null) return
+    const j = turns.findIndex((t, k) => k > i && t.role === 'main')
+    if (j < 0 || starts[j] != null) return
+    const caller = turns[j]!
+    const final = finals.find((f) => f.utteranceId === id)
+    if (final?.speaker !== 'caller' || (final.speakerCheckWindows ?? 0) < 1) return
+    const words = normalizeForCompare(final.text ?? '')
+      .split(' ')
+      .filter((w) => w.length > 0)
+    const n = normalizeForCompare(caller.text)
+      .split(' ')
+      .filter((w) => w.length > 0).length
+    if (n === 0 || words.length < n) return
+    let bestK = -1
+    let best = 0
+    for (let k = 0; k + n <= words.length; k += 1) {
+      const sim = wordSimilarity(caller.text, words.slice(k, k + n).join(' '))
+      if (sim > best) {
+        best = sim
+        bestK = k
+      }
+    }
+    if (bestK < 0 || best < DEFAULT_BARGE_PHRASE_MIN_SIMILARITY) return
+    // The utterance runs past the caller's scene start (as in the merge rule): speech that ends
+    // at or before it holds no caller audio, so the caller sentence in its text is not from it.
+    const endMs = utteranceEndMs(id, seen)
+    if (endMs == null || !(endMs > caller.startMs)) return
+    // A full check window of manifest speech between the utterance start and the caller onset
+    // means the gate scored it (`CHECK_SPEECH_MS` is the product's 1500 ms `minCheckSpeechMs`
+    // window): a bystander verdict, not the unscored `short` shape.
+    if (voicedMsBetween(turns, starts[i]!.atMs, caller.startMs) >= CHECK_SPEECH_MS) return
+    const own = barges.filter((b) => b.utteranceId === id)
+    if (own.length === 0 || own.some((b) => b.atMs < caller.startMs)) return
+    const elsewhere = finals.some(
+      (f) =>
+        f.utteranceId !== id &&
+        f.speaker === 'caller' &&
+        callerWindowSimilarity(caller.text, f.text ?? '') >= DEFAULT_BARGE_PHRASE_MIN_SIMILARITY,
+    )
+    if (elsewhere) return
+    out.push({
+      bystanderTurnIndex: i,
+      callerTurnIndex: j,
+      utteranceId: id,
+      words: words.slice(0, bestK),
+      text: final.text ?? '',
+    })
+  })
+  return out
+}
+
 /** Pure evaluation of one pass; exported for the evaluator unit test. */
 export function evaluateTurns(
   turns: Turn[],
@@ -621,13 +932,24 @@ export function evaluateTurns(
       )
     }
   }
-  const { starts, merged } = pairTurnUtterances(turns, seen)
+  const { starts, merged, followed } = pairTurnUtterances(turns, seen)
+  const splits = seen.filter((e) => e.type === SPEECH_EVENT_TYPE.userUtteranceSplit)
+  const leaks = unscoredBystanderLeaks(turns, seen, starts)
   let bystandersHeard = 0
   turns.forEach((turn, i) => {
     const tag = `${label} turn ${i} (${turn.role} ${turn.kind} "${turn.text.slice(0, 30)}")`
     const start = starts[i]
     const id = start?.utteranceId
     const final = id != null ? finals.get(id) : undefined
+    const leak = leaks.find((l) => l.bystanderTurnIndex === i || l.callerTurnIndex === i)
+    if (leak != null) {
+      if (turn.role === 'bystander') {
+        console.log(
+          `${label}: unscored-bystander leak in ${leak.utteranceId} (${leaks.length} in this pass): bystander words "${leak.words.join(' ')}" before the caller sentence, final "${leak.text}"`,
+        )
+      }
+      return
+    }
     if (turn.role === 'bystander') {
       // Documented behaviour of minCheckSpeechMs (1500) with suppressShortBargeIn off: an utterance
       // with less speech is not scored (`unknown`, reason `short`) and its barge-in is released at
@@ -657,6 +979,30 @@ export function evaluateTurns(
       return
     }
     const isMerged = merged.has(i)
+    const cutId = followed.get(i)
+    if (cutId != null) {
+      console.log(
+        `${tag}: other→caller split ${cutId} -> ${id}; judged on ${id} (final, speaker, barge-in)`,
+      )
+      // The caller's part is U2 alone: no word of the bystander sentence before this caller turn
+      // (U1's speaker) may land in U2's caller final.
+      const prev = turns
+        .slice(0, i)
+        .reverse()
+        .find((t) => t.role === 'bystander')
+      if (prev != null && final != null) {
+        const callerWords = new Set(longWords(turn.text))
+        const finalWords = new Set(longWords(final.text ?? ''))
+        const leaked = [
+          ...new Set(longWords(prev.text).filter((w) => !callerWords.has(w) && finalWords.has(w))),
+        ]
+        if (leaked.length > 0) {
+          failures.push(
+            `${tag}: caller final ${id} after the other→caller split of ${cutId} holds bystander words (${leaked.join(' ')}): "${final.text ?? ''}"`,
+          )
+        }
+      }
+    }
     if (isMerged) {
       console.log(
         `${tag}: merged utterance ${id} (started ${start.atMs} ms, before the caller at ${turn.startMs} ms; final caller, ${isRechecked(start, seen) ? 're-checked' : 'first window'}, windows ${String(final?.speakerCheckWindows)})`,
@@ -666,10 +1012,13 @@ export function evaluateTurns(
     if (barge == null) {
       // Still a failure, never a skip: a harness miss is named so a real miss cannot hide behind it.
       const ended = replyEndedBeforeQualifyingPartial(start, seen)
+      const late = replyStartedAfterQualifyingPartial(start, seen)
       failures.push(
         ended != null
           ? `${tag}: harness: reply ended at ${ended.endAtMs} ms before the qualifying partial at ${ended.partialAtMs} ms (lengthen AGENT_PHRASE)`
-          : `${tag}: no barge_in`,
+          : late != null
+            ? lateReplyHarnessFailure(tag, late)
+            : `${tag}: no barge_in`,
       )
     } else {
       const delay = barge.atMs - start.atMs
@@ -721,8 +1070,28 @@ export function evaluateTurns(
           `${tag}: barge-in at ${barge.atMs} ms on merged utterance ${id}, not after the caller's scene start ${turn.startMs} ms`,
         )
       }
-      // A barge-in released by the deciding window cannot come before that window ends.
-      const decided = isRechecked(start, seen) ? verdictAfterMs(start, seen) : undefined
+      // A barge-in released by the deciding window cannot come before that window ends. U2 of an
+      // other→caller split inherits the windows scored before the cut (its speech start event is
+      // emitted at the split, after that audio), so its bound is anchored on U1: the end of the
+      // window that decided the split (U1 `fromStartMs` + U1 `speakerCheckWindows` x
+      // checkSpeechMs, scene time). A missing field fails closed.
+      if (cutId != null) {
+        const split = splits.find(
+          (x) => x.toUtteranceId === id && x.from === 'other' && x.to === 'caller',
+        )
+        const end = splitDecidingWindowEndSceneMs(split, finals, opts.sceneStartMediaMs)
+        if (end == null) {
+          failures.push(
+            `${tag}: other→caller split ${String(split?.fromUtteranceId)} -> ${id}: deciding window end unknown (fromStartMs, U1 speakerCheckWindows (split event, else U1 final; >= 1) or sceneStartMediaMs missing)`,
+          )
+        } else if (barge.atMs < end - BARGE_EARLY_SLACK_MS) {
+          failures.push(
+            `${tag}: barge-in at ${barge.atMs} ms on ${id}, before the split's deciding window ends at ${end} ms (U1 ${String(split?.fromUtteranceId)}, slack ${BARGE_EARLY_SLACK_MS} ms)`,
+          )
+        }
+      }
+      const decided =
+        isRechecked(start, seen) && cutId == null ? verdictAfterMs(start, seen) : undefined
       if (decided != null && delay < decided - BARGE_EARLY_SLACK_MS) {
         failures.push(
           `${tag}: barge-in ${delay} ms after speech start, before the deciding window ends at ${decided} ms (slack ${BARGE_EARLY_SLACK_MS} ms)`,
@@ -757,7 +1126,6 @@ export function evaluateTurns(
       }
     }
   })
-  const splits = seen.filter((e) => e.type === SPEECH_EVENT_TYPE.userUtteranceSplit)
   for (const e of splits) {
     console.log(
       `${label}: user_utterance_split ${String(e.fromUtteranceId)} -> ${String(e.toUtteranceId)} at ${String(e.splitAtMs)} ms`,
@@ -777,7 +1145,7 @@ export function evaluateTurns(
   const distMax = distances.length > 0 ? Math.max(...distances.map((d) => d.distanceMs)) : undefined
   const glue = glueCounts(turns, seen)
   console.log(
-    `${label}: user_utterance_split events: ${splits.length}; merged caller finals: ${mergedFinals.length}; near misses (similarity <= ${NEAR_MISS_SIMILARITY.toFixed(2)}): ${nearMissCount}; min similarity: ${minSimilarity == null ? 'n/a' : minSimilarity.toFixed(2)}; sceneStartMediaMs=${opts.sceneStartMediaMs ?? 'n/a'}; split distance ms min/max: ${distMin ?? 'n/a'}/${distMax ?? 'n/a'}; trailing glue finals: ${glue.trailing}; leading glue finals: ${glue.leading}; exact-threshold (0.75) finals: ${exactThresholdCount(sims)}`,
+    `${label}: user_utterance_split events: ${splits.length}; merged caller finals: ${mergedFinals.length}; near misses (similarity <= ${NEAR_MISS_SIMILARITY.toFixed(2)}): ${nearMissCount}; min similarity: ${minSimilarity == null ? 'n/a' : minSimilarity.toFixed(2)}; sceneStartMediaMs=${opts.sceneStartMediaMs ?? 'n/a'}; split distance ms min/max: ${distMin ?? 'n/a'}/${distMax ?? 'n/a'}; trailing glue finals: ${glue.trailing}; leading glue finals: ${glue.leading}; exact-threshold (0.75) finals: ${exactThresholdCount(sims)}; unscored-bystander leaks: ${leaks.length}${leaks.length > 0 ? ` (${leaks.map((l) => `${l.utteranceId}: ${l.words.join(' ')}`).join('; ')})` : ''}`,
   )
   for (const m of mergedFinals) {
     failures.push(

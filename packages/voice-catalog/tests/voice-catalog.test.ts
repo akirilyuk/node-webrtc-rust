@@ -519,13 +519,14 @@ describe('speaker gate entries and constraints', () => {
   const ids = (v: Parameters<typeof checkVoiceAgentConstraints>[0]) =>
     checkVoiceAgentConstraints(v).map((f) => f.id)
 
-  test('export shape of the seven tuning entries', () => {
+  test('export shape of the eight tuning entries', () => {
     const file = JSON.parse(
       readFileSync(new URL('../catalog/voice-agent-settings.json', import.meta.url), 'utf8'),
     )
     expect(VOICE_AGENT_CONSTRAINTS).toEqual(file.constraints)
     const s = VOICE_AGENT_SETTINGS
     expect(s['speakerGate.splitOnSpeakerChange']).toEqual({ type: 'boolean', default: false })
+    expect(s['speakerGate.adaptReference']).toEqual({ type: 'boolean', default: false })
     expect(s['speakerGate.recheckOnOther']).toEqual({ type: 'boolean', default: true })
     expect(s['speakerGate.recheckMaxWindows'].default).toBe(12)
     expect(s['speakerGate.threshold']).toMatchObject({

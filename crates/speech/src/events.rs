@@ -165,7 +165,9 @@ pub struct SpeechEvent {
     /// the combined verdict (`caller` only when the re-check said caller). Absent otherwise.
     pub speaker_rechecked: Option<bool>,
     /// `user_speech_final` with the speaker gate on: windows the speaker gate scored before this
-    /// final (1 = first check only). Absent without the gate or when no window settled.
+    /// final (1 = first check only). Absent without the gate or when no window settled. Also on
+    /// `user_utterance_split`: the cut utterance's (U1's) windows at the cut, the deciding window
+    /// included (the count U1's final reports; a U1 whose re-decode yields no text has no final).
     pub speaker_check_windows: Option<u32>,
     /// `user_utterance_split`: id of the utterance that ends at the split.
     pub from_utterance_id: Option<String>,

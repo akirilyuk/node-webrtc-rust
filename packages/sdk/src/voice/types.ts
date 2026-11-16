@@ -349,26 +349,49 @@ export interface VoiceAgentConfig {
      * `caller` window releases the held barge-in (no earlier than n × `checkSpeechMs` of speech
      * for the n-th window, see `speakerRecheckBargeEarliestMs`) and labels the final `caller`
      * with `speakerRechecked: true`. Never runs after a `caller` or `unknown` verdict. `false`
-     * keeps one check per utterance. See "Re-check after other" in VOICE-VAD-AND-BARGE-IN.md.
+     * keeps one check per utterance, unless `splitOnSpeakerChange` is on: the split implies the
+     * re-check, so windows keep being scored and an `other` utterance's barge-in is held (not
+     * suppressed) either way. See "Re-check after other" in VOICE-VAD-AND-BARGE-IN.md.
      */
     recheckOnOther?: boolean
     /**
      * Default 12. Windows scored per utterance while the verdict stays `other`, the first check
      * included (12 windows = 18 s of speech with the default `checkSpeechMs`). `2` is the 0.15.0
      * behaviour (one re-check). `0` removes the cap. `1` is rejected (use `recheckOnOther: false`).
-     * Ignored when `recheckOnOther` is `false`.
+     * Ignored when `recheckOnOther` is `false`, unless `splitOnSpeakerChange` is on.
      */
     recheckMaxWindows?: number
     /**
-     * Opt-in, default `false`. Keeps scoring windows after the first verdict and, when the voice
-     * changes from the caller to someone else for 2 consecutive windows, splits the utterance there
-     * (another voice followed by the caller upgrades the utterance to the caller, as before):
-     * the first part is re-decoded on its own and final-ed with `reason: 'speaker_split'`, the
-     * rest becomes a new utterance. A `user_utterance_split` event marks the split. Each split
-     * opens one extra STT stream. Needs `recheckMaxWindows` other than `1`. See "Split on speaker
-     * change" in VOICE-VAD-AND-BARGE-IN.md.
+     * Opt-in, default `false`. Keeps scoring windows after the first verdict and splits the
+     * utterance at a confirmed voice change, in both directions: caller to someone else (2
+     * consecutive windows) and someone else to the caller (1 `caller` window). The first part is
+     * re-decoded on its own and final-ed with `reason: 'speaker_split'`, the rest becomes a new
+     * utterance. A `user_utterance_split` event marks the split. Each split opens one extra STT
+     * stream. Needs `recheckMaxWindows` other than `1`.
+     *
+     * Since 0.19.0 this also splits someone else followed by the caller. Before, that change
+     * upgraded the whole utterance to `caller`, with the other voice's words in it. A project that
+     * already sets `true` now gets two utterances there: the first labelled `other`, the second
+     * `caller`, but only when one of the `other` windows scored below 0.20. When every `other`
+     * window was close to the threshold, the whole utterance is upgraded to `caller` instead, as
+     * in 0.18.4, so the caller's own words are not cut.
+     *
+     * When an other-to-caller split is skipped (`not_speaking`, `replay_overflow`,
+     * `replay_not_aligned`, `no_replay_pcm`, `split_out_of_range`, `stt_unavailable`), the
+     * utterance falls back to `caller` with the other voice's words in it, and that upgraded
+     * utterance is not split again. See "Split on speaker change" in VOICE-VAD-AND-BARGE-IN.md.
      */
     splitOnSpeakerChange?: boolean
+    /**
+     * Opt-in, default `false`. Only with `splitOnSpeakerChange` (no effect while it is off). Moves
+     * the in-memory reference voice toward confident caller windows, so a caller whose channel
+     * drifts (EQ, codec, level) is rejected less often. Only an utterance that ended with no split
+     * and with every window `caller` contributes; the update is small, and is rejected when it
+     * would move the reference too far from the enrolled voice. Nothing is stored or emitted.
+     * Trade-off: in a LibriSpeech bench (40 speakers) the false-reject rate under drift fell (13.6% to 2.2%),
+     * but bystander accepts rose on every set, which is why it is off by default.
+     */
+    adaptReference?: boolean
     /** `'flag'` (default) keeps the final with `speaker: 'other'`; `'drop'` emits `user_speech_ignored`. */
     onMismatch?: 'flag' | 'drop'
     /** Bound (ms) on one check and on a final waiting for its verdict. Default 500. */
@@ -490,9 +513,9 @@ export type SpeechEventType =
   /**
    * `speakerGate.splitOnSpeakerChange`: an utterance was split at a confirmed speaker change.
    * `fromUtteranceId` is the utterance that ends, `toUtteranceId` the one that starts,
-   * `splitAtMs` where the voice changed, `from` / `to` the labels (`from` is always `caller` and
-   * `to` always `other`: only a change from the caller to another voice splits). It has no `utteranceId`. Emitted after the new
-   * utterance's `user_speaking_start`. No text.
+   * `splitAtMs` where the voice changed, `from` / `to` the labels, either way: `caller` to `other`, or
+   * `other` to `caller` (before 0.19.0 only `caller` to `other` was split). It has no
+   * `utteranceId`. Emitted after the new utterance's `user_speaking_start`. No text.
    */
   | 'user_utterance_split'
   /** Host coordinator: switch started (not emitted by native VoiceAgent alone). */
@@ -654,7 +677,9 @@ export interface SpeechEvent {
   /**
    * `user_speech_final` with `speakerGate` on: check windows scored for the utterance (1 = the
    * first check only). A barge-in released by the n-th window came no earlier than
-   * n × `checkSpeechMs` of speech (`speakerRecheckBargeEarliestMs`).
+   * n × `checkSpeechMs` of speech (`speakerRecheckBargeEarliestMs`). Also on
+   * `user_utterance_split`: the cut utterance's (`fromUtteranceId`) windows at the cut, the
+   * deciding window included; set even when that utterance emits no final (empty re-decode).
    */
   speakerCheckWindows?: number
   /** `user_utterance_split`: id of the utterance that ends at the split. */
@@ -669,9 +694,9 @@ export interface SpeechEvent {
    * is the split point on that clock.
    */
   fromStartMs?: number
-  /** `user_utterance_split`: speaker label before the split (always `caller`). */
+  /** `user_utterance_split`: speaker label before the split: `caller` or `other`. */
   from?: 'caller' | 'other'
-  /** `user_utterance_split`: speaker label after the split (always `other`). */
+  /** `user_utterance_split`: speaker label after the split: `other` or `caller` (never equal to `from`). */
   to?: 'caller' | 'other'
 }
 

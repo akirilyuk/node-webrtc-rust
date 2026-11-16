@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   callerWindowSimilarity,
@@ -6,19 +6,29 @@ import {
   evaluateTurns,
   exactThresholdCount,
   expectedBargeAtMs,
+  firstReplyLatency,
+  firstTtsDelayHook,
   glueCounts,
   matchTurnUtterances,
   maxBystanderLeadMs,
   mergedCallerFinals,
   pairTurnUtterances,
+  replyStartedAfterQualifyingPartial,
   similaritySummary,
+  splitDecidingWindowEndSceneMs,
   splitDistances,
   splitSceneMs,
+  unscoredBystanderLeaks,
   sttPartialTokenCount,
   voicedMsBetween,
+  warmReplyPath,
+  WARM_REPLY_PHRASE,
+  WarmReplySendError,
+  WarmReplyTimeoutError,
   type Seen,
   type Turn,
 } from './roundtrip-noisy-bystander-helpers.js'
+import { AgentSpeakingEndLatch } from './roundtrip-counting.js'
 
 const caller: Turn = {
   role: 'main',
@@ -392,6 +402,61 @@ describe('evaluateTurns', () => {
     expect(restarted).not.toMatch(/harness/)
   })
 
+  it('names a missing barge-in as a harness failure when the reply started after the qualifying partial (decision ii)', () => {
+    const noBarge = healthy().filter((e) => e.type !== 'barge_in')
+    // eu-load 43744251995 shape: the cold first reply started 571 ms after turn 0's qualifying partial.
+    const late = [
+      ...noBarge,
+      ev('agent_speaking_start', 11_971),
+      ev('agent_speaking_end', 30_000),
+    ].sort((a, b) => a.atMs - b.atMs)
+    const lateOut = evaluateTurns(TURNS, late, 'p').join('\n')
+    expect(lateOut).toMatch(
+      /harness: no reply playing at the qualifying partial at 11400 ms \(reply started at 11971 ms\)/,
+    )
+    expect(lateOut).not.toMatch(/no barge_in/)
+    expect(replyStartedAfterQualifyingPartial({ utteranceId: 'u1' }, late)).toEqual({
+      partialAtMs: 11_400,
+      replyStartAtMs: 11_971,
+    })
+    // Reply playing at the partial and no barge-in: a real miss.
+    const playing = [
+      ...noBarge,
+      ev('agent_speaking_start', 11_000),
+      ev('agent_speaking_end', 30_000),
+    ].sort((a, b) => a.atMs - b.atMs)
+    const playingOut = evaluateTurns(TURNS, playing, 'p').join('\n')
+    expect(playingOut).toMatch(/no barge_in/)
+    expect(playingOut).not.toMatch(/harness/)
+    expect(replyStartedAfterQualifyingPartial({ utteranceId: 'u1' }, playing)).toBeUndefined()
+    // No reply at all in the pass: stays a real miss.
+    expect(replyStartedAfterQualifyingPartial({ utteranceId: 'u1' }, noBarge)).toBeUndefined()
+  })
+
+  it('a qualifying partial during the late reply stays a real no barge_in', () => {
+    const noBarge = healthy().filter((e) => e.type !== 'barge_in')
+    const seen = [
+      ...noBarge,
+      ev('agent_speaking_start', 11_971),
+      ev('user_speech_partial', 12_200, { utteranceId: 'u1', text: 'please check my' }),
+      ev('agent_speaking_end', 30_000),
+    ].sort((a, b) => a.atMs - b.atMs)
+    const out = evaluateTurns(TURNS, seen, 'p').join('\n')
+    expect(out).toMatch(/no barge_in/)
+    expect(out).not.toMatch(/harness/)
+    expect(replyStartedAfterQualifyingPartial({ utteranceId: 'u1' }, seen)).toBeUndefined()
+  })
+
+  it('reports the first reply latency from the first final to the next agent_speaking_start', () => {
+    const seen = [...healthy(), ev('agent_speaking_start', 13_450)].sort((a, b) => a.atMs - b.atMs)
+    expect(firstReplyLatency(seen)).toEqual({
+      finalAtMs: 13_000,
+      startAtMs: 13_450,
+      latencyMs: 450,
+    })
+    expect(firstReplyLatency(healthy())).toBeUndefined()
+  })
+
   it('fails a caller turn without barge-in, and a misrecognized qualified phrase', () => {
     const noBarge = healthy().filter((e) => e.type !== 'barge_in')
     expect(evaluateTurns(TURNS, noBarge, 'p').join('\n')).toMatch(/no barge_in/)
@@ -696,7 +761,10 @@ describe('merged caller utterance (VAD opened in the bystander slot)', () => {
         text: 'suitcase room charlie one two three',
       }),
     )
-    expect(failures).toMatch(/turn 1 .*barge_in for the bystander utterance u7/)
+    // Not merged, but the first verdict came after the caller onset and the final holds the caller
+    // sentence: an unscored-bystander leak (decision ee), reported, not failing.
+    expect(failures).toBe('')
+    expect(unscoredBystanderLeaks(SCENE, seen)).toHaveLength(1)
     expect([...pairTurnUtterances(SCENE, seen).merged]).toEqual([])
   })
 
@@ -711,7 +779,8 @@ describe('merged caller utterance (VAD opened in the bystander slot)', () => {
         text: 'suitcase room charlie one two three',
       })
     const atBound = run(shape(64_352))
-    expect(atBound.failures).toMatch(/turn 1 .*barge_in for the bystander utterance u7/)
+    expect(atBound.failures).toBe('')
+    expect(unscoredBystanderLeaks(SCENE, atBound.seen)).toHaveLength(1)
     expect([...pairTurnUtterances(SCENE, atBound.seen).merged]).toEqual([])
     const inside = run(shape(64_353))
     expect(inside.failures).toBe('')
@@ -875,9 +944,11 @@ describe('check windows of a re-checked final (speakerCheckWindows)', () => {
     const seen = [...u1({ bargeAt: 107_650 }), ...tail()].sort((a, b) => a.atMs - b.atMs)
     const scene = [t0, late, t2]
     expect([...pairTurnUtterances(scene, seen).merged]).toEqual([])
+    // 7.6 s of bystander speech before the caller: the gate scored it, so not an unscored leak.
     expect(evaluateTurns(scene, seen, 'p').join('\n')).toMatch(
       /turn 0 .*barge_in for the bystander utterance u1/,
     )
+    expect(unscoredBystanderLeaks(scene, seen)).toEqual([])
   })
 
   it('fails a re-checked final without speakerCheckWindows and never defaults it', () => {
@@ -1318,5 +1389,466 @@ describe('split distance, glue and exact-threshold counts (reporting only)', () 
     expect(evaluateTurns(TURNS, seen, 'p', { sceneStartMediaMs: 500 })).toEqual(
       evaluateTurns(TURNS, seen, 'p'),
     )
+  })
+})
+
+describe('other→caller split: the caller turn is judged on U2 by utteranceId', () => {
+  // Turn 6 of the S3 scene on 3da9cf89 (.test-logs/20261114-150734-head-noisy-bystander.log): the
+  // VAD opened on the bystander tail in the caller's slot (utt-8, final other "Dark itself rest"),
+  // the gate split it other→caller into utt-10, which carries the caller's sentence and barge-in.
+  const t5: Turn = {
+    role: 'bystander',
+    startMs: 49_000,
+    endMs: 53_500,
+    text: 'Dark clouds gathered itself over the rest of the valley',
+    kind: 'background',
+  }
+  const t6: Turn = {
+    role: 'main',
+    startMs: 53_702,
+    endMs: 58_500,
+    text: 'I booked a table for four people',
+    kind: 'long',
+  }
+  const t7: Turn = {
+    role: 'bystander',
+    startMs: 62_003,
+    endMs: 64_500,
+    text: 'Her garden is full of tomatoes',
+    kind: 'background',
+  }
+  const SCENE = [t5, t6, t7]
+
+  // u1_onset_media_ms=53400 and sceneStartMediaMs=620 in the log: with U1's 2 windows the split's
+  // deciding window ends at 53400 + 2 x 1500 - 620 = 55780 ms (scene), before the barge at 58305.
+  const OPTS = { sceneStartMediaMs: 620 }
+  const events = (u2Text: string, u1Windows = 2): Seen[] =>
+    [
+      ev('user_speaking_start', 49_200, { utteranceId: 'utt-6' }),
+      ev('user_speech_final', 53_000, {
+        utteranceId: 'utt-6',
+        text: 'dark clouds gathered',
+        speaker: 'other',
+      }),
+      ev('user_speaking_start', 53_620, { utteranceId: 'utt-8' }),
+      ev('user_utterance_split', 58_206, {
+        fromUtteranceId: 'utt-8',
+        toUtteranceId: 'utt-10',
+        splitAtMs: 860,
+        fromStartMs: 53_400,
+        from: 'other',
+        to: 'caller',
+      }),
+      ev('user_speaking_start', 58_206, { utteranceId: 'utt-10' }),
+      ev('user_speech_final', 58_273, {
+        utteranceId: 'utt-8',
+        text: 'Dark itself rest',
+        speaker: 'other',
+        speakerRechecked: true,
+        speakerCheckWindows: u1Windows,
+      }),
+      ev('user_speech_partial', 58_305, { utteranceId: 'utt-10', text: 'I boked a table' }),
+      ev('barge_in', 58_305, { utteranceId: 'utt-10' }),
+      ev('user_speaking_end', 59_400, { utteranceId: 'utt-10' }),
+      ev('user_speech_final', 59_500, {
+        utteranceId: 'utt-10',
+        text: u2Text,
+        speaker: 'caller',
+        speakerRechecked: true,
+        speakerCheckWindows: 5,
+      }),
+      ev('user_speaking_start', 62_100, { utteranceId: 'utt-11' }),
+      ev('user_speech_final', 65_000, {
+        utteranceId: 'utt-11',
+        text: 'her garden',
+        speaker: 'other',
+      }),
+    ].sort((a, b) => a.atMs - b.atMs)
+
+  it('pairs turn 6 with U2 (utt-10) and passes on its caller final and barge-in', () => {
+    const seen = events('I booked a table for four people')
+    const { starts, followed } = pairTurnUtterances(SCENE, seen)
+    expect(starts.map((s) => s?.utteranceId)).toEqual(['utt-6', 'utt-10', 'utt-11'])
+    expect([...followed]).toEqual([[1, 'utt-8']])
+    expect(evaluateTurns(SCENE, seen, 'p', OPTS)).toEqual([])
+  })
+
+  it('fails a U2 barge before the deciding window anchored on U1 ends', () => {
+    // U1 with 4 windows: the deciding window ends at 53400 + 4 x 1500 - 620 = 58780 ms (scene),
+    // after the barge at 58305 (more than the 50 ms slack).
+    const seen = events('I booked a table for four people', 4)
+    expect(evaluateTurns(SCENE, seen, 'p', OPTS).join('\n')).toContain(
+      "barge-in at 58305 ms on utt-10, before the split's deciding window ends at 58780 ms (U1 utt-8, slack 50 ms)",
+    )
+  })
+
+  it('fails closed when the deciding window end cannot be computed', () => {
+    const seen = events('I booked a table for four people')
+    expect(evaluateTurns(SCENE, seen, 'p').join('\n')).toContain(
+      'other→caller split utt-8 -> utt-10: deciding window end unknown',
+    )
+  })
+
+  it('fails when U2 holds words of the bystander before the caller turn', () => {
+    const seen = events('Dark itself rest I booked a table for four people')
+    expect(evaluateTurns(SCENE, seen, 'p', OPTS).join('\n')).toContain(
+      'turn 1 (main long "I booked a table for four peop"): caller final utt-10 after the other→caller split of utt-8 holds bystander words (dark itself rest)',
+    )
+  })
+
+  it('still fails a split whose U2 final is not caller', () => {
+    const seen = events('I booked a table for four people').map((e) =>
+      e.type === 'user_speech_final' && e.utteranceId === 'utt-10' ? { ...e, speaker: 'other' } : e,
+    )
+    const failures = evaluateTurns(SCENE, seen, 'p', OPTS).join('\n')
+    expect(failures).toContain('final speaker other, expected caller')
+    expect(failures).toContain(
+      'barge_in at 58305 ms for utterance utt-10 whose final is speaker other',
+    )
+  })
+
+  it('judges a followed U2 once when its start also falls into the next turn slot', () => {
+    // U2 (utt-10) starts at 60306 ms, past the 60252 ms midpoint between turn 6 and turn 7, so
+    // slot matching gives it to turn 7 too. Turn 6 follows the split to it; turn 7 then takes its
+    // own utterance (utt-11).
+    const late = 2_100
+    const seen = events('I booked a table for four people')
+      .map((e) =>
+        e.utteranceId === 'utt-10' || e.type === 'user_utterance_split'
+          ? { ...e, atMs: e.atMs + late }
+          : e,
+      )
+      .sort((a, b) => a.atMs - b.atMs)
+    const { starts, followed } = pairTurnUtterances(SCENE, seen)
+    expect(starts.map((s) => s?.utteranceId)).toEqual(['utt-6', 'utt-10', 'utt-11'])
+    expect(starts.filter((s) => s?.utteranceId === 'utt-10')).toHaveLength(1)
+    expect([...followed]).toEqual([[1, 'utt-8']])
+  })
+
+  it('does not follow a caller→other split (the caller turn keeps its own utterance)', () => {
+    const seen = events('I booked a table for four people').map((e) =>
+      e.type === 'user_utterance_split' ? { ...e, from: 'caller', to: 'other' } : e,
+    )
+    const { starts, followed } = pairTurnUtterances(SCENE, seen)
+    expect(starts[1]?.utteranceId).toBe('utt-8')
+    expect(followed.size).toBe(0)
+  })
+})
+
+describe('other→caller split whose U1 emits no final (U1 windows on the split event)', () => {
+  // eu-load run 43660018769 iteration 9, Pass 2 turn 12 of the S3 scene
+  // (.test-logs/20261115-stress-43660018769.log): the VAD opened on the bystander tail (utt-23,
+  // u1_onset_media_ms=88240, sceneStartMediaMs=620 -> scene 87620); window 1 scored other, the
+  // re-check `key=11 window=2` found the change and split at +575 ms into utt-25. U1's re-decode of
+  // 575 ms of bystander tail yielded no text (`re-decode done utterance=utt-23 final=false`), so
+  // utt-23 has no user_speech_final. The deciding window ends at 88240 + 2 x 1500 - 620 = 90620 ms
+  // (scene); U2's speaking_start came at 90783 and its barge-in at 90894 (111 ms later). As in the
+  // run, the bystander turn before has no utterance of its own and U1 starts in the caller's slot.
+  const t11: Turn = {
+    role: 'bystander',
+    startMs: 83_785,
+    endMs: 86_400,
+    text: 'The old lighthouse keeper climbed the stairs',
+    kind: 'background',
+  }
+  const t12: Turn = {
+    role: 'main',
+    startMs: 88_503,
+    endMs: 92_500,
+    text: 'You said: good morning, this is the recovery test.',
+    kind: 'qualified',
+  }
+  const t13: Turn = {
+    role: 'bystander',
+    startMs: 94_203,
+    endMs: 98_000,
+    text: 'A train rolled slowly into the station',
+    kind: 'background',
+  }
+  const SCENE = [t11, t12, t13]
+  const OPTS = { sceneStartMediaMs: 620 }
+  const events = (opts: { splitWindows?: number; u1FinalWindows?: number } = {}): Seen[] =>
+    [
+      ev('user_speaking_start', 87_640, { utteranceId: 'utt-23' }),
+      ev('user_utterance_split', 90_783, {
+        fromUtteranceId: 'utt-23',
+        toUtteranceId: 'utt-25',
+        splitAtMs: 575,
+        fromStartMs: 88_240,
+        from: 'other',
+        to: 'caller',
+        speakerCheckWindows: opts.splitWindows,
+      }),
+      ev('user_speaking_start', 90_783, { utteranceId: 'utt-25' }),
+      ...(opts.u1FinalWindows != null
+        ? [
+            ev('user_speech_final', 90_850, {
+              utteranceId: 'utt-23',
+              text: 'stairs',
+              speaker: 'other',
+              speakerRechecked: true,
+              speakerCheckWindows: opts.u1FinalWindows,
+            }),
+          ]
+        : []),
+      ev('user_speech_partial', 90_894, { utteranceId: 'utt-25', text: 'you said good morning' }),
+      ev('barge_in', 90_894, { utteranceId: 'utt-25' }),
+      ev('user_speaking_end', 92_900, { utteranceId: 'utt-25' }),
+      ev('user_speech_final', 93_000, {
+        utteranceId: 'utt-25',
+        text: 'You said good morning. This is the recovery test.',
+        speaker: 'caller',
+        speakerRechecked: true,
+        speakerCheckWindows: 3,
+      }),
+      ev('user_speaking_start', 94_300, { utteranceId: 'utt-27' }),
+      ev('user_speech_final', 97_000, {
+        utteranceId: 'utt-27',
+        text: 'a train rolled',
+        speaker: 'other',
+      }),
+    ].sort((a, b) => a.atMs - b.atMs)
+
+  it('passes on the split event windows when U1 has no final', () => {
+    expect(evaluateTurns(SCENE, events({ splitWindows: 2 }), 'p', OPTS)).toEqual([])
+  })
+
+  it('still fails closed with no windows on the split event and no U1 final (the run shape)', () => {
+    expect(evaluateTurns(SCENE, events(), 'p', OPTS).join('\n')).toContain(
+      'other→caller split utt-23 -> utt-25: deciding window end unknown',
+    )
+  })
+
+  it('fails a U2 barge before the window the split event names', () => {
+    // 3 windows: 88240 + 4500 - 620 = 92120, after the barge at 90894.
+    expect(evaluateTurns(SCENE, events({ splitWindows: 3 }), 'p', OPTS).join('\n')).toContain(
+      "barge-in at 90894 ms on utt-25, before the split's deciding window ends at 92120 ms (U1 utt-23, slack 50 ms)",
+    )
+  })
+
+  it('splitDecidingWindowEndSceneMs: the split event count wins, U1 final is the fallback', () => {
+    const split = (w?: number): Seen =>
+      ev('user_utterance_split', 0, {
+        fromUtteranceId: 'u1',
+        fromStartMs: 88_240,
+        splitAtMs: 575,
+        speakerCheckWindows: w,
+      })
+    const finals = (w?: number): Map<string, Seen> =>
+      new Map(
+        w == null
+          ? []
+          : [['u1', ev('user_speech_final', 0, { utteranceId: 'u1', speakerCheckWindows: w })]],
+      )
+    expect(splitDecidingWindowEndSceneMs(split(2), finals(), 620)).toBe(90_620)
+    expect(splitDecidingWindowEndSceneMs(split(), finals(2), 620)).toBe(90_620)
+    expect(splitDecidingWindowEndSceneMs(split(2), finals(2), 620)).toBe(90_620)
+    // A U1 re-check booked after the cut: U1's final reports 3, the split names window 2.
+    expect(splitDecidingWindowEndSceneMs(split(2), finals(3), 620)).toBe(90_620)
+    expect(splitDecidingWindowEndSceneMs(split(), finals(), 620)).toBeUndefined()
+    expect(splitDecidingWindowEndSceneMs(split(2), finals(), undefined)).toBeUndefined()
+  })
+
+  it('splitDecidingWindowEndSceneMs: k = 0 fails closed', () => {
+    const split = ev('user_utterance_split', 0, {
+      fromUtteranceId: 'u1',
+      fromStartMs: 88_240,
+      splitAtMs: 575,
+      speakerCheckWindows: 0,
+    })
+    const finals = new Map([
+      ['u1', ev('user_speech_final', 0, { utteranceId: 'u1', speakerCheckWindows: 0 })],
+    ])
+    expect(splitDecidingWindowEndSceneMs(split, finals, 620)).toBeUndefined()
+    expect(splitDecidingWindowEndSceneMs(split, new Map(), 620)).toBeUndefined()
+  })
+})
+
+describe('unscored-bystander leak (decision ee; iteration-20 shape)', () => {
+  const b1: Turn = {
+    role: 'bystander',
+    startMs: 10_000,
+    // Iteration 20 (eu-load 43698709106): the bystander was voiced ~600 ms after the utterance
+    // start (10 100) before the caller onset (see ROUNDTRIP.md).
+    endMs: 10_700,
+    text: 'Basil and crustones',
+    kind: 'background',
+  }
+  const c1: Turn = {
+    role: 'main',
+    startMs: 14_000,
+    endMs: 16_000,
+    text: 'charlie one two three',
+    kind: 'qualified',
+  }
+  const b2: Turn = {
+    role: 'bystander',
+    startMs: 20_000,
+    endMs: 22_000,
+    text: 'a bus waits outside',
+    kind: 'background',
+  }
+  const T = [b1, c1, b2]
+  const FINAL = 'Basil and crustones. Charlie one two three'
+  function leakSeen(
+    over: { bargeAt?: number | null; text?: string; speaker?: string } = {},
+  ): Seen[] {
+    const bargeAt = over.bargeAt === undefined ? 14_400 : over.bargeAt
+    return [
+      ev('user_speaking_start', 10_100, { utteranceId: 'u1' }),
+      ...(bargeAt == null ? [] : [ev('barge_in', bargeAt, { utteranceId: 'u1' })]),
+      ev('user_speech_final', 17_000, {
+        utteranceId: 'u1',
+        text: over.text ?? FINAL,
+        speaker: over.speaker ?? 'caller',
+        speakerCheckWindows: 1,
+      }),
+      ev('user_speaking_start', 20_100, { utteranceId: 'u2' }),
+      ev('user_speech_final', 23_000, { utteranceId: 'u2', text: 'a bus', speaker: 'other' }),
+    ]
+  }
+
+  it('reports the iteration-20 shape as a leak and passes', () => {
+    const leaks = unscoredBystanderLeaks(T, leakSeen())
+    expect(leaks).toHaveLength(1)
+    expect(leaks[0]!.words.join(' ')).toBe('basil and crustones')
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      expect(evaluateTurns(T, leakSeen(), 'p')).toEqual([])
+      expect(log.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(
+        /unscored-bystander leaks: 1 \(u1: basil and crustones\)/,
+      )
+    } finally {
+      log.mockRestore()
+    }
+  })
+
+  it('is not a leak when a full check window of bystander speech precedes the caller', () => {
+    const turns = [{ ...b1, endMs: 11_600 }, c1, b2]
+    expect(unscoredBystanderLeaks(turns, leakSeen())).toEqual([])
+    expect(evaluateTurns(turns, leakSeen(), 'p').join('\n')).toMatch(
+      /barge_in for the bystander utterance u1/,
+    )
+  })
+
+  it('fails when another caller final already holds the caller sentence', () => {
+    const seen = leakSeen().map((e) =>
+      e.type === 'user_speech_final' && e.utteranceId === 'u2'
+        ? { ...e, text: 'charlie one two three', speaker: 'caller', speakerCheckWindows: 1 }
+        : e,
+    )
+    expect(unscoredBystanderLeaks(T, seen)).toEqual([])
+    expect(evaluateTurns(T, seen, 'p').length).toBeGreaterThan(0)
+  })
+
+  it('fails a barge 1 ms before the caller scene start', () => {
+    const seen = leakSeen({ bargeAt: 13_999 })
+    expect(unscoredBystanderLeaks(T, seen)).toEqual([])
+    expect(evaluateTurns(T, seen, 'p').join('\n')).toMatch(
+      /barge_in for the bystander utterance u1/,
+    )
+  })
+
+  it('passes a barge exactly at the caller scene start', () => {
+    expect(evaluateTurns(T, leakSeen({ bargeAt: 14_000 }), 'p')).toEqual([])
+  })
+
+  it('fails closed with no barge event', () => {
+    const seen = leakSeen({ bargeAt: null })
+    expect(unscoredBystanderLeaks(T, seen)).toEqual([])
+    expect(evaluateTurns(T, seen, 'p').length).toBeGreaterThan(0)
+  })
+
+  it('fails when the caller sentence is missing', () => {
+    const seen = leakSeen({ text: 'Basil and crustones. Delta nine' })
+    expect(unscoredBystanderLeaks(T, seen)).toEqual([])
+    expect(evaluateTurns(T, seen, 'p').length).toBeGreaterThan(0)
+  })
+
+  it('fails a bystander-only final labelled caller', () => {
+    const seen = leakSeen({ text: 'Basil and crustones' })
+    expect(unscoredBystanderLeaks(T, seen)).toEqual([])
+    expect(evaluateTurns(T, seen, 'p').join('\n')).toMatch(/final speaker caller, expected other/)
+  })
+
+  it('fails when the caller turn has its own utterance', () => {
+    const seen = [
+      ...leakSeen(),
+      ev('user_speaking_start', 14_200, { utteranceId: 'u3' }),
+      ev('barge_in', 15_700, { utteranceId: 'u3' }),
+      ev('user_speech_final', 17_500, {
+        utteranceId: 'u3',
+        text: 'Charlie one two three',
+        speaker: 'caller',
+        speakerCheckWindows: 1,
+      }),
+    ]
+    expect(unscoredBystanderLeaks(T, seen)).toEqual([])
+    expect(evaluateTurns(T, seen, 'p').join('\n')).toMatch(/final speaker caller, expected other/)
+  })
+})
+
+describe('warm reply path before the scene anchor (decision ii)', () => {
+  it('ends on agent_speaking_end of the warm-up reply', async () => {
+    const latch = new AgentSpeakingEndLatch()
+    const sent: string[] = []
+    const send = (text: string): Promise<void> => {
+      sent.push(text)
+      setTimeout(() => latch.observe({ type: 'agent_speaking_end' } as never), 5)
+      return Promise.resolve()
+    }
+    const waited = await warmReplyPath({ send, latch, timeoutMs: 1_000 })
+    expect(sent).toEqual([WARM_REPLY_PHRASE])
+    expect(waited).toBeGreaterThanOrEqual(0)
+    expect(waited).toBeLessThan(1_000)
+  })
+
+  it('fails by name when agent_speaking_end does not come within the bound', async () => {
+    const latch = new AgentSpeakingEndLatch()
+    await expect(
+      warmReplyPath({ send: () => Promise.resolve(), latch, timeoutMs: 20 }),
+    ).rejects.toBeInstanceOf(WarmReplyTimeoutError)
+  })
+
+  it('fails at once with the cause when the warm-up send rejects', async () => {
+    const latch = new AgentSpeakingEndLatch()
+    const cause = new Error('tts engine failed to load')
+    const startedAt = Date.now()
+    const err = await warmReplyPath({
+      send: () => Promise.reject(cause),
+      latch,
+      timeoutMs: 10_000,
+    }).catch((e: unknown) => e)
+    expect(Date.now() - startedAt).toBeLessThan(1_000)
+    expect(err).toBeInstanceOf(WarmReplySendError)
+    expect(err).not.toBeInstanceOf(WarmReplyTimeoutError)
+    expect((err as Error).cause).toBe(cause)
+    expect((err as Error).message).toMatch(/tts engine failed to load/)
+  })
+
+  it('test hook delays only the first send of a pass, and is a pass-through when unset', async () => {
+    vi.useFakeTimers()
+    try {
+      const sent: string[] = []
+      const send = firstTtsDelayHook((t) => {
+        sent.push(t)
+        return Promise.resolve()
+      }, 6_000)
+      const first = send('a')
+      await vi.advanceTimersByTimeAsync(5_999)
+      expect(sent).toEqual([])
+      await vi.advanceTimersByTimeAsync(1)
+      await first
+      await send('b')
+      expect(sent).toEqual(['a', 'b'])
+      const plain: string[] = []
+      await firstTtsDelayHook((t) => {
+        plain.push(t)
+        return Promise.resolve()
+      }, 0)('c')
+      expect(plain).toEqual(['c'])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

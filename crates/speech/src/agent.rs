@@ -3712,6 +3712,42 @@ impl VoiceAgent {
             .map_or_else(Vec::new, |g| g.warnings())
     }
 
+    /// Test hook: confirmed speaker changes the gate stored and the agent has not applied yet.
+    #[doc(hidden)]
+    pub fn speaker_gate_pending_changes(&self) -> usize {
+        self.speaker_gate
+            .as_ref()
+            .map_or(0, |g| g.pending_speaker_changes())
+    }
+
+    /// Test hook: `other` -> `caller` splits the gate deferred and has not decided yet (decision hh).
+    #[doc(hidden)]
+    pub fn speaker_gate_deferred_splits(&self) -> usize {
+        self.speaker_gate
+            .as_ref()
+            .map_or(0, |g| g.deferred_speaker_splits())
+    }
+
+    /// Test hook: hold only the verdict delivery of a window that confirmed a speaker change
+    /// (`SpeakerGate::park_change_delivery`).
+    #[doc(hidden)]
+    pub fn speaker_gate_park_change_verdicts(&self, on: bool) {
+        if let Some(g) = self.speaker_gate.as_ref() {
+            g.park_change_delivery(on);
+        }
+    }
+
+    /// Test hook: (live record open, VAD speaking).
+    #[doc(hidden)]
+    pub async fn live_open_and_vad_speaking_for_test(&self) -> (bool, bool) {
+        let inner = self.inner.lock().await;
+        let open = inner
+            .live
+            .as_ref()
+            .is_some_and(|r| !r.terminal && r.phase == UttPhase::Open);
+        (open, Self::vad_is_speaking(&inner))
+    }
+
     /// Test hook: hold back verdict delivery while the verdicts stay stored (see
     /// `SpeakerGate::park_verdict_delivery`).
     #[doc(hidden)]
@@ -3773,9 +3809,9 @@ impl VoiceAgent {
     async fn apply_speaker_changes(&self, gate: &SpeakerGate) -> Vec<u64> {
         let mut split = Vec::new();
         for change in gate.take_speaker_changes() {
-            // The gate reports only caller -> other (the caller stays caller). Anything else is
-            // a bug upstream: counted, logged, never applied.
-            if change.from != Outcome::Caller {
+            // The gate reports caller -> other and other -> caller. A change from or to
+            // `unknown` is a bug upstream: counted, logged, never applied.
+            if change.from == Outcome::Unknown || change.to == Outcome::Unknown {
                 self.skip_speaker_split(&change, "unexpected_direction");
                 continue;
             }
@@ -3792,6 +3828,28 @@ impl VoiceAgent {
             let len = inner.utterance_replay_buffer.len_bytes();
             inner.replay_frame_offsets.push(len);
         }
+    }
+
+    /// A skip inside [`Self::split_live_utterance`] is final at this point. For `other` ->
+    /// `caller` the utterance falls back to today's upgrade: the gate books `caller` for U1 right
+    /// here, synchronously, and the verdict handler then releases U1's held barge-in on the
+    /// confirming window's verdict (decision h: leak rather than drop the caller).
+    fn skip_speaker_split_fallback(
+        &self,
+        gate: &SpeakerGate,
+        change: &SpeakerChange,
+        reason: &str,
+    ) -> bool {
+        if change.from != Outcome::Other || change.to != Outcome::Caller {
+            return self.skip_speaker_split(change, reason);
+        }
+        gate.upgrade_after_skipped_split(change.key);
+        self.speaker_split_skipped.fetch_add(1, Ordering::SeqCst);
+        eprintln!(
+            "[speech] speaker split skipped key={} reason={reason} split_at_ms={} fallback=upgrade",
+            change.key, change.split_at_ms
+        );
+        false
     }
 
     fn skip_speaker_split(&self, change: &SpeakerChange, reason: &str) -> bool {
@@ -3814,7 +3872,14 @@ impl VoiceAgent {
     ///    final comes before any result of U2.
     /// 3. U2 (new id, new gate key) is seeded with `pcm[split..]` (STT, replay ring and gate) and
     ///    then continues live. It starts like a fresh VAD SpeechStart (same events and barge-in
-    ///    rules), and the gate judges it as a new utterance.
+    ///    rules), and the gate judges it as a new utterance. For other -> caller, U2 inherits the
+    ///    confirming `caller` verdict (`SpeakerGate::inherit_caller`), so its barge-in fires on
+    ///    that verdict; U1 stays `other` (ignored with `drop`, a `speaker: "other"` final with
+    ///    `flag`) and its held barge-in is dropped.
+    ///
+    /// A change for a key that already finalized (the verifier dequeued the confirming window
+    /// after U1's final read its verdict) is counted as stale and logged with its key; it is never
+    /// applied to the next utterance (`rt.stale-event-by-key`).
     ///
     /// Event order: U2's lifecycle events (`user_speaking_start`, `user_stt_start`,
     /// `vad_triggered`) are emitted at the split, so they may come before U1's final. Each one
@@ -3824,9 +3889,7 @@ impl VoiceAgent {
     ///
     /// No split (logged and counted) when the ring overflowed or does not cover the utterance.
     async fn split_live_utterance(&self, gate: &SpeakerGate, change: SpeakerChange) -> bool {
-        let Some(actor) = self.actor() else {
-            return self.skip_speaker_split(&change, "stt_unavailable");
-        };
+        let actor = self.actor();
         let split = {
             let mut inner = self.inner.lock().await;
             let live = inner.live.as_ref().is_some_and(|r| {
@@ -3843,32 +3906,37 @@ impl VoiceAgent {
                 );
                 return false;
             }
+            // After the live check: a stale change must never reach the upgrade fallback.
+            let Some(actor) = actor else {
+                drop(inner);
+                return self.skip_speaker_split_fallback(gate, &change, "stt_unavailable");
+            };
             if !inner.stt_enabled || inner.config.stt.is_none() || inner.stt_hold.is_some() {
                 drop(inner);
-                return self.skip_speaker_split(&change, "stt_unavailable");
+                return self.skip_speaker_split_fallback(gate, &change, "stt_unavailable");
             }
             if !Self::vad_is_speaking(&inner) || inner.stt_finalize_pending {
                 drop(inner);
-                return self.skip_speaker_split(&change, "not_speaking");
+                return self.skip_speaker_split_fallback(gate, &change, "not_speaking");
             }
             if inner.utterance_replay_buffer.overflowed() {
                 drop(inner);
                 self.speaker_split_overflow.fetch_add(1, Ordering::SeqCst);
-                return self.skip_speaker_split(&change, "replay_overflow");
+                return self.skip_speaker_split_fallback(gate, &change, "replay_overflow");
             }
             if inner.replay_onset_key != Some(change.key) {
                 drop(inner);
-                return self.skip_speaker_split(&change, "replay_not_aligned");
+                return self.skip_speaker_split_fallback(gate, &change, "replay_not_aligned");
             }
             let Some(pcm) = inner.utterance_replay_buffer.snapshot_pcm() else {
                 drop(inner);
-                return self.skip_speaker_split(&change, "no_replay_pcm");
+                return self.skip_speaker_split_fallback(gate, &change, "no_replay_pcm");
             };
             let frame = change.split_at_ms as usize / SPLIT_FRAME_MS;
             let split_byte = inner.replay_frame_offsets.get(frame).copied().unwrap_or(0) & !1;
             if split_byte == 0 || split_byte >= pcm.len() {
                 drop(inner);
-                return self.skip_speaker_split(&change, "split_out_of_range");
+                return self.skip_speaker_split_fallback(gate, &change, "split_out_of_range");
             }
             // U1's speech onset on the inbound media clock; U2's gate starts at the split frame.
             let u1_onset_media_ms = inner.gate_onset_media_ms;
@@ -3940,6 +4008,13 @@ impl VoiceAgent {
         };
         let (u1_key, u1_id, u2_key, u2_id, seed, speaking_end_needed, rx, u1_onset_media_ms) =
             split;
+        // other -> caller: U2 starts as the caller. The gate books the confirming `caller`
+        // window for U2's key (no re-embed of the seed) before U2's first `begin`, so U2's
+        // barge-in below is released by that confirmed verdict, never by a provisional one.
+        // U2's own watch can split it again (caller -> other).
+        if change.from == Outcome::Other && change.to == Outcome::Caller {
+            let _ = gate.inherit_caller(u2_key, gate.caller_floor_for(change.key));
+        }
         // The gate judges U2 as a new utterance from its first post-split frame.
         let mut frames = seed.chunks(640);
         if let Some(first) = frames.next() {
@@ -3978,14 +4053,22 @@ impl VoiceAgent {
         // U2's speaking_start goes out before its SpeechStart handling: the seed already holds a
         // full check window, so U2's verdict (and an immediate barge-in) can be ready at once.
         self.emit_user_speaking_start_if_needed(u2_key).await;
-        self.emit(SpeechEvent::user_utterance_split(
+        // U1's windows at the cut, including the one that decided the split: the same count U1's
+        // final reports, carried here because a cut U1 whose re-decode yields no text emits no
+        // final at all.
+        let mut split_event = SpeechEvent::user_utterance_split(
             u1_id.clone(),
             u2_id.clone(),
             change.split_at_ms,
             change.from.as_str(),
             change.to.as_str(),
             u1_onset_media_ms.map(|ms| u32::try_from(ms).unwrap_or(u32::MAX)),
-        ));
+        );
+        let u1_windows = gate.windows_scored(u1_key);
+        if u1_windows > 0 {
+            split_event = split_event.with_speaker_check_windows(u1_windows);
+        }
+        self.emit(split_event);
         if let Err(error) = self.on_vad_speech_start().await {
             eprintln!("[speech] speaker split: start of {u2_id} failed: {error}");
         }
@@ -4046,6 +4129,16 @@ impl VoiceAgent {
             .contains(&verdict.key)
         {
             return;
+        }
+        // An `other` -> `caller` split that was skipped falls back to the upgrade: the confirming
+        // window's verdict is delivered as `other` (the split was still pending then) and now
+        // counts as `caller`, so the held barge-in is released only after the skip is final.
+        let mut verdict = verdict;
+        if verdict.recheck
+            && verdict.outcome == Outcome::Other
+            && gate.upgraded_after_skipped_split(verdict.key)
+        {
+            verdict.outcome = Outcome::Caller;
         }
         // One route per state for a held barge-in (`contract.event-order`,
         // `one-send-path-per-unit`): once this key's final has started reading its verdict
@@ -4971,6 +5064,11 @@ impl VoiceAgent {
         if let Some(gate) = self.speaker_gate.as_ref() {
             if outcome != Outcome::Other && !cut {
                 gate.enroll_utterance(key);
+            }
+            // Adaptive reference: the verifier task commits this utterance's candidates if it
+            // qualifies (no split, every scored window `caller`). A channel send, never awaited.
+            if !cut {
+                gate.settle(key);
             }
         }
         self.fire_final_terminal_waiter(key).await;
@@ -7678,5 +7776,33 @@ mod tests {
         let reader: PcmReader = Arc::new(|| Ok(None));
         let writer: PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
         agent.attach(reader, writer).await.unwrap();
+    }
+
+    /// A stale other -> caller change with no STT actor is counted as stale only: the live check
+    /// runs before the `stt_unavailable` skip, so the gate is never upgraded for it.
+    #[tokio::test]
+    async fn stale_other_to_caller_change_without_stt_never_upgrades() {
+        let config = VoiceAgentConfig {
+            stt: None,
+            tts: None,
+            ..Default::default()
+        };
+        let agent = VoiceAgent::new(config, Arc::new(VendorRegistry::new())).unwrap();
+        let gate = SpeakerGate::new(crate::config::SpeakerGateConfig {
+            enabled: true,
+            split_on_speaker_change: true,
+            ..crate::config::SpeakerGateConfig::default()
+        });
+        assert!(agent.actor().is_none());
+        let change = SpeakerChange {
+            key: 7,
+            from: Outcome::Other,
+            to: Outcome::Caller,
+            split_at_ms: 100,
+        };
+        assert!(!agent.split_live_utterance(&gate, change).await);
+        let (splits, skipped, _, stale, _, _) = agent.speaker_split_counts();
+        assert_eq!((splits, skipped, stale), (0, 0, 1));
+        assert!(!gate.upgraded_after_skipped_split(7));
     }
 }

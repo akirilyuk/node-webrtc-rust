@@ -1,0 +1,716 @@
+import { readFileSync } from 'fs'
+import { dirname, join } from 'path'
+import { fileURLToPath } from 'url'
+
+import { describe, expect, it } from 'vitest'
+
+import type { Seen } from './roundtrip-noisy-bystander-helpers.js'
+import {
+  BOUNDED_LEAK_MAX_BEFORE_DECIDING_END_MS,
+  ENROLL_PAUSE_MS,
+  EXCLUDED_BYSTANDER_VOICES,
+  benchVoiceLabel,
+  enrollPauseAtMs,
+  evaluateNoPauseScene,
+  inseparableBystanderLabels,
+  isExcludedBystander,
+  parseCallerPairFar,
+  parseSceneFilter,
+  sceneSelected,
+  shiftSegmentsAfter,
+  type NoPauseSegment,
+} from './roundtrip-noisy-bystander-nopause-helpers.js'
+
+const here = dirname(fileURLToPath(import.meta.url))
+const BENCH = join(here, '../../../crates/vendor-sherpa-onnx/examples/FALSE_ACCEPT_BENCH.md')
+
+const segments: NoPauseSegment[] = [
+  {
+    role: 'main',
+    startMs: 300,
+    endMs: 5800,
+    text: 'the enrollment sentence is read out slowly',
+    kind: 'long',
+    enroll: true,
+  },
+  {
+    role: 'bystander',
+    startMs: 7300,
+    endMs: 12300,
+    voicedEndMs: 12100,
+    text: 'a passenger asked about the delayed flight to madrid tonight',
+    kind: 'background',
+  },
+  {
+    role: 'main',
+    startMs: 12200,
+    endMs: 14000,
+    voicedStartMs: 12300,
+    text: 'please check my order',
+    kind: 'qualified',
+  },
+]
+/** Scene starts at media ms 1000; `fromStartMs + splitAtMs - 1000` is the scene split point. */
+const MEDIA0 = 1000
+
+function start(id: string, atMs: number): Seen {
+  return { type: 'user_speaking_start', atMs, utteranceId: id }
+}
+function final(id: string, atMs: number, speaker: string, text: string): Seen {
+  return { type: 'user_speech_final', atMs, utteranceId: id, speaker, text }
+}
+function barge(id: string, atMs: number): Seen {
+  return { type: 'barge_in', atMs, utteranceId: id }
+}
+function split(
+  from: string,
+  to: string,
+  fromStartScene: number,
+  splitAtMs: number,
+  labels: [string, string],
+): Seen {
+  return {
+    type: 'user_utterance_split',
+    atMs: fromStartScene + splitAtMs + 1500,
+    fromUtteranceId: from,
+    toUtteranceId: to,
+    fromStartMs: fromStartScene + MEDIA0,
+    splitAtMs,
+    from: labels[0],
+    to: labels[1],
+  }
+}
+
+/** Enrollment u1, bystander u2 split other→caller at scene `splitScene` into u3. */
+function clean(splitScene = 12_250, callerText = 'please check my order'): Seen[] {
+  return [
+    start('u1', 350),
+    final('u1', 7000, 'caller', 'the enrollment sentence is read out slowly'),
+    start('u2', 7350),
+    split('u2', 'u3', 7350, splitScene - 7350, ['other', 'caller']),
+    barge('u3', 14_000),
+    final('u2', 14_100, 'other', 'a passenger asked about the delayed flight to madrid tonight'),
+    final('u3', 15_500, 'caller', callerText),
+  ]
+}
+
+describe('FALSE_ACCEPT_BENCH lockstep (decision l)', () => {
+  const md = readFileSync(BENCH, 'utf8')
+  it('parses the amy-low caller rows of the first score column', () => {
+    const far = parseCallerPairFar(md)
+    expect(far.get('libritts_r 120')).toEqual({ bed: 51.5, clean: 51.5 })
+    expect(far.get('joe')).toEqual({ bed: 0, clean: 0 })
+    expect(far.size).toBe(5)
+  })
+  it('excludes exactly the bystander voices with pair FAR >= 5 %', () => {
+    const excluded = EXCLUDED_BYSTANDER_VOICES.map((v) => benchVoiceLabel(v.voice, v.sid)).sort()
+    expect(excluded).toEqual(inseparableBystanderLabels(md))
+  })
+  it('matches manifest voices by name and sid', () => {
+    expect(benchVoiceLabel('en_US-libritts_r-medium', 120)).toBe('libritts_r 120')
+    expect(benchVoiceLabel('en_US-hfc_female-medium', 0)).toBe('hfc_female')
+    expect(isExcludedBystander('en_US-libritts_r-medium', 120)).toBe(true)
+    expect(isExcludedBystander('en_US-libritts_r-medium', 300)).toBe(false)
+    expect(isExcludedBystander('en_US-joe-medium', 0)).toBe(false)
+  })
+})
+
+describe('evaluateNoPauseScene', () => {
+  it('passes a clean other→caller split', () => {
+    const r = evaluateNoPauseScene(segments, clean(), 's', MEDIA0)
+    expect(r.failures).toEqual([])
+    expect(r.otherToCallerSplits).toBe(1)
+  })
+
+  it('pairs by id, not by arrival order (caller final first, extra events interleaved)', () => {
+    const seen = clean()
+    const reordered = [
+      seen[0]!,
+      seen[1]!,
+      seen[2]!,
+      seen[6]!,
+      seen[3]!,
+      start('u9', 9000),
+      seen[5]!,
+      seen[4]!,
+    ]
+    const r = evaluateNoPauseScene(segments, reordered, 's', MEDIA0)
+    expect(r.failures).toEqual([])
+  })
+
+  it('fails a caller final with bystander words after a cut a caller window confirmed', () => {
+    const r = evaluateNoPauseScene(
+      segments,
+      clean(11_000, 'madrid tonight please check my order'),
+      's',
+      MEDIA0,
+    )
+    expect(r.cutPointLeaks.map((l) => l.words)).toEqual([['madrid', 'tonight']])
+    expect(r.failures.some((f) => f.includes('holds bystander words'))).toBe(true)
+    expect(r.gateFalseAcceptLeaks).toEqual([])
+  })
+
+  it('fails leading glue (a short bystander word before the caller phrase)', () => {
+    const md = segments.map((s) =>
+      s.role === 'bystander' ? { ...s, text: 'she said it was on' } : s,
+    )
+    const r = evaluateNoPauseScene(md, clean(12_250, 'on please check my order'), 's', MEDIA0)
+    expect(r.leadingGlue.map((l) => l.words)).toEqual([['on']])
+    expect(r.failures.some((f) => f.includes('leading glue'))).toBe(true)
+  })
+
+  // s4_test_n02 (run 20261113-224730): bystander voiced to 14623, caller onset 14835, U1 utt-2
+  // starts at scene 8720, split at +3345 (12065), U1 final speakerCheckWindows 3 -> the deciding
+  // window ends at 8720 + 3 x 1500 = 13220, before the caller: bystander audio only.
+  const n02: NoPauseSegment[] = [
+    segments[0]!,
+    {
+      role: 'bystander',
+      startMs: 9800,
+      endMs: 14800,
+      voicedStartMs: 9903,
+      voicedEndMs: 14623,
+      text: 'a flock of geese flew south over the golden fields as farmers gathered the final bales',
+      kind: 'background',
+    },
+    {
+      role: 'main',
+      startMs: 14700,
+      endMs: 16500,
+      voicedStartMs: 14835,
+      text: 'please check my order',
+      kind: 'qualified',
+    },
+  ]
+  function n02Seen(u1StartScene: number, windows: number | undefined, splitScene = 12_065): Seen[] {
+    return [
+      start('u1', 350),
+      final('u1', 7000, 'caller', 'the enrollment sentence is read out slowly'),
+      start('u2', u1StartScene),
+      split('u2', 'u4', u1StartScene, splitScene - u1StartScene, ['other', 'caller']),
+      barge('u4', 15_600),
+      {
+        ...final('u2', 15_600, 'other', 'a flock of geese flew south over the golden fire of'),
+        speakerRechecked: true,
+        speakerCheckWindows: windows,
+      },
+      final(
+        'u4',
+        18_000,
+        'caller',
+        'fields as farmers gathered the final bales please check my order',
+      ),
+    ]
+  }
+  const n02Leak = ['fields', 'farmers', 'gathered', 'final', 'bales']
+
+  it('n02 shape: deciding window (w3) ends before the caller onset -> gate false accept, not a failure', () => {
+    const r = evaluateNoPauseScene(n02, n02Seen(8720, 3), 's', MEDIA0)
+    expect(r.gateFalseAcceptLeaks.map((l) => l.words)).toEqual([n02Leak])
+    expect(r.cutPointLeaks).toEqual([])
+    expect(r.failures).toEqual([])
+  })
+
+  it('deciding window ending 1 ms after the caller onset, split 3001 ms before it -> cut-point leak failure', () => {
+    // 10336 + 3 x 1500 = 14836 = onset + 1; bound 11836, split 11835
+    const r = evaluateNoPauseScene(n02, n02Seen(10_336, 3, 11_835), 's', MEDIA0)
+    expect(r.gateFalseAcceptLeaks).toEqual([])
+    expect(r.boundedLeaks).toEqual([])
+    expect(r.cutPointLeaks.map((l) => l.words)).toEqual([n02Leak])
+    expect(r.failures.some((f) => f.includes('holds bystander words'))).toBe(true)
+  })
+
+  it('deciding window ending 1 ms after the caller onset, split exactly at the bound -> bounded leak', () => {
+    const r = evaluateNoPauseScene(n02, n02Seen(10_336, 3, 11_836), 's', MEDIA0)
+    expect(r.boundedLeaks.map((l) => l.words)).toEqual([n02Leak, ['the']]) // the leak, then leading glue
+    expect(r.cutPointLeaks).toEqual([])
+    expect(r.failures).toEqual([])
+  })
+
+  it('deciding window ending exactly at the caller onset -> gate false accept', () => {
+    // 10335 + 3 x 1500 = 14835 = onset
+    const r = evaluateNoPauseScene(n02, n02Seen(10_335, 3), 's', MEDIA0)
+    expect(r.gateFalseAcceptLeaks).toHaveLength(1)
+    expect(r.failures).toEqual([])
+  })
+
+  it('U1 final without speakerCheckWindows -> cut-point leak failure (fail closed)', () => {
+    const r = evaluateNoPauseScene(n02, n02Seen(8720, undefined), 's', MEDIA0)
+    expect(r.gateFalseAcceptLeaks).toEqual([])
+    expect(r.cutPointLeaks).toHaveLength(1)
+    expect(r.failures.some((f) => f.includes('no speakerCheckWindows'))).toBe(true)
+  })
+
+  describe('bounded leaks (decision z)', () => {
+    // bystander voiced to 12100, caller onset 12300 (segments); U1 of the bystander starts at
+    // 7575, k = 4 windows: the deciding window ends at 7575 + 6000 = 13575, bound 10575.
+    const bounded = (splitScene: number, callerText: string, startScene = 7575): Seen[] => [
+      start('u1', 350),
+      final('u1', 7000, 'caller', 'the enrollment sentence is read out slowly'),
+      start('u2', startScene),
+      split('u2', 'u3', startScene, splitScene - startScene, ['other', 'caller']),
+      barge('u3', 14_000),
+      { ...final('u2', 14_100, 'other', 'a passenger asked'), speakerCheckWindows: 4 },
+      final('u3', 15_500, 'caller', callerText),
+    ]
+
+    it('n06 shape: split 636 ms before the caller onset, one bystander word -> bounded, passes', () => {
+      const r = evaluateNoPauseScene(
+        segments,
+        bounded(11_664, 'madrid please check my order'),
+        's',
+        MEDIA0,
+      )
+      expect(r.boundedLeaks.map((l) => l.words)).toEqual([['madrid']])
+      expect(r.cutPointLeaks).toEqual([])
+      expect(r.failures).toEqual([])
+    })
+
+    it('n03 shape: split = deciding end - 3000 (onset - 1725) -> bounded, passes', () => {
+      const r = evaluateNoPauseScene(
+        segments,
+        bounded(10_575, 'madrid tonight please check my order'),
+        's',
+        MEDIA0,
+      )
+      expect(BOUNDED_LEAK_MAX_BEFORE_DECIDING_END_MS).toBe(3000)
+      expect(r.boundedLeaks.map((l) => l.words)).toEqual([['madrid', 'tonight']])
+      expect(r.failures).toEqual([])
+    })
+
+    it('split at deciding end - 3020 -> unbounded leak, fails', () => {
+      const r = evaluateNoPauseScene(
+        segments,
+        bounded(10_555, 'madrid tonight please check my order'),
+        's',
+        MEDIA0,
+      )
+      expect(r.boundedLeaks).toEqual([])
+      expect(r.cutPointLeaks).toHaveLength(1)
+      expect(r.failures.some((f) => f.includes('holds bystander words'))).toBe(true)
+    })
+
+    it('bounded leading glue passes, glue before the bound fails', () => {
+      const md = segments.map((s) =>
+        s.role === 'bystander' ? { ...s, text: 'she said it was on' } : s,
+      )
+      const ok = evaluateNoPauseScene(md, bounded(11_664, 'on please check my order'), 's', MEDIA0)
+      expect(ok.boundedLeaks.map((l) => l.words)).toEqual([['on']])
+      expect(ok.leadingGlue).toEqual([])
+      expect(ok.failures).toEqual([])
+      const bad = evaluateNoPauseScene(md, bounded(10_555, 'on please check my order'), 's', MEDIA0)
+      expect(bad.leadingGlue).toHaveLength(1)
+      expect(bad.failures.some((f) => f.includes('leading glue'))).toBe(true)
+    })
+
+    it('bounded leak with the cut 50 ms after the caller onset fails on the onset check', () => {
+      const r = evaluateNoPauseScene(
+        segments,
+        bounded(12_350, 'madrid check my order'),
+        's',
+        MEDIA0,
+      )
+      expect(r.boundedLeaks).toHaveLength(1)
+      expect(r.failures.some((f) => f.includes('cut after caller onset (+50 ms)'))).toBe(true)
+    })
+
+    it('the same final with the cut before the onset passes (a lost "please" is STT, not the cut)', () => {
+      // Similarity of "check my order" vs "please check my order" is 0.75, the threshold.
+      const r = evaluateNoPauseScene(
+        segments,
+        bounded(11_664, 'madrid check my order'),
+        's',
+        MEDIA0,
+      )
+      expect(r.boundedLeaks.map((l) => l.words)).toEqual([['madrid']])
+      expect(r.failures).toEqual([])
+    })
+
+    it('bounded leak with a missing caller onset fails closed', () => {
+      const md = segments.map((s) =>
+        s.role === 'main' && !s.enroll
+          ? { ...s, startMs: Number.NaN, voicedStartMs: undefined }
+          : s,
+      )
+      const r = evaluateNoPauseScene(
+        md,
+        bounded(11_664, 'madrid please check my order'),
+        's',
+        MEDIA0,
+      )
+      expect(r.failures.some((f) => f.includes('unknown cut or caller onset'))).toBe(true)
+    })
+
+    const longSegs = segments.map((s) =>
+      s.role === 'main' && !s.enroll
+        ? {
+            ...s,
+            kind: 'long' as const,
+            text: 'please check my broken order from yesterday evening',
+          }
+        : s,
+    )
+    it('long caller with a bounded leak and no caller words fails', () => {
+      const r = evaluateNoPauseScene(longSegs, bounded(11_664, 'madrid tonight'), 's', MEDIA0)
+      expect(r.failures.some((f) => f.includes('lost caller words'))).toBe(true)
+    })
+
+    it('long caller with a bounded leak and one STT substitution passes', () => {
+      const r = evaluateNoPauseScene(
+        longSegs,
+        bounded(11_664, 'madrid please check my broke order from yesterday evening'),
+        's',
+        MEDIA0,
+      )
+      expect(r.boundedLeaks.map((l) => l.words)).toEqual([['madrid']])
+      expect(r.failures).toEqual([])
+    })
+
+    it('a lost caller word still fails with a bounded split', () => {
+      const r = evaluateNoPauseScene(segments, bounded(11_664, 'please'), 's', MEDIA0)
+      expect(r.failures.some((f) => f.includes('similarity'))).toBe(true)
+    })
+
+    it('no split at all still fails', () => {
+      const seen: Seen[] = [
+        start('u1', 350),
+        final('u1', 7000, 'caller', 'the enrollment sentence is read out slowly'),
+        start('u2', 7575),
+        final('u2', 15_500, 'other', 'a passenger please check my order'),
+      ]
+      const r = evaluateNoPauseScene(segments, seen, 's', MEDIA0)
+      expect(r.failures.some((f) => f.includes('no caller utterance of its own'))).toBe(true)
+    })
+  })
+
+  it('fails the upgrade fallback when the barge is before the caller onset (decision ll keeps the timing gate)', () => {
+    const seen: Seen[] = [
+      start('u1', 350),
+      final('u1', 7000, 'caller', 'the enrollment sentence is read out slowly'),
+      start('u2', 7350),
+      barge('u2', 12_000),
+      final('u2', 15_500, 'caller', 'the delayed flight to madrid tonight please check my order'),
+    ]
+    const r = evaluateNoPauseScene(segments, seen, 's', MEDIA0)
+    expect(r.cutPointLeaks).toHaveLength(1)
+    expect(r.upgradeLeaks).toHaveLength(0)
+    expect(r.failures.some((f) => f.includes('holds bystander words'))).toBe(true)
+  })
+
+  describe('whole-utterance upgrade leak (decision ll, eu-load 43759349585 n01 shape)', () => {
+    // No split: the bystander's utterance u2 is upgraded to caller and holds the bystander
+    // sentence plus the caller's. Caller onset is 12300 (segments).
+    const upgraded = (
+      o: { bargeAt?: number | null; text?: string; speaker?: string; extra?: Seen[] } = {},
+    ): Seen[] => [
+      start('u1', 350),
+      final('u1', 7000, 'caller', 'the enrollment sentence is read out slowly'),
+      start('u2', 7350),
+      ...(o.bargeAt === null ? [] : [barge('u2', o.bargeAt ?? 12_400)]),
+      {
+        ...final(
+          'u2',
+          15_500,
+          o.speaker ?? 'caller',
+          o.text ??
+            'a passenger asked about the delayed flight to madrid tonight please check my order',
+        ),
+        speakerCheckWindows: 6,
+      },
+      ...(o.extra ?? []),
+    ]
+
+    it('counts it: caller final holds both sentences, barge after the onset -> no failure', () => {
+      const r = evaluateNoPauseScene(segments, upgraded(), 's', MEDIA0)
+      expect(r.failures).toEqual([])
+      expect(r.upgradeLeaks).toHaveLength(1)
+      expect(r.upgradeLeaks[0]!.utteranceId).toBe('u2')
+      expect(r.upgradeLeaks[0]!.words).toEqual(
+        expect.arrayContaining(['delayed', 'flight', 'madrid']),
+      )
+      expect(r.cutPointLeaks).toHaveLength(0)
+      expect(r.leadingGlue).toHaveLength(0)
+    })
+
+    it('accepts a barge exactly at the caller onset', () => {
+      const r = evaluateNoPauseScene(segments, upgraded({ bargeAt: 12_300 }), 's', MEDIA0)
+      expect(r.failures).toEqual([])
+      expect(r.upgradeLeaks).toHaveLength(1)
+    })
+
+    it('fails when the barge is 1 ms before the caller onset', () => {
+      const r = evaluateNoPauseScene(segments, upgraded({ bargeAt: 12_299 }), 's', MEDIA0)
+      expect(r.upgradeLeaks).toHaveLength(0)
+      expect(r.failures.some((f) => f.includes('holds bystander words'))).toBe(true)
+    })
+
+    it('fails when any one of several barges is before the onset', () => {
+      const r = evaluateNoPauseScene(
+        segments,
+        upgraded({ extra: [barge('u2', 9_000)] }),
+        's',
+        MEDIA0,
+      )
+      expect(r.upgradeLeaks).toHaveLength(0)
+      expect(r.failures.length).toBeGreaterThan(0)
+    })
+
+    it('fails closed with no barge event', () => {
+      const r = evaluateNoPauseScene(segments, upgraded({ bargeAt: null }), 's', MEDIA0)
+      expect(r.upgradeLeaks).toHaveLength(0)
+      expect(r.failures.some((f) => f.includes('no barge_in on caller utterance u2'))).toBe(true)
+    })
+
+    it('fails when the caller sentence is missing from the final', () => {
+      const r = evaluateNoPauseScene(
+        segments,
+        upgraded({ text: 'a passenger asked about the delayed flight to madrid tonight' }),
+        's',
+        MEDIA0,
+      )
+      expect(r.upgradeLeaks).toHaveLength(0)
+      expect(r.failures.length).toBeGreaterThan(0)
+    })
+
+    it('fails when the caller sentence is below 0.75 similarity', () => {
+      const r = evaluateNoPauseScene(
+        segments,
+        upgraded({ text: 'a passenger asked about the delayed flight to madrid please sheck' }),
+        's',
+        MEDIA0,
+      )
+      expect(r.upgradeLeaks).toHaveLength(0)
+      expect(r.failures.length).toBeGreaterThan(0)
+    })
+
+    it('fails a caller final with only bystander words', () => {
+      const r = evaluateNoPauseScene(
+        segments,
+        upgraded({ text: 'a passenger asked about the delayed flight to madrid tonight' }),
+        's',
+        MEDIA0,
+      )
+      expect(r.upgradeLeaks).toHaveLength(0)
+      expect(r.cutPointLeaks).toHaveLength(1)
+      expect(r.failures.some((f) => f.includes('holds bystander words'))).toBe(true)
+    })
+
+    it('fails when another final also holds the caller sentence', () => {
+      const r = evaluateNoPauseScene(
+        segments,
+        upgraded({ extra: [final('u9', 16_000, 'other', 'please check my order')] }),
+        's',
+        MEDIA0,
+      )
+      expect(r.upgradeLeaks).toHaveLength(0)
+      expect(r.failures.some((f) => f.includes('holds bystander words'))).toBe(true)
+    })
+
+    it('n01 shape from eu-load 43759349585: counted, no failure', () => {
+      const n01: NoPauseSegment[] = [
+        {
+          role: 'main',
+          startMs: 300,
+          endMs: 5800,
+          text: 'Could you please check whether the invoice from last month was paid? I think it went out twice.',
+          kind: 'long',
+          enroll: true,
+        },
+        {
+          role: 'bystander',
+          startMs: 7300,
+          endMs: 15_600,
+          voicedEndMs: 15_500,
+          text: 'narrow path. On rainy afternoons my grandmother baked apple pies and sang old songs while the kitchen windows steamed.',
+          kind: 'background',
+        },
+        {
+          role: 'main',
+          startMs: 15_600,
+          endMs: 18_000,
+          voicedStartMs: 15_694,
+          text: 'victor seven eight nine',
+          kind: 'qualified',
+        },
+      ]
+      const seen: Seen[] = [
+        start('u1', 350),
+        final('u1', 7000, 'caller', n01[0]!.text),
+        start('u2', 7350),
+        barge('u2', 17_537),
+        {
+          ...final(
+            'u2',
+            19_000,
+            'caller',
+            'narrow path. On rainy afternoons my grandmother baked apple pies and sang old songs while the kitchen windows steamed. Victor seven eight nine',
+          ),
+          speakerCheckWindows: 6,
+        },
+      ]
+      const r = evaluateNoPauseScene(n01, seen, 's', MEDIA0)
+      expect(r.failures).toEqual([])
+      expect(r.upgradeLeaks).toHaveLength(1)
+      expect(r.cutPointLeaks).toHaveLength(0)
+      expect(r.leadingGlue).toHaveLength(0)
+    })
+
+    it('fails when the upgraded final is not labelled caller', () => {
+      const r = evaluateNoPauseScene(segments, upgraded({ speaker: 'other' }), 's', MEDIA0)
+      expect(r.upgradeLeaks).toHaveLength(0)
+      expect(r.failures.length).toBeGreaterThan(0)
+    })
+
+    it('does not apply when an other→caller split exists: an out-of-bound leak still fails', () => {
+      // Split 3001 ms before the deciding window end minus the bound: unchanged unbounded leak.
+      const seen = [
+        start('u1', 350),
+        final('u1', 7000, 'caller', 'the enrollment sentence is read out slowly'),
+        start('u2', 7575),
+        split('u2', 'u3', 7575, 8000 - 7575, ['other', 'caller']),
+        barge('u3', 14_000),
+        { ...final('u2', 14_100, 'other', 'a passenger asked'), speakerCheckWindows: 4 },
+        final('u3', 15_500, 'caller', 'madrid please check my order'),
+      ]
+      const r = evaluateNoPauseScene(segments, seen, 's', MEDIA0)
+      expect(r.upgradeLeaks).toHaveLength(0)
+      expect(r.cutPointLeaks).toHaveLength(1)
+      expect(r.failures.some((f) => f.includes('holds bystander words'))).toBe(true)
+    })
+
+    it('a bounded leak is unchanged and not an upgrade leak', () => {
+      const seen = [
+        start('u1', 350),
+        final('u1', 7000, 'caller', 'the enrollment sentence is read out slowly'),
+        start('u2', 7575),
+        split('u2', 'u3', 7575, 11_664 - 7575, ['other', 'caller']),
+        barge('u3', 14_000),
+        { ...final('u2', 14_100, 'other', 'a passenger asked'), speakerCheckWindows: 4 },
+        final('u3', 15_500, 'caller', 'madrid please check my order'),
+      ]
+      const r = evaluateNoPauseScene(segments, seen, 's', MEDIA0)
+      expect(r.failures).toEqual([])
+      expect(r.boundedLeaks).toHaveLength(1)
+      expect(r.upgradeLeaks).toHaveLength(0)
+    })
+  })
+
+  it('fails when the caller gets no utterance of its own', () => {
+    const seen: Seen[] = [
+      start('u1', 350),
+      final('u1', 7000, 'caller', 'the enrollment sentence is read out slowly'),
+      start('u2', 7350),
+      final('u2', 15_500, 'other', 'the delayed flight to madrid tonight please check my order'),
+    ]
+    const r = evaluateNoPauseScene(segments, seen, 's', MEDIA0)
+    expect(r.failures.some((f) => f.includes('no caller utterance of its own'))).toBe(true)
+  })
+
+  it('fails a barge-in on the bystander part and a missing caller barge-in', () => {
+    const seen = clean().map((e) => (e.type === 'barge_in' ? { ...e, utteranceId: 'u2' } : e))
+    const r = evaluateNoPauseScene(segments, seen, 's', MEDIA0)
+    expect(r.failures.some((f) => f.includes('whose final is speaker other'))).toBe(true)
+    expect(r.failures.some((f) => f.includes('no barge_in on caller utterance u3'))).toBe(true)
+  })
+
+  it('names a missing caller barge-in as a harness failure when the reply started after the qualifying partial (decision ii)', () => {
+    const partial: Seen = {
+      type: 'user_speech_partial',
+      atMs: 13_000,
+      utteranceId: 'u3',
+      text: 'please check',
+    }
+    const noBarge = clean().filter((e) => e.type !== 'barge_in')
+    const late = [
+      ...noBarge,
+      partial,
+      { type: 'agent_speaking_start', atMs: 13_500 },
+      { type: 'agent_speaking_end', atMs: 30_000 },
+    ].sort((a, b) => a.atMs - b.atMs)
+    const lateOut = evaluateNoPauseScene(segments, late, 's', MEDIA0).failures.join('\n')
+    expect(lateOut).toMatch(
+      /harness: no reply playing at the qualifying partial at 13000 ms \(reply started at 13500 ms\)/,
+    )
+    expect(lateOut).not.toMatch(/no barge_in/)
+    // Reply playing at the partial and no barge-in: a real miss.
+    const playing = [
+      ...noBarge,
+      { type: 'agent_speaking_start', atMs: 7_500 },
+      partial,
+      { type: 'agent_speaking_end', atMs: 30_000 },
+    ].sort((a, b) => a.atMs - b.atMs)
+    const playingOut = evaluateNoPauseScene(segments, playing, 's', MEDIA0).failures.join('\n')
+    expect(playingOut).toMatch(/no barge_in on caller utterance u3/)
+    expect(playingOut).not.toMatch(/harness/)
+  })
+
+  it('follows a re-cut chain to the caller utterance that ends in a final', () => {
+    const seen: Seen[] = [
+      start('u1', 350),
+      final('u1', 7000, 'caller', 'the enrollment sentence is read out slowly'),
+      start('u2', 7350),
+      split('u2', 'u3', 7350, 1000, ['other', 'caller']),
+      split('u3', 'u4', 8350, 1500, ['caller', 'other']),
+      split('u4', 'u5', 9850, 2400, ['other', 'caller']),
+      barge('u5', 14_000),
+      // u3 is a gate false accept: u2's deciding window ends at 7350 + 1 x 1500, before the caller.
+      { ...final('u2', 9000, 'other', 'a passenger'), speakerCheckWindows: 1 },
+      final('u3', 10_000, 'caller', 'asked'),
+      final('u4', 13_000, 'other', 'about the delayed'),
+      final('u5', 15_500, 'caller', 'please check my order'),
+    ]
+    const r = evaluateNoPauseScene(segments, seen, 's', MEDIA0)
+    expect(r.failures).toEqual([])
+    expect(r.otherToCallerSplits).toBe(2)
+  })
+
+  it('keeps the caller utterance when trailing bed is split off caller→other (run 20261113-223647 n03)', () => {
+    const seen: Seen[] = [
+      ...clean(),
+      split('u3', 'u4', 12_250, 1800, ['caller', 'other']),
+      final('u4', 17_000, 'other', ''),
+    ]
+    const r = evaluateNoPauseScene(segments, seen, 's', MEDIA0)
+    expect(r.failures).toEqual([])
+  })
+
+  it('fails a qualified caller phrase below the similarity threshold', () => {
+    const r = evaluateNoPauseScene(segments, clean(12_250, 'please'), 's', MEDIA0)
+    expect(r.failures.some((f) => f.includes('similarity'))).toBe(true)
+  })
+})
+
+describe('enrollment pause time shift', () => {
+  it('moves segments at or after the insert by exactly the inserted ms, earlier ones stay', () => {
+    const at = enrollPauseAtMs(segments)!
+    expect(at).toBe(6000)
+    const out = shiftSegmentsAfter(segments, at, ENROLL_PAUSE_MS)
+    expect(out[0]).toEqual(segments[0])
+    expect(out[1]!.startMs).toBe(7300 + ENROLL_PAUSE_MS)
+    expect(out[1]!.endMs).toBe(12_300 + ENROLL_PAUSE_MS)
+    expect(out[1]!.voicedEndMs).toBe(12_100 + ENROLL_PAUSE_MS)
+    expect(out[1]!.voicedStartMs).toBeUndefined()
+    expect(out[2]!.voicedStartMs).toBe(12_300 + ENROLL_PAUSE_MS)
+    expect(out[2]!.startMs - out[1]!.startMs).toBe(segments[2]!.startMs - segments[1]!.startMs)
+  })
+  it('a segment starting exactly at the insert point moves', () => {
+    const out = shiftSegmentsAfter(segments, 7300, 100)
+    expect(out[1]!.startMs).toBe(7400)
+    expect(out[0]!.startMs).toBe(300)
+  })
+})
+
+describe('SHERPA_NOPAUSE_ONLY scene filter', () => {
+  it('plays every scene when unset or blank', () => {
+    expect(parseSceneFilter(undefined)).toBeUndefined()
+    expect(parseSceneFilter(' , ')).toBeUndefined()
+    expect(sceneSelected('s4_test_n02', undefined)).toBe(true)
+  })
+  it('keeps only the listed ids, exact match', () => {
+    const f = parseSceneFilter('s4_test_n02, s4_test_n05')
+    expect(sceneSelected('s4_test_n02', f)).toBe(true)
+    expect(sceneSelected('s4_test_n05', f)).toBe(true)
+    expect(sceneSelected('s4_test_n0', f)).toBe(false)
+    expect(sceneSelected('s4_test_n03', f)).toBe(false)
+  })
+})

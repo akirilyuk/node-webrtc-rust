@@ -448,3 +448,72 @@ Bar (decision kk), against bb on every held-out set: caller-only lost words abov
 - LibriSpeech dev-clean caller-only, clean: U1 [0.370,0.215,0.190,0.306], lost 17
 
 So the eu-load n01 shape (five `other` windows 0.213-0.351, about 7 s) stays an upgrade. Product unchanged; the question goes to the user (decision kk).
+
+
+## Per-utterance caller loss (caller-reject-rate, chunk 1)
+
+Plan `development/node-webrtc-rust/plans/2026-11-16-caller-reject-rate.md`. Bench-only: the new `near_miss_bench --utterance-loss` mode (no product code changed). Measures, with the shipped 0.20.0 rules, how many real caller utterances end up dropped or cut, how many words that costs, and why.
+
+**Gate under test.** Threshold 0.459, `split_on_speaker_change` on (the cloud setting): window 1 `caller` keeps the utterance; window 1 `other` goes through the product other-to-caller path (`product_o2c` mode 3, deferred veto, near-miss scan 750/125) with split rule bb (a U1 window below 0.20 splits, otherwise the change upgrades U1 to `caller`). A VAD utterance under 1.5 s is `unknown` and fails open (not lost).
+
+**Enrollment (product-faithful).** Whole voiced utterances of the speaker are appended until at least 3000 ms, then one embed of the whole buffer (`enroll_utterance` / `Msg::Enroll`). The bed (Tocumen -12 dB) is on the enrollment audio too in the bed rows. This differs from the earlier benches, which embed exactly 3000 ms from the voiced onset of one clean utterance, so the numbers here are not comparable to 6j.
+
+**Modes.** same-session (primary): enroll from the first utterances of the speaker's first chapter, test on the next 15 utterances of that chapter. cross-session: enroll from the first chapter, test on the first 10 utterances of the second chapter (a channel change stand-in; reported, not gating). Speakers: all speakers of the split (40 / 40 / 33). One scene per utterance (up to 15 s, 800 ms lead, 2 s tail), VAD as in the other benches.
+
+**Causes (counterfactual, first that recovers the utterance).** 1 oracle reference (mean of unit embeddings of up to about 30 s of other utterances of the same chapter, not enrolled and not tested, same bed condition); 2 bed removed from the test utterance only (bed rows); 3 short utterance (at most 2 windows); 4 speaker the model handles badly (the speaker's window p10 against the oracle reference is below the threshold); 5 unexplained. A recovered utterance is one that ends `caller` with no lost word.
+
+**Run.** Models from the primary checkout `examples/voice-agent-local-sherpa/.models`, LibriSpeech under `/tmp/librispeech/LibriSpeech` (`dev-other` from openslr SLR12, CC BY 4.0, converted to 16 kHz wav like the other sets), bed `/tmp/sg-demo/bed/tocumen48.f32`. Audio never committed.
+
+```bash
+cargo build --release -p node-webrtc-rust-vendor-sherpa-onnx --example near_miss_bench
+development/scripts/host-safety/heavy-run.sh --label ul-<set> -- target/release/examples/near_miss_bench --utterance-loss \
+  --model $M/speaker/nemo_en_titanet_small.onnx --stt $M/sherpa-onnx-streaming-zipformer-en-2023-06-26 \
+  --librispeech /tmp/librispeech/LibriSpeech --ls-split <test-clean|dev-clean|dev-other> \
+  --bed /tmp/sg-demo/bed/tocumen48.f32 --out /tmp/ul-<set>.md
+```
+
+**Parity.** `NM_SPLIT_DUMP` on the dev-clean bed + clean run dumped 92 product confirms; `cargo test -p node-webrtc-rust-speech bench_split_parity -- --ignored` replays them through the product `other_to_caller_split` + `scan_caller_sub_window`: 92 same, 0 differ (90 with a caller sub-window, 2 deferred). The test needed one mechanical fix: `ps - pre` overflowed for a first window starting before 300 ms (`saturating_sub`, as the bench's `slice` does).
+
+### Result (utterance outcome, words lost above the floor, causes, speakers)
+
+| set | mode | utterances (>= 1.5 s) | unknown (< 1.5 s) | dropped | partly lost | lost utterances % | words lost above floor | bad enrollment | noise | short utterance | speaker the model handles badly | unexplained | top 5 speakers (words lost, utterances lost) | top 5 share of words |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| LibriSpeech dev-clean, Tocumen bed -12 dB | same-session | 550 | 24 | 12 | 1 | 2.4 | 90 | 10 | 0 | 3 | 0 | 0 | 3576: 45, 5; 6319: 20, 2; 3752: 13, 2; 1462: 9, 1; 5895: 3, 1 | 100 % |
+| LibriSpeech dev-clean, Tocumen bed -12 dB | cross-session | 304 | 20 | 17 | 0 | 5.6 | 400 | 17 | 0 | 0 | 0 | 0 | 1988: 292, 11; 6319: 83, 4; 8842: 17, 1; 7850: 8, 1 | 100 % |
+| LibriSpeech dev-clean, clean | same-session | 538 | 0 | 3 | 1 | 0.7 | 34 | 4 | 0 | 0 | 0 | 0 | 3576: 23, 3; 6319: 11, 1 | 100 % |
+| LibriSpeech dev-clean, clean | cross-session | 300 | 0 | 22 | 0 | 7.3 | 452 | 22 | 0 | 0 | 0 | 0 | 1988: 295, 12; 6319: 126, 7; 8842: 17, 1; 6295: 7, 1; 7850: 7, 1 | 100 % |
+| LibriSpeech dev-other, Tocumen bed -12 dB | same-session | 391 | 16 | 3 | 0 | 0.8 | 8 | 2 | 0 | 1 | 0 | 0 | 1686: 8, 2; 1651: 0, 1 | 100 % |
+| LibriSpeech dev-other, Tocumen bed -12 dB | cross-session | 280 | 13 | 34 | 1 | 12.5 | 434 | 30 | 0 | 3 | 2 | 0 | 1585: 137, 9; 3915: 125, 6; 6455: 46, 5; 4153: 40, 5; 4570: 31, 3 | 87 % |
+| LibriSpeech dev-other, clean | same-session | 387 | 0 | 2 | 0 | 0.5 | 1 | 0 | 0 | 2 | 0 | 0 | 1686: 1, 1; 1651: 0, 1 | 100 % |
+| LibriSpeech dev-other, clean | cross-session | 279 | 0 | 40 | 0 | 14.3 | 656 | 39 | 0 | 1 | 0 | 0 | 3915: 253, 10; 1585: 175, 11; 6455: 142, 10; 4831: 56, 3; 5849: 17, 2 | 98 % |
+| LibriSpeech test-clean, Tocumen bed -12 dB | same-session | 557 | 21 | 15 | 0 | 2.7 | 108 | 9 | 0 | 4 | 2 | 0 | 672: 65, 6; 8555: 18, 3; 5639: 13, 2; 3729: 5, 1; 1995: 3, 1 | 96 % |
+| LibriSpeech test-clean, Tocumen bed -12 dB | cross-session | 306 | 16 | 15 | 0 | 4.9 | 214 | 15 | 0 | 0 | 0 | 0 | 4446: 177, 10; 4992: 11, 1; 2961: 10, 1; 8555: 9, 1; 7127: 5, 1 | 99 % |
+| LibriSpeech test-clean, clean | same-session | 550 | 0 | 10 | 0 | 1.8 | 89 | 9 | 0 | 1 | 0 | 0 | 672: 58, 5; 5639: 13, 2; 3729: 9, 2; 8555: 9, 1 | 100 % |
+| LibriSpeech test-clean, clean | cross-session | 300 | 0 | 10 | 0 | 3.3 | 177 | 10 | 0 | 0 | 0 | 0 | 4446: 177, 10 | 100 % |
+
+### Bystander baselines, same harness
+
+Other speakers' utterances (3 bystanders per caller, 3 files each) scored against the same product-enrolled reference; accepted = window 1 `caller`, or an other-to-caller confirm, or the deferred veto pending at the end of speech.
+
+| set | mode | windows | window FAR % | pairs | pairs >= 5 % | pairs >= 20 % | bystander-only utterances (>= 1.5 s) | accepted (window 1 caller, or confirm, or veto pending) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| LibriSpeech dev-clean, Tocumen bed -12 dB | same-session | 1510 | 0.07 | 102 | 1 | 0 | 325 | 1 |
+| LibriSpeech dev-clean, Tocumen bed -12 dB | cross-session | 1276 | 0.08 | 87 | 1 | 0 | 278 | 1 |
+| LibriSpeech dev-clean, clean | same-session | 1547 | 0.00 | 102 | 0 | 0 | 323 | 2 |
+| LibriSpeech dev-clean, clean | cross-session | 1312 | 0.00 | 87 | 0 | 0 | 275 | 2 |
+| LibriSpeech dev-other, Tocumen bed -12 dB | same-session | 1134 | 0.97 | 75 | 1 | 1 | 243 | 4 |
+| LibriSpeech dev-other, Tocumen bed -12 dB | cross-session | 1237 | 0.00 | 81 | 0 | 0 | 259 | 1 |
+| LibriSpeech dev-other, clean | same-session | 1172 | 0.68 | 75 | 1 | 1 | 240 | 3 |
+| LibriSpeech dev-other, clean | cross-session | 1277 | 0.00 | 81 | 0 | 0 | 258 | 0 |
+| LibriSpeech test-clean, Tocumen bed -12 dB | same-session | 1642 | 0.00 | 102 | 0 | 0 | 333 | 2 |
+| LibriSpeech test-clean, Tocumen bed -12 dB | cross-session | 1427 | 0.00 | 87 | 0 | 0 | 280 | 1 |
+| LibriSpeech test-clean, clean | same-session | 1672 | 0.00 | 102 | 0 | 0 | 337 | 0 |
+| LibriSpeech test-clean, clean | cross-session | 1450 | 0.00 | 87 | 0 | 0 | 284 | 0 |
+
+Not re-measured in this chunk: the per-window FAR/pairs of `false_accept_bench` (its 1560-pair table stays the reference), the long-other 12/18 s exposure (`speaker_bench --long-other`; LibriSpeech scenes here are capped at 15 s) and the airport demo scenes A and B (need the demo logs). Piper held-out reroll: not run (see the plan push-back).
+
+### Reading the table
+
+- Lost caller words are concentrated: the top 5 speakers hold 96-100 % of lost words in every same-session row, and 87-100 % cross-session. One speaker dominates most rows (672 in test-clean same-session, 4446 cross-session, 1988 and 6319 in dev-clean cross-session).
+- The recovering cause is almost always the enrollment: with an oracle reference the dropped utterance is kept. Noise alone recovers none, and "speaker the model handles badly" and "short" are small. Drops outnumber partly lost utterances (cuts of real caller words by a false split) by a wide margin; partly lost is 0-1 per row.
+- same-session loss is small on dev-clean and dev-other (0.5-2.4 % of utterances), larger on test-clean with the bed (2.7 %, 108 words). Cross-session loses 3-14 % of utterances.

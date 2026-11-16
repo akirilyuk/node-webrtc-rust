@@ -5293,7 +5293,7 @@ mod tests {
                     .to_vec()
             };
             let pre = 300_u32;
-            let prev = (ps, ws, cut(ps - pre, ws));
+            let prev = (ps, ws, cut(ps.saturating_sub(pre), ws));
             let clip = cut(ws - pre, ws + 1500);
             let refine = other_to_caller_split(Some(&prev), (ws, ws + 1500), &clip);
             let queue = scores

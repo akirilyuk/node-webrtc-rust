@@ -703,6 +703,9 @@ fn run() -> Result<(), String> {
             "--evidence" => {
                 let _ = straddle::EVIDENCE.set(());
             }
+            "--utterance-loss" => {
+                let _ = straddle::UTT_LOSS.set(());
+            }
             "--second-cut" => {
                 let _ = straddle::EVIDENCE.set(());
                 let _ = straddle::SECOND_CUT.set(());
@@ -758,6 +761,18 @@ fn run() -> Result<(), String> {
                 scenes.push(s);
             }
         }
+    }
+    if straddle::UTT_LOSS.get().is_some() {
+        let root = librispeech
+            .as_ref()
+            .ok_or("--utterance-loss needs --librispeech")?;
+        straddle::utterance_loss(&embedder, root, bed.as_deref(), ls_callers, threshold)?;
+        md.push_str(&straddle::utterance_loss_tables());
+        print!("{md}");
+        if let Some(path) = out {
+            fs::write(&path, &md).map_err(|e| format!("write {}: {e}", path.display()))?;
+        }
+        return Ok(());
     }
     if !straddle_piper.is_empty() {
         md.push_str(&straddle::piper(&embedder, &straddle_piper, threshold)?);
@@ -1925,12 +1940,22 @@ mod straddle {
     /// `caller` one minus 300 ms, clamped; the previous window's start without one), the product's
     /// `other` -> `caller` cut since chunk 6g.
     fn dump_split(embedder: &Embedder, p: &Placed, utt: &Utt, k: usize, threshold: f32) {
+        dump_split_raw(embedder, &p.samples, &p.reference, utt, k, threshold);
+    }
+
+    fn dump_split_raw(
+        embedder: &Embedder,
+        samples: &[f32],
+        reference: &[f32],
+        utt: &Utt,
+        k: usize,
+        threshold: f32,
+    ) {
         let Some(dir) = std::env::var_os("NM_SPLIT_DUMP").map(PathBuf::from) else {
             return;
         };
         let n = DUMP_N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let pcm: Vec<u8> = p
-            .samples
+        let pcm: Vec<u8> = samples
             .iter()
             .flat_map(|x| ((x.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes())
             .collect();
@@ -1938,12 +1963,12 @@ mod straddle {
         let _ = fs::write(dir.join(format!("{n}.pcm")), pcm);
         let lo = utt.wins[k - 1].0;
         let subs = subs_for(
-            &p.samples,
+            samples,
             lo,
             utt.wins[k].0 + WINDOW_MS,
             (750, 125),
             embedder,
-            &p.reference,
+            reference,
         );
         let split = subs
             .iter()
@@ -2957,6 +2982,542 @@ mod straddle {
             eprintln!("{cname} done ({n} utterances)");
         }
         Ok(())
+    }
+
+    // ---- caller-reject-rate chunk 1: per-utterance caller loss (`--utterance-loss`). ----
+
+    /// `--utterance-loss`: LibriSpeech only, product enrollment, shipped rules (deferred veto +
+    /// decision bb), outcome and cause per VAD utterance (`NEAR_MISS_BENCH.md`, "Per-utterance
+    /// caller loss").
+    pub static UTT_LOSS: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    const UL_TEST_SAME: usize = 15;
+    const UL_TEST_CROSS: usize = 10;
+    const UL_ORACLE_MS: usize = 30_000;
+    const UL_ENROLL_MS: usize = 3000;
+    const UL_BYSTANDERS: usize = 3;
+    const UL_BY_FILES: usize = 3;
+    const UL_CAUSES: [&str; 5] = [
+        "bad enrollment",
+        "noise",
+        "short utterance",
+        "speaker the model handles badly",
+        "unexplained",
+    ];
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum UlOut {
+        Caller,
+        Dropped,
+        Partly,
+        Unknown,
+    }
+
+    struct UlRec {
+        set: String,
+        mode: &'static str,
+        speaker: String,
+        out: UlOut,
+        lost: usize,
+        cause: Option<usize>,
+    }
+
+    #[derive(Default)]
+    struct UlFar {
+        set: String,
+        mode: &'static str,
+        windows: usize,
+        hits: usize,
+        utts: usize,
+        accepted: usize,
+        pairs: Vec<(usize, usize)>,
+    }
+
+    static UL: std::sync::Mutex<Vec<UlRec>> = std::sync::Mutex::new(Vec::new());
+    static UL_FAR: std::sync::Mutex<Vec<UlFar>> = std::sync::Mutex::new(Vec::new());
+
+    struct Judged {
+        out: UlOut,
+        lost: usize,
+        wins: usize,
+    }
+
+    /// The shipped gate on one utterance `[u, ue)` (>= 1 window): window 1 `caller` keeps it;
+    /// otherwise product other -> caller (deferred veto, mode 3) with split rule bb. Words lost
+    /// are measure A above the floor (cut at `u`), as in `caller_only_rec`.
+    fn ul_judge(
+        samples: &[f32],
+        clean: &[f32],
+        (u, ue): (usize, usize),
+        embedder: &Embedder,
+        reference: &[f32],
+        threshold: f32,
+        dump: bool,
+    ) -> Judged {
+        let wins = score_windows(samples, u, ue, embedder, reference);
+        let n = wins.len();
+        if n == 0 {
+            return Judged {
+                out: UlOut::Unknown,
+                lost: 0,
+                wins: 0,
+            };
+        }
+        let utt = Utt {
+            wins,
+            rechecks: Vec::new(),
+        };
+        let kept_whole = Judged {
+            out: UlOut::Caller,
+            lost: 0,
+            wins: n,
+        };
+        if utt.wins[0].1 >= threshold {
+            return kept_whole;
+        }
+        let mut cache = SubCache::default();
+        let (o, _st, end_caller) =
+            product_o2c(samples, &utt, embedder, reference, threshold, 3, &mut cache);
+        let (cref, _) = recognize_words(slice(clean, u, ue)).unwrap_or_default();
+        let kept = |cut: usize| -> usize {
+            let end = (cut + U2_HEAD_MS).min(ue);
+            let (hyp, _) = recognize_words(slice(samples, cut, end)).unwrap_or_default();
+            let (del, _) = head_align(&cref, &hyp);
+            cref.len() - del.min(cref.len())
+        };
+        match o {
+            Some((k, cut, u1, _)) => {
+                if dump {
+                    dump_split_raw(embedder, samples, reference, &utt, k, threshold);
+                }
+                if u1.iter().any(|x| *x < 0.20) {
+                    let lost = kept(u).saturating_sub(kept(cut));
+                    Judged {
+                        out: if lost > 0 {
+                            UlOut::Partly
+                        } else {
+                            UlOut::Caller
+                        },
+                        lost,
+                        wins: n,
+                    }
+                } else {
+                    kept_whole
+                }
+            }
+            None if end_caller => kept_whole,
+            None => Judged {
+                out: UlOut::Dropped,
+                lost: kept(u),
+                wins: n,
+            },
+        }
+    }
+
+    fn ul_scene(a: &[f32], bed: Option<(&[f32], usize)>) -> (Vec<f32>, Vec<f32>) {
+        let mut clean = vec![0f32; LEAD_MS * SAMPLES_PER_MS];
+        clean.extend_from_slice(slice(a, 0, 15_000));
+        clean.extend(vec![0f32; TAIL_MS * SAMPLES_PER_MS]);
+        let mut s = clean.clone();
+        add_bed(&mut s, bed);
+        (s, clean)
+    }
+
+    /// Product enrollment: whole voiced utterances appended until >= 3000 ms, one embed of the
+    /// whole buffer. The bed (when set) is on the enrollment audio too.
+    fn ul_enroll(
+        files: &[PathBuf],
+        embedder: &Embedder,
+        bed: Option<&[f32]>,
+        salt: usize,
+    ) -> Result<Option<Vec<f32>>, String> {
+        let mut buf: Vec<f32> = Vec::new();
+        for (i, f) in files.iter().enumerate() {
+            let a = load(f)?;
+            let Some((on, off)) = voiced(&a) else {
+                continue;
+            };
+            let mut c = slice(&a, on, off).to_vec();
+            add_bed(&mut c, bed.map(|b| (b, (salt + i * 7919) % b.len())));
+            buf.extend(c);
+            if buf.len() >= UL_ENROLL_MS * SAMPLES_PER_MS {
+                return Ok(embedder.embed(&buf).map(|(e, _)| e));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Oracle reference: mean of the unit embeddings of about 30 s of other same-session
+    /// utterances (same bed condition).
+    fn ul_oracle(
+        files: &[PathBuf],
+        embedder: &Embedder,
+        bed: Option<&[f32]>,
+        salt: usize,
+    ) -> Result<Option<Vec<f32>>, String> {
+        let (mut acc, mut ms): (Vec<f32>, usize) = (Vec::new(), 0);
+        for (i, f) in files.iter().enumerate() {
+            if ms >= UL_ORACLE_MS {
+                break;
+            }
+            let a = load(f)?;
+            let Some((on, off)) = voiced(&a) else {
+                continue;
+            };
+            let mut c = slice(&a, on, off.min(on + 20_000)).to_vec();
+            add_bed(&mut c, bed.map(|b| (b, (salt + i * 104729) % b.len())));
+            let Some((e, _)) = embedder.embed(&c) else {
+                continue;
+            };
+            let n = e.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-9);
+            if acc.is_empty() {
+                acc = vec![0.0; e.len()];
+            }
+            for (a, x) in acc.iter_mut().zip(&e) {
+                *a += x / n;
+            }
+            ms += off.min(on + 20_000) - on;
+        }
+        Ok((!acc.is_empty()).then_some(acc))
+    }
+
+    struct UlScene {
+        s: Vec<f32>,
+        clean: Vec<f32>,
+        utts: Vec<(usize, usize)>,
+    }
+
+    fn ul_far_slot<'a>(far: &'a mut Vec<UlFar>, set: &str, mode: &'static str) -> &'a mut UlFar {
+        let i = match far.iter().position(|e| e.set == set && e.mode == mode) {
+            Some(i) => i,
+            None => {
+                far.push(UlFar {
+                    set: set.to_string(),
+                    mode,
+                    ..Default::default()
+                });
+                far.len() - 1
+            }
+        };
+        &mut far[i]
+    }
+
+    pub fn utterance_loss(
+        embedder: &Embedder,
+        root: &Path,
+        bed: Option<&Path>,
+        max_callers: usize,
+        threshold: f32,
+    ) -> Result<(), String> {
+        let split = LS_SPLIT.get().map_or("test-clean", |s| s.as_str());
+        let top = root.join(split);
+        let mut spk: Vec<PathBuf> = fs::read_dir(&top)
+            .map_err(|e| format!("{}: {e}", top.display()))?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.is_dir())
+            .collect();
+        spk.sort();
+        // Per speaker: chapters (sorted), each its sorted wav list.
+        let mut chapters: Vec<Vec<Vec<PathBuf>>> = Vec::new();
+        for s in &spk {
+            let mut ch: Vec<PathBuf> = fs::read_dir(s)
+                .map_err(|e| format!("{}: {e}", s.display()))?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.is_dir())
+                .collect();
+            ch.sort();
+            let mut v = Vec::new();
+            for c in ch {
+                let mut f = Vec::new();
+                wavs(&c, &mut f)?;
+                if f.len() >= 8 {
+                    v.push(f);
+                }
+            }
+            chapters.push(v);
+        }
+        let n = spk.len();
+        let bed16 = bed.map(load_bed).transpose()?;
+        let mut conds: Vec<(String, Option<&[f32]>)> = Vec::new();
+        if let Some(b) = &bed16 {
+            conds.push((format!("LibriSpeech {split}, Tocumen bed -12 dB"), Some(b)));
+        }
+        conds.push((format!("LibriSpeech {split}, clean"), None));
+        for (cname, cbed) in &conds {
+            for ci in 0..max_callers.min(n) {
+                let sid = spk[ci]
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let Some(ch_a) = chapters[ci].first() else {
+                    continue;
+                };
+                let salt = ci * 6151;
+                for mode in ["same-session", "cross-session"] {
+                    let (enroll_src, rest): (&Vec<PathBuf>, &Vec<PathBuf>) =
+                        if mode == "same-session" {
+                            (ch_a, ch_a)
+                        } else {
+                            match chapters[ci].get(1) {
+                                Some(b) => (ch_a, b),
+                                None => continue,
+                            }
+                        };
+                    let Some(reference) = ul_enroll(enroll_src, embedder, *cbed, salt)? else {
+                        continue;
+                    };
+                    // Files used by enrollment (same-session: not tested or pooled).
+                    let used = if mode == "same-session" {
+                        let mut buf = 0usize;
+                        let mut k = 0usize;
+                        for f in rest.iter() {
+                            k += 1;
+                            if let Some((on, off)) = voiced(&load(f)?) {
+                                buf += off - on;
+                            }
+                            if buf >= UL_ENROLL_MS {
+                                break;
+                            }
+                        }
+                        k
+                    } else {
+                        0
+                    };
+                    let t_n = if mode == "same-session" {
+                        UL_TEST_SAME
+                    } else {
+                        UL_TEST_CROSS
+                    };
+                    let tests: Vec<&PathBuf> = rest.iter().skip(used).take(t_n).collect();
+                    let pool: Vec<PathBuf> =
+                        rest.iter().skip(used + t_n).take(40).cloned().collect();
+                    let Some(oracle) = ul_oracle(&pool, embedder, *cbed, salt + 17)? else {
+                        continue;
+                    };
+                    let set = format!("{cname}");
+                    let mut scenes: Vec<UlScene> = Vec::new();
+                    for (r, f) in tests.iter().enumerate() {
+                        let a = load(f)?;
+                        let (s, clean) =
+                            ul_scene(&a, cbed.map(|b| (b, (ci * 6151 + r * 99991) % b.len())));
+                        let utts = vad_utterances(&pcm48(&s))?;
+                        scenes.push(UlScene { s, clean, utts });
+                    }
+                    let mut p10: Option<f32> = None;
+                    for sc in &scenes {
+                        for &(u, ue) in &sc.utts {
+                            if ue < u + WINDOW_MS {
+                                UL.lock().unwrap().push(UlRec {
+                                    set: set.clone(),
+                                    mode,
+                                    speaker: sid.clone(),
+                                    out: UlOut::Unknown,
+                                    lost: 0,
+                                    cause: None,
+                                });
+                                continue;
+                            }
+                            let dump = std::env::var_os("NM_SPLIT_DUMP").is_some();
+                            let j = ul_judge(
+                                &sc.s,
+                                &sc.clean,
+                                (u, ue),
+                                embedder,
+                                &reference,
+                                threshold,
+                                dump,
+                            );
+                            let mut cause = None;
+                            if matches!(j.out, UlOut::Dropped | UlOut::Partly) {
+                                let rec = |s: &[f32], r: &[f32]| {
+                                    ul_judge(s, &sc.clean, (u, ue), embedder, r, threshold, false)
+                                        .out
+                                        == UlOut::Caller
+                                };
+                                cause = Some(if rec(&sc.s, &oracle) {
+                                    0
+                                } else if cbed.is_some() && rec(&sc.clean, &reference) {
+                                    1
+                                } else if j.wins <= 2 {
+                                    2
+                                } else {
+                                    let p = *p10.get_or_insert_with(|| {
+                                        let mut v: Vec<f64> = Vec::new();
+                                        for s2 in &scenes {
+                                            for &(a, b) in &s2.utts {
+                                                if b >= a + WINDOW_MS {
+                                                    for w in score_windows(
+                                                        &s2.s, a, b, embedder, &oracle,
+                                                    ) {
+                                                        v.push(f64::from(w.1));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        v.sort_by(|x, y| x.total_cmp(y));
+                                        percentile(&v, 0.10) as f32
+                                    });
+                                    if p < threshold {
+                                        3
+                                    } else {
+                                        4
+                                    }
+                                });
+                            }
+                            UL.lock().unwrap().push(UlRec {
+                                set: set.clone(),
+                                mode,
+                                speaker: sid.clone(),
+                                out: j.out,
+                                lost: j.lost,
+                                cause,
+                            });
+                        }
+                    }
+                    // Bystander baselines against this reference: other speakers' utterances.
+                    for b in 0..UL_BYSTANDERS {
+                        let bs = (ci + 1 + b * 3) % n;
+                        if bs == ci {
+                            continue;
+                        }
+                        let Some(bch) = chapters[bs].first() else {
+                            continue;
+                        };
+                        let (mut w_n, mut w_hit) = (0usize, 0usize);
+                        let (mut u_n, mut u_acc) = (0usize, 0usize);
+                        for (r, f) in bch.iter().skip(ci % 3).take(UL_BY_FILES).enumerate() {
+                            let a = load(f)?;
+                            let (s, _) = ul_scene(
+                                &a,
+                                cbed.map(|bd| (bd, (ci * 31 + b * 7907 + r * 13) % bd.len())),
+                            );
+                            for (u, ue) in vad_utterances(&pcm48(&s))? {
+                                if ue < u + WINDOW_MS {
+                                    continue;
+                                }
+                                let wins = score_windows(&s, u, ue, embedder, &reference);
+                                w_n += wins.len();
+                                w_hit += wins.iter().filter(|w| w.1 >= threshold).count();
+                                let utt = Utt {
+                                    wins,
+                                    rechecks: Vec::new(),
+                                };
+                                u_n += 1;
+                                let acc = utt.wins[0].1 >= threshold || {
+                                    let mut cache = SubCache::default();
+                                    let (o, _, end) = product_o2c(
+                                        &s, &utt, embedder, &reference, threshold, 3, &mut cache,
+                                    );
+                                    o.is_some() || end
+                                };
+                                u_acc += usize::from(acc);
+                            }
+                        }
+                        let mut far = UL_FAR.lock().unwrap();
+                        let e = ul_far_slot(&mut far, &set, mode);
+                        e.windows += w_n;
+                        e.hits += w_hit;
+                        e.utts += u_n;
+                        e.accepted += u_acc;
+                        e.pairs.push((w_n, w_hit));
+                    }
+                }
+                eprintln!("{cname} speaker {sid} ({ci}) done");
+            }
+        }
+        Ok(())
+    }
+
+    pub fn utterance_loss_tables() -> String {
+        let recs = std::mem::take(&mut *UL.lock().unwrap());
+        let far = std::mem::take(&mut *UL_FAR.lock().unwrap());
+        let mut keys: Vec<(String, &'static str)> = Vec::new();
+        for r in &recs {
+            if !keys.iter().any(|(s, m)| *s == r.set && *m == r.mode) {
+                keys.push((r.set.clone(), r.mode));
+            }
+        }
+        let mut md = String::from("## Per-utterance caller loss (caller-reject-rate, chunk 1)\n\nShipped rules (`split_on_speaker_change` on: window 1 `other`, then product other -> caller with the deferred veto and split rule bb). Enrollment is the product's: whole voiced utterances appended until 3000 ms, one embed of the buffer (with the bed, when the row has one). Words are measure A above the floor of the same utterance. Outcome: `dropped` = window 1 `other` and no confirm; `partly lost` = a split cut caller words; `unknown` = VAD utterance under 1.5 s (fails open).\n\n| set | mode | utterances (>= 1.5 s) | unknown (< 1.5 s) | dropped | partly lost | lost utterances % | words lost above floor |");
+        for c in UL_CAUSES {
+            md.push_str(&format!(" {c} |"));
+        }
+        md.push_str(" top 5 speakers (words lost, utterances lost) | top 5 share of words |\n| --- | --- | --- | --- | --- | --- | --- | --- |");
+        for _ in UL_CAUSES {
+            md.push_str(" --- |");
+        }
+        md.push_str(" --- | --- |\n");
+        for (set, mode) in &keys {
+            let rs: Vec<&UlRec> = recs
+                .iter()
+                .filter(|r| r.set == *set && r.mode == *mode)
+                .collect();
+            let known: Vec<&&UlRec> = rs.iter().filter(|r| r.out != UlOut::Unknown).collect();
+            let dropped = known.iter().filter(|r| r.out == UlOut::Dropped).count();
+            let partly = known.iter().filter(|r| r.out == UlOut::Partly).count();
+            let words: usize = known.iter().map(|r| r.lost).sum();
+            let mut cs = [0usize; 5];
+            for r in &known {
+                if let Some(c) = r.cause {
+                    cs[c] += 1;
+                }
+            }
+            let mut by: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
+            for r in &known {
+                if matches!(r.out, UlOut::Dropped | UlOut::Partly) {
+                    let e = by.entry(r.speaker.as_str()).or_default();
+                    e.0 += r.lost;
+                    e.1 += 1;
+                }
+            }
+            let mut sp: Vec<(&str, (usize, usize))> = by.into_iter().collect();
+            sp.sort_by(|a, b| b.1.cmp(&a.1));
+            let top: usize = sp.iter().take(5).map(|x| x.1 .0).sum();
+            let top_s = sp
+                .iter()
+                .take(5)
+                .map(|(s, (w, u))| format!("{s}: {w}, {u}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            md.push_str(&format!(
+                "| {set} | {mode} | {} | {} | {dropped} | {partly} | {:.1} | {words} |",
+                known.len(),
+                rs.len() - known.len(),
+                100.0 * (dropped + partly) as f64 / known.len().max(1) as f64
+            ));
+            for c in cs {
+                md.push_str(&format!(" {c} |"));
+            }
+            md.push_str(&format!(
+                " {top_s} | {:.0} % |\n",
+                if words > 0 {
+                    100.0 * top as f64 / words as f64
+                } else {
+                    0.0
+                }
+            ));
+        }
+        md.push_str("\nCause = the first counterfactual that recovers the utterance, in order: oracle reference (mean of embeddings of about 30 s of other same-session utterances), bed removed from the test utterance only, short utterance (<= 2 windows), speaker whose oracle-reference window p10 is below the threshold, else unexplained. Cause counts are over lost utterances.\n\n### Bystander baselines with the same harness (other speakers' utterances against this reference)\n\n| set | mode | windows | window FAR % | pairs | pairs >= 5 % | pairs >= 20 % | bystander-only utterances (>= 1.5 s) | accepted (window 1 caller, or confirm, or veto pending) |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+        for e in &far {
+            let pc = |x: f64| {
+                e.pairs
+                    .iter()
+                    .filter(|(w, h)| *w > 0 && 100.0 * *h as f64 / *w as f64 >= x)
+                    .count()
+            };
+            md.push_str(&format!(
+                "| {} | {} | {} | {:.2} | {} | {} | {} | {} | {} |\n",
+                e.set,
+                e.mode,
+                e.windows,
+                100.0 * e.hits as f64 / e.windows.max(1) as f64,
+                e.pairs.len(),
+                pc(5.0),
+                pc(20.0),
+                e.utts,
+                e.accepted
+            ));
+        }
+        md.push('\n');
+        md
     }
 
     type Rule = (String, Box<dyn Fn(&[f32]) -> bool>);

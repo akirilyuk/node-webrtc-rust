@@ -5388,6 +5388,12 @@ mod tests {
             (50, caller_v()),
         ];
         let (gate, sink, _emb) = delay_gate(1000, script).await;
+        // The verdict is stored and waiters are notified before `on_verdict` runs, so the await
+        // can return before window 2's verdict reaches the sink (CI run 43792493594 read the sink
+        // in that gap). The agent does not rely on the delivery order: its callback applies each
+        // verdict on its own task, and a split key's verdict is not applied to its utterance.
+        // Hold the delivery so the test covers that gap every run.
+        gate.park_verdict_delivery(true);
         let t0 = Instant::now();
         // Window 2 is in flight (its embed takes 100 ms, the scan another ~150 ms).
         gate.end_utterance();
@@ -5411,7 +5417,33 @@ mod tests {
             t0.elapsed() < Duration::from_millis(1000),
             "within verify_timeout_ms"
         );
-        assert_eq!(lock(&sink).len(), 2);
+        assert_eq!(
+            lock(&sink).len(),
+            1,
+            "window 2's delivery is held after the await returned"
+        );
+        gate.park_verdict_delivery(false);
+        for _ in 0..400 {
+            if lock(&sink).len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let delivered: Vec<Verdict> = lock(&sink).iter().map(|(v, _)| *v).collect();
+        assert_eq!(
+            delivered.len(),
+            2,
+            "window 2's verdict delivered once released"
+        );
+        assert_eq!(
+            (
+                delivered[1].window,
+                delivered[1].recheck,
+                delivered[1].outcome
+            ),
+            (2, true, Outcome::Other),
+            "U1 of the other -> caller change stays other"
+        );
     }
 
     /// Window 2 queues 600 ms behind another check's embed, then confirms an `other` -> `caller`

@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-16
+
 ### Changed
 
 - **speech, sdk:** behaviour change for projects that already set `speakerGate.splitOnSpeakerChange: true`. The option now splits in both directions. Before, someone else followed by the caller upgraded the whole utterance to `caller` and released the barge-in, so the other voice's words ended up in the caller's final. Now that change splits the utterance: the first part stays `other` (never barges in, ignored with `onMismatch: 'drop'`), the second part is `caller` and its barge-in fires on the confirming window. The cut goes back to the end of the longest quiet stretch before the caller's first word; when the voices run together, shorter sub-windows locate the change, bounded by `verifyTimeoutMs`. Other-to-caller confirms on one `caller` window, caller-to-other still on two. An other-to-caller split also needs one `other` window that scored under 0.20 before the caller's; when every `other` window was close to the threshold, the whole utterance is upgraded to `caller` instead, so the caller's own words are not cut. A `caller` window whose sub-window scan finds no caller audio postpones the split to the next `caller` window; if the utterance ends first, it falls back to `caller` with the barge-in released at the end of speech. With the option off nothing changes.

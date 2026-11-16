@@ -48,6 +48,7 @@ impl LanguageIdProvider for SlowLanguageId {
         tokio::time::sleep(Duration::from_millis(self.sleep_ms)).await;
         Ok(Some(LanguageIdResult {
             language: "en".into(),
+            ..Default::default()
         }))
     }
 }
@@ -94,6 +95,7 @@ impl LanguageIdProvider for TimedOverlapLanguageId {
         *self.ended_at.lock().unwrap() = Some(Instant::now());
         Ok(Some(LanguageIdResult {
             language: "en".into(),
+            ..Default::default()
         }))
     }
 }
@@ -113,7 +115,16 @@ impl LanguageIdProvider for CountingLanguageId {
             .or_else(|| self.languages.last())
             .cloned()
             .unwrap_or_else(|| "en".into());
-        Ok(Some(LanguageIdResult { language }))
+        // "es|el": restricted-mode decision `es` from raw top `el` (as the sherpa provider
+        // reports when the allowlist maps to model languages); "ja|ja": decided out of set.
+        if let Some((decided, raw)) = language.split_once('|') {
+            return Ok(Some(LanguageIdResult {
+                language: decided.to_string(),
+                raw_language: Some(raw.to_string()),
+                gap: Some(1.0),
+            }));
+        }
+        Ok(Some(LanguageIdResult::new(language)))
     }
 }
 
@@ -230,6 +241,7 @@ fn agent_with_slow_lid(stt_bytes: Arc<Mutex<usize>>) -> Arc<VoiceAgent> {
             enabled: Some(true),
             model_path: Some("/fake/lid-model".into()),
             allowlist: None,
+            allowlist_max_gap: None,
             min_speech_ms: Some(200),
             continuous: None,
             lid_max_clip_ms: None,
@@ -307,6 +319,7 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
             enabled: Some(true),
             model_path: Some("/fake/lid-model".into()),
             allowlist: None,
+            allowlist_max_gap: None,
             min_speech_ms: Some(200),
             continuous: None,
             lid_max_clip_ms: None,
@@ -536,6 +549,7 @@ impl LanguageIdProvider for OverlapTrackingLanguageId {
         self.guard.leave_lid();
         Ok(Some(LanguageIdResult {
             language: "en".into(),
+            ..Default::default()
         }))
     }
 }
@@ -661,6 +675,7 @@ fn agent_with_overlap_tracking_lid(
             enabled: Some(true),
             model_path: Some("/fake/lid-model".into()),
             allowlist: None,
+            allowlist_max_gap: None,
             min_speech_ms: Some(200),
             continuous: None,
             lid_max_clip_ms: None,
@@ -979,6 +994,7 @@ fn agent_with_final_once_stt(lid_sleep_ms: u64) -> Arc<VoiceAgent> {
             enabled: Some(true),
             model_path: Some("/fake/lid-model".into()),
             allowlist: None,
+            allowlist_max_gap: None,
             min_speech_ms: Some(200),
             continuous: None,
             lid_max_clip_ms: None,
@@ -1076,6 +1092,7 @@ fn agent_for_lid_gate_wakeup_test() -> Arc<VoiceAgent> {
                 enabled: Some(true),
                 model_path: Some("/fake/lid-model".into()),
                 allowlist: None,
+                allowlist_max_gap: None,
                 min_speech_ms: Some(200),
                 continuous: None,
                 lid_max_clip_ms: None,
@@ -1268,6 +1285,7 @@ fn agent_with_counting_lid_timing_min(
             enabled: Some(true),
             model_path: Some("/fake/lid-model".into()),
             allowlist,
+            allowlist_max_gap: None,
             min_speech_ms: Some(min_speech_ms),
             continuous,
             lid_max_clip_ms: None,
@@ -1440,6 +1458,7 @@ fn agent_with_timed_overlap_lid(
             enabled: Some(true),
             model_path: Some("/fake/lid-model".into()),
             allowlist: None,
+            allowlist_max_gap: None,
             min_speech_ms: Some(200),
             continuous: None,
             lid_max_clip_ms: None,
@@ -1999,6 +2018,7 @@ async fn lid_error_does_not_block_final() {
             enabled: Some(true),
             model_path: Some("/fake/lid-model".into()),
             allowlist: None,
+            allowlist_max_gap: None,
             min_speech_ms: Some(200),
             continuous: None,
             lid_max_clip_ms: None,
@@ -2150,6 +2170,7 @@ async fn tts_synthesis_waits_for_in_flight_lid() {
                 enabled: Some(true),
                 model_path: Some("/fake/lid-model".into()),
                 allowlist: None,
+                allowlist_max_gap: None,
                 min_speech_ms: Some(200),
                 continuous: Some(true),
                 lid_max_clip_ms: None,
@@ -2435,6 +2456,7 @@ async fn remote_tts_exclusion_off_does_not_gate_final_or_tts() {
                 enabled: Some(true),
                 model_path: Some("/fake/lid-model".into()),
                 allowlist: None,
+                allowlist_max_gap: None,
                 min_speech_ms: Some(200),
                 continuous: None,
                 lid_max_clip_ms: None,
@@ -3191,5 +3213,153 @@ async fn early_timing_does_not_identify_during_trailing_silence() {
     let outcome = assert_one_first_outcome(&events);
     assert_eq!(outcome.reason.as_deref(), Some("too_short"));
     assert_eq!(lid_calls.load(Ordering::SeqCst), 0);
+    agent.stop().await.unwrap();
+}
+
+fn early_allowlist_agent(
+    languages: Vec<&str>,
+    allowlist: Option<Vec<&str>>,
+    lid_calls: Arc<AtomicUsize>,
+) -> Arc<VoiceAgent> {
+    agent_with_counting_lid_timing(
+        Arc::new(Mutex::new(0)),
+        lid_calls,
+        false,
+        None,
+        false,
+        languages.into_iter().map(String::from).collect(),
+        allowlist.map(|l| l.into_iter().map(String::from).collect()),
+        Some(LanguageIdTiming::Early),
+    )
+}
+
+fn user_language_codes(events: &[node_webrtc_rust_speech::events::SpeechEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter(|e| e.kind == SpeechEventKind::UserLanguage)
+        .filter_map(|e| e.language.clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn early_out_of_set_beyond_gap_runs_second_pass_at_speech_end() {
+    // Early identify (mid-utterance) returns `ja`, outside {en, es} beyond the gap: no outcome
+    // yet; the second identify on the end-of-utterance clip decides `es`.
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = early_allowlist_agent(
+        vec!["ja|ja", "es|es"],
+        Some(vec!["en", "es"]),
+        Arc::clone(&lid_calls),
+    );
+    let mut rx = agent.subscribe_events();
+    let events = run_one_utterance_events(&agent, &mut rx, 40).await;
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        2,
+        "early + one second pass"
+    );
+    let outcome = assert_one_first_outcome(&events);
+    assert_eq!(outcome.kind, SpeechEventKind::UserLanguage);
+    assert_eq!(user_language_codes(&events), vec!["es".to_string()]);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn early_in_set_runs_no_second_pass() {
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = early_allowlist_agent(
+        vec!["es", "en"],
+        Some(vec!["en", "es"]),
+        Arc::clone(&lid_calls),
+    );
+    let mut rx = agent.subscribe_events();
+    let events = run_one_utterance_events(&agent, &mut rx, 40).await;
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(user_language_codes(&events), vec!["es".to_string()]);
+    assert_one_first_outcome(&events);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn second_pass_still_out_of_set_is_undetermined_once() {
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = early_allowlist_agent(
+        vec!["ja|ja", "ja|ja", "ja|ja"],
+        Some(vec!["en", "es"]),
+        Arc::clone(&lid_calls),
+    );
+    let mut rx = agent.subscribe_events();
+    let events = run_one_utterance_events(&agent, &mut rx, 40).await;
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        2,
+        "never more than one second pass"
+    );
+    let outcome = assert_one_first_outcome(&events);
+    assert_eq!(outcome.kind, SpeechEventKind::LanguageIdSkipped);
+    assert_eq!(outcome.reason.as_deref(), Some("undetermined"));
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn second_pass_starts_inline_when_speech_ended_during_early_identify() {
+    // Short utterance: the early identify is still running when speech ends, so the second
+    // pass starts from the identify task itself; still exactly one outcome.
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = early_allowlist_agent(
+        vec!["ja|ja", "es|es"],
+        Some(vec!["en", "es"]),
+        Arc::clone(&lid_calls),
+    );
+    let mut rx = agent.subscribe_events();
+    let events = run_one_utterance_events(&agent, &mut rx, 12).await;
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(user_language_codes(&events), vec!["es".to_string()]);
+    assert_one_first_outcome(&events);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn allowlist_without_restricted_decision_runs_one_identify() {
+    // Allowlist ["xx"] maps to no model language: the provider returns its plain argmax (no
+    // `raw_language`), so there is no second pass. One identify, filtered as before.
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = early_allowlist_agent(vec!["ja", "es"], Some(vec!["xx"]), Arc::clone(&lid_calls));
+    let mut rx = agent.subscribe_events();
+    let events = run_one_utterance_events(&agent, &mut rx, 40).await;
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 1, "no second pass");
+    let outcome = assert_one_first_outcome(&events);
+    assert_eq!(outcome.kind, SpeechEventKind::LanguageIdSkipped);
+    assert_eq!(outcome.reason.as_deref(), Some("undetermined"));
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn allowlist_raw_language_within_gap_emits_allowed_code() {
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = early_allowlist_agent(
+        vec!["es|el"],
+        Some(vec!["en", "es"]),
+        Arc::clone(&lid_calls),
+    );
+    let mut rx = agent.subscribe_events();
+    let events = run_one_utterance_events(&agent, &mut rx, 40).await;
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(user_language_codes(&events), vec!["es".to_string()]);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn early_without_allowlist_is_unchanged() {
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = early_allowlist_agent(vec!["ja", "es"], None, Arc::clone(&lid_calls));
+    let mut rx = agent.subscribe_events();
+    let events = run_one_utterance_events(&agent, &mut rx, 40).await;
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        1,
+        "no second pass without an allowlist"
+    );
+    assert_eq!(user_language_codes(&events), vec!["ja".to_string()]);
     agent.stop().await.unwrap();
 }

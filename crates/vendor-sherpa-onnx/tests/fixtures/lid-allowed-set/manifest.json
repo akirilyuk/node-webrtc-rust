@@ -1,0 +1,55 @@
+{
+  "runtime": "nwr Rust: sherpa-onnx 1.13.2 static ONNX Runtime 1.24.4, macOS arm64, SHERPA_LID_NUM_THREADS=1",
+  "fixtures": [
+    {
+      "file": "es-miss-1787-a150-utt2.wav",
+      "window": "es-tap/full",
+      "top": "ja",
+      "second": "es",
+      "margin12": 1.355,
+      "gap": 1.355,
+      "sherpa": "ja",
+      "expect_restricted": "es"
+    },
+    {
+      "file": "es-miss-785-a105-utt2.wav",
+      "window": "es-tap/full",
+      "top": "ja",
+      "second": "es",
+      "margin12": 1.399,
+      "gap": 1.399,
+      "sherpa": "ja",
+      "expect_restricted": "es"
+    },
+    {
+      "file": "es-miss-1787-a129-utt2.wav",
+      "window": "es-tap/full",
+      "top": "ja",
+      "second": "la",
+      "margin12": 0.996,
+      "gap": 1.158,
+      "sherpa": "ja",
+      "expect_restricted": "es"
+    },
+    {
+      "file": "22459-a143-utt1.wav",
+      "window": "en-tap/full",
+      "top": "en",
+      "second": "hi",
+      "margin12": 6.898,
+      "gap": 0.0,
+      "sherpa": "en",
+      "expect_restricted": "en"
+    },
+    {
+      "file": "de-099.wav",
+      "window": "de/early",
+      "top": "de",
+      "second": "en",
+      "margin12": 5.04,
+      "gap": 5.04,
+      "sherpa": "de",
+      "expect_restricted": "de"
+    }
+  ]
+}

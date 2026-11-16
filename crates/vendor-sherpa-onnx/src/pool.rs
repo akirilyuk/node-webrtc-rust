@@ -254,6 +254,9 @@ pub struct LidPoolKey(PathBuf);
 pub struct SharedLidRecognizer {
     pub(crate) identifier: Mutex<SpokenLanguageIdentification>,
     pub(crate) active_sessions: Arc<AtomicUsize>,
+    /// Whisper language scores on the same model files, loaded on first use with an allowlist.
+    pub(crate) scorer:
+        std::sync::OnceLock<Result<Arc<crate::whisper_lang::WhisperLanguageScorer>, String>>,
 }
 
 /// Process-wide Sherpa model pool.
@@ -361,7 +364,21 @@ impl SherpaModelPool {
     /// Call from a blocking context at process boot so the first utterance never pays the
     /// load. Idempotent: a second call for the same model directory is a pool lookup.
     pub fn preload_lid(&self, config: &LanguageIdConfig) -> SpeechResult<()> {
-        self.get_or_create_lid(config).map(|_| ())
+        let shared = self.get_or_create_lid(config)?;
+        if crate::lid::allowlist_set(config) {
+            // The allowed-set scorer is an improvement on top of sherpa's identify. If it cannot
+            // load, identify falls back to sherpa's argmax, so preload still succeeds; the error
+            // is logged once per process (it is cached on the shared recognizer).
+            if let Err(error) = shared.scorer(config) {
+                static SCORER_PRELOAD_FAILED: Once = Once::new();
+                SCORER_PRELOAD_FAILED.call_once(|| {
+                    eprintln!(
+                        "sherpa LID allowed-set scorer load failed; using sherpa identify: {error}"
+                    );
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Start loading the shared LID model on a background thread and return immediately.
@@ -554,6 +571,7 @@ impl SharedLidRecognizer {
         Self {
             identifier: Mutex::new(identifier),
             active_sessions: Arc::new(AtomicUsize::new(0)),
+            scorer: std::sync::OnceLock::new(),
         }
     }
 
@@ -675,6 +693,7 @@ mod tests {
             enabled: Some(true),
             model_path: Some("/nonexistent/nwr-lid-preload-nonblocking".into()),
             allowlist: None,
+            allowlist_max_gap: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,

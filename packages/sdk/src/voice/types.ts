@@ -231,8 +231,21 @@ export interface LanguageIdConfig {
   enabled?: boolean
   /** Directory with Whisper encoder/decoder ONNX for spoken language ID. */
   modelPath?: string
-  /** Optional ISO 639-1 allowlist; other detected codes are ignored. */
+  /**
+   * Optional ISO 639-1 allowlist. The local Whisper identifier decides among these languages:
+   * when its top pick is outside the list but within `allowlistMaxGap` logits of the best
+   * listed language, that listed language is reported. Codes still outside the list are
+   * ignored (`language_id_skipped` with reason `undetermined`). With `timing: 'early'`, an
+   * early pick outside the list and beyond the gap gets one more identify at end of utterance.
+   */
   allowlist?: string[]
+  /**
+   * Largest Whisper logit gap between the top language and the best `allowlist` language at
+   * which the allowlist language is chosen. Finite, >= 0. Default 3.0 (calibrated on
+   * Whisper tiny so that clean speech in an allowed language is not lost to a close
+   * out-of-list pick, while clearly different languages stay undetermined).
+   */
+  allowlistMaxGap?: number
   /**
    * Minimum speech (ms) before the first identify attempt. Counts VAD-voiced audio;
    * pauses between words count, silence after the caller stops speaking does not. Default 1000.

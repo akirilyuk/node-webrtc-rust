@@ -15,6 +15,7 @@ mod stt_batch;
 mod tts;
 mod tts_model_paths;
 mod tts_slots;
+mod whisper_lang;
 
 pub use factory::SherpaFactory;
 pub use finalize_flush::{
@@ -39,3 +40,4 @@ pub use stt_batch::{reset_sherpa_batch_counters, sherpa_batch_rounds, sherpa_bat
 pub use tts::{reset_tts_generate_count, tts_generate_count};
 #[doc(hidden)]
 pub use tts_model_paths::{resolve_tts_model_paths, TtsModelFamily};
+pub use whisper_lang::{LanguageScores, WhisperLanguageScorer};

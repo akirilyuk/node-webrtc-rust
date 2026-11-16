@@ -846,6 +846,8 @@ pub struct JsLanguageIdConfig {
     pub enabled: Option<bool>,
     pub model_path: Option<String>,
     pub allowlist: Option<Vec<String>>,
+    /// Max Whisper logit gap for choosing an allowlisted language over an out-of-list top pick.
+    pub allowlist_max_gap: Option<f64>,
     pub min_speech_ms: Option<u32>,
     pub continuous: Option<bool>,
     pub timing: Option<String>,
@@ -860,6 +862,11 @@ impl From<JsLanguageIdConfig> for node_webrtc_rust_speech::config::LanguageIdCon
             enabled: value.enabled,
             model_path: value.model_path,
             allowlist: value.allowlist,
+            // Invalid (negative / non-finite) values are dropped here; the SDK rejects them first.
+            allowlist_max_gap: value
+                .allowlist_max_gap
+                .filter(|v| v.is_finite() && *v >= 0.0)
+                .map(|v| v as f32),
             min_speech_ms: value.min_speech_ms,
             continuous: value.continuous,
             timing: value

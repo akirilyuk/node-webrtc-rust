@@ -200,6 +200,7 @@ impl LanguageIdProvider for GatedLanguageId {
         self.release.notified().await;
         Ok(Some(LanguageIdResult {
             language: "de".into(),
+            ..Default::default()
         }))
     }
 }
@@ -570,6 +571,7 @@ async fn lid_result_applies_to_closing_utterance() {
         enabled: Some(true),
         model_path: Some("/fake/lid-model".into()),
         allowlist: None,
+        allowlist_max_gap: None,
         min_speech_ms: Some(200),
         continuous: None,
         lid_max_clip_ms: None,

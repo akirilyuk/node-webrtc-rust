@@ -233,6 +233,13 @@ struct UttLid {
     skip_emitted: bool,
     /// `user_language` already emitted for this utterance (first outcome reported).
     language_emitted: bool,
+    /// Early timing with an allowlist: the early identify picked a language outside the allowed
+    /// set beyond the allowlist gap, so one more identify runs on the end-of-utterance clip.
+    second_pass_pending: bool,
+    /// The end-of-utterance second identify has started (at most once per utterance).
+    second_pass_done: bool,
+    /// VAD speech end or utterance close was reached for this utterance.
+    speech_ended: bool,
 }
 
 /// What kind of utterance a record stands for.
@@ -433,6 +440,14 @@ struct AgentInner {
     stt_hold: Option<SttHold>,
     /// The replay ring was started at the SpeechStart pre-roll flush (keeps the onset audio).
     replay_begun_at_pre_roll: bool,
+    /// The STT pre-roll flushed at the last SpeechStart (lookback, held onset, ring, lead-in
+    /// pad), copied for LID so the LID clip starts on the same sample as the STT stream.
+    lid_pre_roll_seed: Option<Bytes>,
+    /// Voiced ms before SpeechStart (counted while LID is not buffering); seeds `voiced_ms`.
+    lid_pre_voiced_ms: u32,
+    /// The last inbound frame seen while LID was not buffering: at SpeechStart, the onset frame
+    /// (STT gets it right after the pre-roll).
+    lid_onset_frame: Option<Bytes>,
     /// Utterance key whose speaker-gate onset the replay ring is aligned to, and the ring length
     /// at the start of every inbound frame the gate counted since that onset (gap frames
     /// included). Maps a gate `split_at_ms` onto the ring, also when the ring got held or
@@ -854,6 +869,9 @@ impl VoiceAgent {
                 last_replay_snapshot: None,
                 stt_hold: None,
                 replay_begun_at_pre_roll: false,
+                lid_pre_roll_seed: None,
+                lid_pre_voiced_ms: 0,
+                lid_onset_frame: None,
                 replay_onset_key: None,
                 replay_frame_offsets: Vec::new(),
                 inbound_media_ms: 0,
@@ -5261,9 +5279,34 @@ impl VoiceAgent {
             return;
         }
         let mut inner = self.inner.lock().await;
+        // Start with the audio the STT stream got before SpeechStart (same samples, same order),
+        // so LID judges the utterance from its onset, not from a cut mid-word.
+        let seed = inner.lid_pre_roll_seed.take();
+        let seed_ms = seed.as_ref().map_or(0, |b| {
+            crate::pcm::duration_ms_from_mono_s16le(b.len(), crate::pcm::STT_PCM_SAMPLE_RATE)
+        });
+        // Only voiced audio counts toward `minSpeechMs`: the voiced frames inside the pre-roll,
+        // never its silence or lead-in pad.
+        let onset = inner.lid_onset_frame.take().filter(|_| seed.is_some());
+        let onset_ms = onset.as_ref().map_or(0, |b| {
+            crate::pcm::duration_ms_from_mono_s16le(b.len(), crate::pcm::STT_PCM_SAMPLE_RATE)
+        });
+        let pre_voiced_ms = if seed.is_some() {
+            inner.lid_pre_voiced_ms.min(seed_ms + onset_ms)
+        } else {
+            0
+        };
+        inner.lid_pre_voiced_ms = 0;
         if let Some(live) = inner.live.as_mut() {
             live.lid.pcm_buffer.clear();
-            live.lid.voiced_ms = 0;
+            if let Some(seed) = seed {
+                live.lid.pcm_buffer.extend_from_slice(&seed);
+            }
+            // The SpeechStart frame itself, which STT receives right after the pre-roll.
+            if let Some(onset) = onset {
+                live.lid.pcm_buffer.extend_from_slice(&onset);
+            }
+            live.lid.voiced_ms = pre_voiced_ms;
             live.lid.pending_silence_ms = 0;
             live.lid.buffering = true;
         }
@@ -5278,9 +5321,21 @@ impl VoiceAgent {
     ) {
         let identify_key = {
             let mut inner = self.inner.lock().await;
-            if !inner.live_flag(|r| r.lid.buffering)
-                || !language_id_enabled(&inner.config.language_id)
-            {
+            if !language_id_enabled(&inner.config.language_id) {
+                return;
+            }
+            if !inner.live_flag(|r| r.lid.buffering) {
+                // Before SpeechStart: count the run of voiced frames that ends in the onset (they
+                // reach LID through the STT pre-roll seed); a silent frame ends the run.
+                inner.lid_pre_voiced_ms = if frame_active {
+                    inner
+                        .lid_pre_voiced_ms
+                        .saturating_add(duration_ms)
+                        .min(60_000)
+                } else {
+                    0
+                };
+                inner.lid_onset_frame = Some(mono_bytes.clone());
                 return;
             }
             // Bound the buffer to 2x the clip LID will use, keeping the OLDEST audio (the
@@ -5349,6 +5404,9 @@ impl VoiceAgent {
 
     /// Starts the identify of the close window (if eligible) and waits for the LID gate, bounded.
     async fn prepare_lid_before_close(&self, key: u64) {
+        if let Some(rec) = self.inner.lock().await.record_mut(key) {
+            rec.lid.speech_ended = true;
+        }
         self.try_spawn_default_mode_lid(key, false, "utterance close")
             .await;
         self.await_lid_gate_before_utterance_close(key).await;
@@ -5413,7 +5471,10 @@ impl VoiceAgent {
             language_id_enabled(&inner.config.language_id)
                 && !language_id_continuous(&inner.config.language_id)
                 && inner.record_ref(key).is_some_and(|r| {
-                    !r.lid.identify_in_flight && (force || !r.lid.identify_started)
+                    !r.lid.identify_in_flight
+                        && (force
+                            || !r.lid.identify_started
+                            || (r.lid.second_pass_pending && !r.lid.second_pass_done))
                 })
         };
         if !eligible {
@@ -5541,7 +5602,14 @@ impl VoiceAgent {
     }
 
     async fn maybe_start_lid_at_speech_end(&self) {
-        let key = self.inner.lock().await.live_key();
+        let key = {
+            let mut inner = self.inner.lock().await;
+            let key = inner.live_key();
+            if let Some(rec) = key.and_then(|k| inner.record_mut(k)) {
+                rec.lid.speech_ended = true;
+            }
+            key
+        };
         if let Some(key) = key {
             self.try_spawn_default_mode_lid(key, false, "SpeechEnd")
                 .await;
@@ -5594,7 +5662,12 @@ impl VoiceAgent {
                 return false;
             }
             let continuous = language_id_continuous(&inner.config.language_id);
+            let early = language_id_early(&inner.config.language_id);
             let allowlist_cfg = inner.config.language_id.clone().expect("enabled");
+            let restricts = allowlist_cfg
+                .allowlist
+                .as_ref()
+                .is_some_and(|list| !list.is_empty());
             let min_ms = resolved_language_id_min_speech_ms(&allowlist_cfg);
             let max_clip_ms = crate::config::resolved_lid_max_clip_ms(&allowlist_cfg);
             let Some(rec) = inner.record_mut(key) else {
@@ -5604,7 +5677,8 @@ impl VoiceAgent {
                 rec.lid.identify_started = true;
                 return false;
             }
-            if rec.lid.identify_started && !force && !continuous {
+            let second_pass = rec.lid.second_pass_pending && !rec.lid.second_pass_done;
+            if rec.lid.identify_started && !force && !continuous && !second_pass {
                 return false;
             }
             let buffer_len = rec.lid.pcm_buffer.len();
@@ -5613,7 +5687,7 @@ impl VoiceAgent {
                 crate::pcm::STT_PCM_SAMPLE_RATE,
             );
             let duration_ms = rec.lid.voiced_ms;
-            if buffer_len == 0 || (!force && duration_ms < min_ms) {
+            if buffer_len == 0 || (!force && !second_pass && duration_ms < min_ms) {
                 if !force && buffer_len > 0 && duration_ms < min_ms {
                     voice_debug(format!(
                         "LID identify skipped: {duration_ms} ms speech ({buffered_ms} ms buffered) < min_speech_ms {min_ms}"
@@ -5624,7 +5698,15 @@ impl VoiceAgent {
             rec.lid.identify_deferred = false;
             rec.lid.identify_in_flight = true;
             rec.lid.identify_started = true;
-            if !continuous {
+            if second_pass {
+                rec.lid.second_pass_pending = false;
+                rec.lid.second_pass_done = true;
+            }
+            // Early timing with an allowlist: the first identify keeps buffering (its clip stays
+            // at the head of the buffer), so an out-of-set pick beyond the gap can be retried
+            // once on the end-of-utterance clip.
+            let keep_for_second_pass = early && restricts && !rec.lid.second_pass_done;
+            if !continuous && !keep_for_second_pass {
                 rec.lid.buffering = false;
             }
             let sample_rate = crate::pcm::STT_PCM_SAMPLE_RATE;
@@ -5632,18 +5714,38 @@ impl VoiceAgent {
                 .saturating_mul(max_clip_ms as u64)
                 .saturating_mul(2)
                 / 1000;
-            let buffer = std::mem::take(&mut rec.lid.pcm_buffer);
-            let pcm = if buffer.len() > max_bytes as usize {
-                Bytes::copy_from_slice(&buffer[..max_bytes as usize])
+            let pcm = if keep_for_second_pass {
+                let head = rec.lid.pcm_buffer.len().min(max_bytes as usize);
+                Bytes::copy_from_slice(&rec.lid.pcm_buffer[..head])
             } else {
-                Bytes::from(buffer)
+                let buffer = std::mem::take(&mut rec.lid.pcm_buffer);
+                let pcm = if buffer.len() > max_bytes as usize {
+                    Bytes::copy_from_slice(&buffer[..max_bytes as usize])
+                } else {
+                    Bytes::from(buffer)
+                };
+                rec.lid.pcm_buffer.clear();
+                rec.lid.voiced_ms = 0;
+                rec.lid.pending_silence_ms = 0;
+                pcm
             };
-            rec.lid.pcm_buffer.clear();
-            rec.lid.voiced_ms = 0;
-            rec.lid.pending_silence_ms = 0;
-            Some((pcm, allowlist_cfg, duration_ms))
+            if second_pass {
+                voice_debug(format!(
+                    "LID second pass on end-of-utterance clip ({} ms)",
+                    crate::pcm::duration_ms_from_mono_s16le(pcm.len(), sample_rate)
+                ));
+            }
+            let pass: u32 = if rec.lid.second_pass_done { 2 } else { 1 };
+            Some((pcm, allowlist_cfg, duration_ms, keep_for_second_pass, pass))
         };
-        let Some((pcm, allowlist_cfg, speech_ms)) = job else {
+        let lid_tap = {
+            let inner = self.inner.lock().await;
+            inner
+                .audio_tap_dir_override
+                .or_else(audio_tap_dir_from_env)
+                .map(|dir| (dir, inner.audio_tap_agent_id))
+        };
+        let Some((pcm, allowlist_cfg, speech_ms, keep_for_second_pass, pass)) = job else {
             return false;
         };
         let Some(agent) = self.weak_self.upgrade() else {
@@ -5656,63 +5758,118 @@ impl VoiceAgent {
         let sample_rate = crate::pcm::STT_PCM_SAMPLE_RATE;
         let lid_notify = Arc::clone(&agent.lid_completion_notify);
         tokio::spawn(async move {
-            let result = provider.identify(pcm, sample_rate).await;
-            let Some(agent) = agent.weak_self.upgrade() else {
-                return;
-            };
-            let mut inner = agent.inner.lock().await;
-            if inner.record_ref(key).is_none() {
-                // The record is gone (session reset or STT disabled): nothing to write to.
-                voice_debug("LID result for a previous utterance ignored");
-                drop(inner);
-                lid_notify.notify_waiters();
-                return;
-            }
-            // The first outcome per utterance is always reported: `user_language`, or
-            // `language_id_skipped` (`undetermined`) when no usable code came back.
-            let mut undetermined = false;
-            match result {
-                Ok(Some(lang_result)) => {
-                    let code = lang_result.language.trim().to_ascii_lowercase();
-                    let language_emitted = inner
-                        .record_ref(key)
-                        .is_some_and(|r| r.lid.language_emitted);
-                    if code.is_empty() {
-                        voice_debug("LID identify returned empty language code");
+            // At most two passes: the early clip, then (out of set beyond the gap after speech
+            // ended) the end-of-utterance clip, both inside the same bounded LID gate wait.
+            let mut pcm = pcm;
+            let mut keep_for_second_pass = keep_for_second_pass;
+            let mut pass = pass;
+            loop {
+                if let Some((dir, agent_id)) = lid_tap {
+                    crate::audio_tap::write_lid_in(dir, agent_id, key, pass, &pcm);
+                }
+                let result = provider.identify(pcm, sample_rate).await;
+                let Some(agent) = agent.weak_self.upgrade() else {
+                    return;
+                };
+                let mut inner = agent.inner.lock().await;
+                if inner.record_ref(key).is_none() {
+                    // The record is gone (session reset or STT disabled): nothing to write to.
+                    voice_debug("LID result for a previous utterance ignored");
+                    drop(inner);
+                    lid_notify.notify_waiters();
+                    return;
+                }
+                // The first outcome per utterance is always reported: `user_language`, or
+                // `language_id_skipped` (`undetermined`) when no usable code came back.
+                let mut undetermined = false;
+                let mut second_pass_now = false;
+                match result {
+                    Ok(Some(lang_result)) => {
+                        let code = lang_result.language.trim().to_ascii_lowercase();
+                        let language_emitted = inner
+                            .record_ref(key)
+                            .is_some_and(|r| r.lid.language_emitted);
+                        if code.is_empty() {
+                            voice_debug("LID identify returned empty language code");
+                            undetermined = true;
+                        } else if !language_id_allowlist_accepts(&allowlist_cfg, &code)
+                            && keep_for_second_pass
+                            && lang_result.raw_language.is_some()
+                        {
+                            // Out of the allowed set beyond the gap on the early clip: one more
+                            // identify on the end-of-utterance clip decides (same rule). Only when
+                            // the provider decided among the allowed set (`raw_language` set);
+                            // a plain argmax (no allowed code maps to the model) stays one identify.
+                            let rec = inner.record_mut(key).expect("checked");
+                            rec.lid.second_pass_pending = true;
+                            second_pass_now = rec.lid.speech_ended;
+                            voice_debug(format!(
+                            "LID early result {code} outside allowlist beyond gap — second pass at utterance end"
+                        ));
+                        } else if !language_id_allowlist_accepts(&allowlist_cfg, &code) {
+                            voice_debug(format!("LID result {code} not in allowlist — ignored"));
+                            undetermined = true;
+                        } else if inner.lid_last_emitted.as_deref() == Some(code.as_str())
+                            && language_emitted
+                        {
+                            voice_debug(format!("LID result {code} unchanged — not re-emitted"));
+                        } else {
+                            inner.lid_last_emitted = Some(code.clone());
+                            let rec = inner.record_mut(key).expect("checked");
+                            rec.lid.language_emitted = true;
+                            voice_debug(format!("emit user_language: {code}"));
+                            let utterance_id = Some(rec.id.clone());
+                            agent.emit(SpeechEvent::user_language(code, utterance_id));
+                        }
+                    }
+                    Ok(None) => {
                         undetermined = true;
-                    } else if !language_id_allowlist_accepts(&allowlist_cfg, &code) {
-                        voice_debug(format!("LID result {code} not in allowlist — ignored"));
+                    }
+                    Err(err) => {
+                        voice_debug(format!("LID identify failed: {err}"));
                         undetermined = true;
-                    } else if inner.lid_last_emitted.as_deref() == Some(code.as_str())
-                        && language_emitted
-                    {
-                        voice_debug(format!("LID result {code} unchanged — not re-emitted"));
-                    } else {
-                        inner.lid_last_emitted = Some(code.clone());
-                        let rec = inner.record_mut(key).expect("checked");
-                        rec.lid.language_emitted = true;
-                        voice_debug(format!("emit user_language: {code}"));
-                        let utterance_id = Some(rec.id.clone());
-                        agent.emit(SpeechEvent::user_language(code, utterance_id));
                     }
                 }
-                Ok(None) => {
-                    undetermined = true;
+                let rec = inner.record_mut(key).expect("checked");
+                if undetermined && !rec.lid.language_emitted {
+                    agent.emit_language_id_skipped_with_ms(rec, "undetermined", speech_ms);
                 }
-                Err(err) => {
-                    voice_debug(format!("LID identify failed: {err}"));
-                    undetermined = true;
+                rec.lid.identify_in_flight = false;
+                rec.lid.identify_deferred = false;
+                if keep_for_second_pass && !rec.lid.second_pass_pending {
+                    // No second pass: stop buffering and free the kept audio.
+                    rec.lid.buffering = false;
+                    rec.lid.pcm_buffer = Vec::new();
                 }
+                if second_pass_now {
+                    // Speech already ended while the early identify ran: run the second pass now.
+                    let max_clip_ms = crate::config::resolved_lid_max_clip_ms(&allowlist_cfg);
+                    let max_bytes =
+                        (sample_rate as usize).saturating_mul(max_clip_ms as usize) * 2 / 1000;
+                    rec.lid.second_pass_pending = false;
+                    rec.lid.second_pass_done = true;
+                    rec.lid.identify_in_flight = true;
+                    rec.lid.buffering = false;
+                    let mut buffer = std::mem::take(&mut rec.lid.pcm_buffer);
+                    buffer.truncate(max_bytes);
+                    rec.lid.voiced_ms = 0;
+                    rec.lid.pending_silence_ms = 0;
+                    pcm = Bytes::from(buffer);
+                    keep_for_second_pass = false;
+                    pass = 2;
+                    voice_debug(format!(
+                        "LID second pass on end-of-utterance clip ({} ms)",
+                        crate::pcm::duration_ms_from_mono_s16le(pcm.len(), sample_rate)
+                    ));
+                    continue;
+                }
+                if !rec.lid.second_pass_pending {
+                    inner.lid_retained.retain(|r| r.key != key);
+                }
+                drop(inner);
+                lid_notify.notify_waiters();
+                break;
             }
-            let rec = inner.record_mut(key).expect("checked");
-            if undetermined && !rec.lid.language_emitted {
-                agent.emit_language_id_skipped_with_ms(rec, "undetermined", speech_ms);
-            }
-            rec.lid.identify_in_flight = false;
-            rec.lid.identify_deferred = false;
-            inner.lid_retained.retain(|r| r.key != key);
-            drop(inner);
-            lid_notify.notify_waiters();
         });
         true
     }
@@ -6083,6 +6240,8 @@ impl VoiceAgent {
                 // non-empty copy is always the contiguous audio right before the held onset. A
                 // vendor final during the hold (cloud vendors endpoint by themselves) does not
                 // make it stale.
+                // A seed is only valid for the SpeechStart that flushes it.
+                inner.lid_pre_roll_seed = None;
                 (
                     std::mem::take(&mut inner.hold_pending_pcm),
                     std::mem::take(&mut inner.hold_lookback_pcm),
@@ -6233,6 +6392,9 @@ impl VoiceAgent {
                                 total_ms,
                                 pad_ms,
                             ));
+                            if language_id_enabled(&inner.config.language_id) {
+                                inner.lid_pre_roll_seed = Some(buffered.clone());
+                            }
                             pre_roll_after_start = Some(buffered);
                         }
                     }

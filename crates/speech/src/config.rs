@@ -928,9 +928,17 @@ pub struct LanguageIdConfig {
     /// Directory with Whisper encoder/decoder ONNX for `SpokenLanguageIdentification`.
     #[serde(default)]
     pub model_path: Option<String>,
-    /// Optional ISO 639-1 allowlist; other detected codes are ignored.
+    /// Optional ISO 639-1 allowlist. When the identifier exposes per-language scores (local
+    /// Whisper), it decides among these languages: an out-of-list top pick within
+    /// `allowlist_max_gap` logits of the best allowed language resolves to that language.
+    /// Codes it still returns outside the list are ignored (`language_id_skipped`).
     #[serde(default)]
     pub allowlist: Option<Vec<String>>,
+    /// Largest logit gap between the unrestricted top language and the best allowlisted one at
+    /// which the allowlisted language is chosen. Default [`DEFAULT_LID_ALLOWLIST_MAX_GAP`].
+    /// Must be a finite number >= 0.
+    #[serde(default, deserialize_with = "deserialize_allowlist_max_gap")]
+    pub allowlist_max_gap: Option<f32>,
     /// Minimum buffered speech (ms) before identify runs at VAD `SpeechEnd` (default mode)
     /// or before the first mid-utterance identify when `continuous` is true. Default 1000.
     #[serde(default)]
@@ -961,6 +969,76 @@ pub struct LanguageIdConfig {
     /// TTS vendors must not be delayed by LID.
     #[serde(default)]
     pub tts_exclusion: Option<bool>,
+}
+
+/// Default `allowlist_max_gap` (Whisper logits). Calibrated 2026-11-15 on Whisper-tiny int8 with
+/// the product runtime (in-process ONNX Runtime, LID thread count): with the end-of-utterance
+/// second pass, 300/300 real-path Spanish utterances resolve to `es` (none to `en`), 300/300
+/// English to `en`, and de/fr speech switches a session (current en / es) at most 0.0 % / 4.2 %.
+pub const DEFAULT_LID_ALLOWLIST_MAX_GAP: f32 = 3.0;
+
+fn deserialize_allowlist_max_gap<'de, D>(deserializer: D) -> Result<Option<f32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<f32>::deserialize(deserializer)?;
+    match value {
+        Some(v) if !v.is_finite() || v < 0.0 => Err(serde::de::Error::custom(format!(
+            "languageId.allowlistMaxGap must be a finite number >= 0, got {v}"
+        ))),
+        other => Ok(other),
+    }
+}
+
+pub fn resolved_lid_allowlist_max_gap(config: &LanguageIdConfig) -> f32 {
+    config
+        .allowlist_max_gap
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .unwrap_or(DEFAULT_LID_ALLOWLIST_MAX_GAP)
+}
+
+/// Decide among the allowlisted languages from per-language scores (`codes[i]` ↔ `logits[i]`).
+///
+/// Returns `None` when there is no allowlist or none of its codes is in `codes` (the caller
+/// keeps the identifier's own argmax). Otherwise: the unrestricted top when it is allowed; the
+/// best allowed language when the top is within `allowlist_max_gap`; else the top itself (not
+/// allowed, so the agent reports `undetermined`). `raw_language` and `gap` are always set.
+pub fn decide_language_among_allowed(
+    config: &LanguageIdConfig,
+    codes: &[String],
+    logits: &[f32],
+) -> Option<crate::pipeline::LanguageIdResult> {
+    let list = config.allowlist.as_ref()?;
+    let allowed: Vec<usize> = codes
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| list.iter().any(|a| a.trim().eq_ignore_ascii_case(c.trim())))
+        .map(|(i, _)| i)
+        .filter(|&i| i < logits.len())
+        .collect();
+    if allowed.is_empty() || logits.is_empty() || codes.len() != logits.len() {
+        return None;
+    }
+    let argmax = |idx: &mut dyn Iterator<Item = usize>| {
+        idx.fold(None, |best: Option<usize>, i| match best {
+            Some(b) if logits[b] >= logits[i] => Some(b),
+            _ => Some(i),
+        })
+    };
+    let top = argmax(&mut (0..logits.len()))?;
+    let best = argmax(&mut allowed.iter().copied())?;
+    let gap = logits[top] - logits[best];
+    let raw = codes[top].trim().to_ascii_lowercase();
+    let language = if allowed.contains(&top) || gap <= resolved_lid_allowlist_max_gap(config) {
+        codes[best].trim().to_ascii_lowercase()
+    } else {
+        raw.clone()
+    };
+    Some(crate::pipeline::LanguageIdResult {
+        language,
+        raw_language: Some(raw),
+        gap: Some(gap),
+    })
 }
 
 fn default_language_id_min_speech_ms() -> u32 {
@@ -1072,6 +1150,7 @@ mod language_id_config_tests {
             enabled: None,
             model_path: None,
             allowlist: None,
+            allowlist_max_gap: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,
@@ -1087,6 +1166,7 @@ mod language_id_config_tests {
             enabled: None,
             model_path: Some("/models/whisper-tiny".into()),
             allowlist: None,
+            allowlist_max_gap: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,
@@ -1102,6 +1182,7 @@ mod language_id_config_tests {
             enabled: Some(false),
             model_path: Some("/models/whisper-tiny".into()),
             allowlist: None,
+            allowlist_max_gap: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,
@@ -1111,12 +1192,90 @@ mod language_id_config_tests {
         })));
     }
 
+    fn scored(codes: &[&str], logits: &[f32]) -> (Vec<String>, Vec<f32>) {
+        (
+            codes.iter().map(|c| c.to_string()).collect(),
+            logits.to_vec(),
+        )
+    }
+
+    fn en_es(gap: Option<f32>) -> LanguageIdConfig {
+        LanguageIdConfig {
+            enabled: None,
+            model_path: Some("/m".into()),
+            allowlist: Some(vec!["en".into(), "es".into()]),
+            allowlist_max_gap: gap,
+            min_speech_ms: None,
+            continuous: None,
+            timing: None,
+            lid_max_clip_ms: None,
+            lid_gate_max_wait_ms: None,
+            tts_exclusion: None,
+        }
+    }
+
+    #[test]
+    fn allowed_top_is_kept() {
+        let (c, l) = scored(&["en", "es", "el"], &[1.0, 5.0, 4.0]);
+        let r = decide_language_among_allowed(&en_es(None), &c, &l).unwrap();
+        assert_eq!(r.language, "es");
+        assert_eq!(r.raw_language.as_deref(), Some("es"));
+        assert_eq!(r.gap, Some(0.0));
+    }
+
+    #[test]
+    fn out_of_set_top_within_gap_picks_best_allowed() {
+        let (c, l) = scored(&["en", "es", "el"], &[1.0, 4.0, 6.5]);
+        let r = decide_language_among_allowed(&en_es(None), &c, &l).unwrap();
+        assert_eq!(r.language, "es");
+        assert_eq!(r.raw_language.as_deref(), Some("el"));
+        assert!((r.gap.unwrap() - 2.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn out_of_set_top_beyond_gap_stays_not_allowed() {
+        let (c, l) = scored(&["en", "es", "de"], &[3.0, 1.0, 7.0]);
+        let r = decide_language_among_allowed(&en_es(None), &c, &l).unwrap();
+        assert_eq!(r.language, "de");
+        assert!(!language_id_allowlist_accepts(&en_es(None), &r.language));
+        let r = decide_language_among_allowed(&en_es(Some(4.0)), &c, &l).unwrap();
+        assert_eq!(r.language, "en");
+    }
+
+    #[test]
+    fn no_allowlist_or_unknown_codes_is_not_applicable() {
+        let (c, l) = scored(&["en", "es"], &[1.0, 2.0]);
+        let mut cfg = en_es(None);
+        cfg.allowlist = None;
+        assert!(decide_language_among_allowed(&cfg, &c, &l).is_none());
+        cfg.allowlist = Some(vec!["xx".into()]);
+        assert!(decide_language_among_allowed(&cfg, &c, &l).is_none());
+    }
+
+    #[test]
+    fn allowlist_max_gap_parses_and_rejects_negative() {
+        let cfg: LanguageIdConfig =
+            serde_json::from_str(r#"{"modelPath":"/m","allowlistMaxGap":2.5}"#).unwrap();
+        assert_eq!(cfg.allowlist_max_gap, Some(2.5));
+        assert_eq!(resolved_lid_allowlist_max_gap(&cfg), 2.5);
+        let cfg: LanguageIdConfig = serde_json::from_str(r#"{"modelPath":"/m"}"#).unwrap();
+        assert_eq!(
+            resolved_lid_allowlist_max_gap(&cfg),
+            DEFAULT_LID_ALLOWLIST_MAX_GAP
+        );
+        let err =
+            serde_json::from_str::<LanguageIdConfig>(r#"{"modelPath":"/m","allowlistMaxGap":-1}"#)
+                .unwrap_err();
+        assert!(err.to_string().contains("allowlistMaxGap"), "{err}");
+    }
+
     #[test]
     fn allowlist_filters_codes() {
         let cfg = LanguageIdConfig {
             enabled: None,
             model_path: Some("/x".into()),
             allowlist: Some(vec!["en".into(), "de".into()]),
+            allowlist_max_gap: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,
@@ -1135,6 +1294,7 @@ mod language_id_config_tests {
             enabled: None,
             model_path: None,
             allowlist: None,
+            allowlist_max_gap: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,
@@ -1152,6 +1312,7 @@ mod language_id_config_tests {
             enabled: None,
             model_path: Some("/x".into()),
             allowlist: None,
+            allowlist_max_gap: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,
@@ -1163,6 +1324,7 @@ mod language_id_config_tests {
             enabled: None,
             model_path: Some("/x".into()),
             allowlist: None,
+            allowlist_max_gap: None,
             min_speech_ms: None,
             continuous: Some(false),
             lid_max_clip_ms: None,
@@ -1178,6 +1340,7 @@ mod language_id_config_tests {
             enabled: None,
             model_path: Some("/x".into()),
             allowlist: None,
+            allowlist_max_gap: None,
             min_speech_ms: None,
             continuous: Some(true),
             lid_max_clip_ms: None,
@@ -1193,6 +1356,7 @@ mod language_id_config_tests {
             enabled: Some(true),
             model_path: Some("/x".into()),
             allowlist: None,
+            allowlist_max_gap: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,
@@ -1256,6 +1420,7 @@ mod language_id_config_tests {
                 enabled: None,
                 model_path: None,
                 allowlist: None,
+                allowlist_max_gap: None,
                 min_speech_ms: None,
                 continuous,
                 lid_max_clip_ms: None,

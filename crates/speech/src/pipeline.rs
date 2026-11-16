@@ -317,6 +317,10 @@ pub struct LanguageIdResult {
     /// Logit gap between `raw_language` and the best allowlisted language (0 when the top was
     /// allowed), when the identifier exposes scores.
     pub gap: Option<f32>,
+    /// Logit of every allowlisted language the model knows (lowercase code, logit), when the
+    /// identifier decided among an allowlist. Used for the early-timing margin check and to sum
+    /// the early and end-of-utterance passes.
+    pub allowed_logits: Option<Vec<(String, f32)>>,
 }
 
 impl LanguageIdResult {
@@ -326,6 +330,18 @@ impl LanguageIdResult {
             language: language.into(),
             ..Self::default()
         }
+    }
+
+    /// Logit margin between the best and the second-best allowlisted language. `None` without
+    /// scores or with fewer than two allowlisted languages (no choice to be close about).
+    pub fn allowed_margin(&self) -> Option<f32> {
+        let logits = self.allowed_logits.as_ref()?;
+        if logits.len() < 2 {
+            return None;
+        }
+        let mut sorted: Vec<f32> = logits.iter().map(|(_, l)| *l).collect();
+        sorted.sort_by(|a, b| b.total_cmp(a));
+        Some(sorted[0] - sorted[1])
     }
 }
 

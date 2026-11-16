@@ -108,20 +108,37 @@ impl LanguageIdProvider for CountingLanguageId {
         _sample_rate: u32,
     ) -> node_webrtc_rust_speech::SpeechResult<Option<LanguageIdResult>> {
         let index = self.calls.fetch_add(1, Ordering::SeqCst);
-        tokio::time::sleep(Duration::from_millis(self.sleep_ms)).await;
-        let language = self
+        let spec = self
             .languages
             .get(index)
             .or_else(|| self.languages.last())
             .cloned()
             .unwrap_or_else(|| "en".into());
+        // "...@1500": this call takes 1500 ms instead of `sleep_ms`.
+        let (language, sleep_ms) = match spec.rsplit_once('@') {
+            Some((l, ms)) => (l.to_string(), ms.parse::<u64>().expect("sleep ms")),
+            None => (spec, self.sleep_ms),
+        };
+        tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
         // "es|el": restricted-mode decision `es` from raw top `el` (as the sherpa provider
         // reports when the allowlist maps to model languages); "ja|ja": decided out of set.
-        if let Some((decided, raw)) = language.split_once('|') {
+        // "es|ja|es=14.9,en=14.0": as above, plus the allowlisted languages' logits.
+        if let Some((decided, rest)) = language.split_once('|') {
+            let (raw, logits) = match rest.split_once('|') {
+                Some((raw, logits)) => (raw, Some(logits)),
+                None => (rest, None),
+            };
+            let allowed_logits = logits.map(|l| {
+                l.split(',')
+                    .filter_map(|kv| kv.split_once('='))
+                    .map(|(c, v)| (c.to_string(), v.parse::<f32>().expect("logit")))
+                    .collect()
+            });
             return Ok(Some(LanguageIdResult {
                 language: decided.to_string(),
                 raw_language: Some(raw.to_string()),
                 gap: Some(1.0),
+                allowed_logits,
             }));
         }
         Ok(Some(LanguageIdResult::new(language)))
@@ -242,6 +259,7 @@ fn agent_with_slow_lid(stt_bytes: Arc<Mutex<usize>>) -> Arc<VoiceAgent> {
             model_path: Some("/fake/lid-model".into()),
             allowlist: None,
             allowlist_max_gap: None,
+            allowlist_min_margin: None,
             min_speech_ms: Some(200),
             continuous: None,
             lid_max_clip_ms: None,
@@ -320,6 +338,7 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
             model_path: Some("/fake/lid-model".into()),
             allowlist: None,
             allowlist_max_gap: None,
+            allowlist_min_margin: None,
             min_speech_ms: Some(200),
             continuous: None,
             lid_max_clip_ms: None,
@@ -676,6 +695,7 @@ fn agent_with_overlap_tracking_lid(
             model_path: Some("/fake/lid-model".into()),
             allowlist: None,
             allowlist_max_gap: None,
+            allowlist_min_margin: None,
             min_speech_ms: Some(200),
             continuous: None,
             lid_max_clip_ms: None,
@@ -995,6 +1015,7 @@ fn agent_with_final_once_stt(lid_sleep_ms: u64) -> Arc<VoiceAgent> {
             model_path: Some("/fake/lid-model".into()),
             allowlist: None,
             allowlist_max_gap: None,
+            allowlist_min_margin: None,
             min_speech_ms: Some(200),
             continuous: None,
             lid_max_clip_ms: None,
@@ -1093,6 +1114,7 @@ fn agent_for_lid_gate_wakeup_test() -> Arc<VoiceAgent> {
                 model_path: Some("/fake/lid-model".into()),
                 allowlist: None,
                 allowlist_max_gap: None,
+                allowlist_min_margin: None,
                 min_speech_ms: Some(200),
                 continuous: None,
                 lid_max_clip_ms: None,
@@ -1228,6 +1250,38 @@ fn agent_with_counting_lid_timing_min(
     min_speech_ms: u32,
     min_silence_ms: Option<u32>,
 ) -> Arc<VoiceAgent> {
+    agent_with_counting_lid_gate(
+        stt_bytes,
+        lid_calls,
+        gate_stt,
+        continuous,
+        include_stt,
+        lid_languages,
+        allowlist,
+        timing,
+        min_speech_ms,
+        min_silence_ms,
+        None,
+        Some(true),
+    )
+}
+
+/// Same as [`agent_with_counting_lid_timing_min`] with an explicit `lid_gate_max_wait_ms`.
+#[allow(clippy::too_many_arguments)]
+fn agent_with_counting_lid_gate(
+    stt_bytes: Arc<Mutex<usize>>,
+    lid_calls: Arc<AtomicUsize>,
+    gate_stt: bool,
+    continuous: Option<bool>,
+    include_stt: bool,
+    lid_languages: Vec<String>,
+    allowlist: Option<Vec<String>>,
+    timing: Option<LanguageIdTiming>,
+    min_speech_ms: u32,
+    min_silence_ms: Option<u32>,
+    lid_gate_max_wait_ms: Option<u32>,
+    tts_exclusion: Option<bool>,
+) -> Arc<VoiceAgent> {
     let factory = Arc::new(CountingLidTestFactory {
         stt_bytes: Arc::clone(&stt_bytes),
         lid_calls: Arc::clone(&lid_calls),
@@ -1286,12 +1340,13 @@ fn agent_with_counting_lid_timing_min(
             model_path: Some("/fake/lid-model".into()),
             allowlist,
             allowlist_max_gap: None,
+            allowlist_min_margin: None,
             min_speech_ms: Some(min_speech_ms),
             continuous,
             lid_max_clip_ms: None,
-            lid_gate_max_wait_ms: None,
+            lid_gate_max_wait_ms,
             timing,
-            tts_exclusion: Some(true),
+            tts_exclusion,
         }),
         vad,
         ..Default::default()
@@ -1459,6 +1514,7 @@ fn agent_with_timed_overlap_lid(
             model_path: Some("/fake/lid-model".into()),
             allowlist: None,
             allowlist_max_gap: None,
+            allowlist_min_margin: None,
             min_speech_ms: Some(200),
             continuous: None,
             lid_max_clip_ms: None,
@@ -2019,6 +2075,7 @@ async fn lid_error_does_not_block_final() {
             model_path: Some("/fake/lid-model".into()),
             allowlist: None,
             allowlist_max_gap: None,
+            allowlist_min_margin: None,
             min_speech_ms: Some(200),
             continuous: None,
             lid_max_clip_ms: None,
@@ -2171,6 +2228,7 @@ async fn tts_synthesis_waits_for_in_flight_lid() {
                 model_path: Some("/fake/lid-model".into()),
                 allowlist: None,
                 allowlist_max_gap: None,
+                allowlist_min_margin: None,
                 min_speech_ms: Some(200),
                 continuous: Some(true),
                 lid_max_clip_ms: None,
@@ -2457,6 +2515,7 @@ async fn remote_tts_exclusion_off_does_not_gate_final_or_tts() {
                 model_path: Some("/fake/lid-model".into()),
                 allowlist: None,
                 allowlist_max_gap: None,
+                allowlist_min_margin: None,
                 min_speech_ms: Some(200),
                 continuous: None,
                 lid_max_clip_ms: None,
@@ -3304,7 +3363,8 @@ async fn second_pass_still_out_of_set_is_undetermined_once() {
 #[tokio::test]
 async fn second_pass_starts_inline_when_speech_ended_during_early_identify() {
     // Short utterance: the early identify is still running when speech ends, so the second
-    // pass starts from the identify task itself; still exactly one outcome.
+    // pass starts from the identify task itself; still exactly one outcome. The
+    // early clip is taken at frame 12; 4 more voiced frames give the second pass new audio.
     let lid_calls = Arc::new(AtomicUsize::new(0));
     let agent = early_allowlist_agent(
         vec!["ja|ja", "es|es"],
@@ -3312,9 +3372,223 @@ async fn second_pass_starts_inline_when_speech_ended_during_early_identify() {
         Arc::clone(&lid_calls),
     );
     let mut rx = agent.subscribe_events();
-    let events = run_one_utterance_events(&agent, &mut rx, 12).await;
+    let events = run_one_utterance_events(&agent, &mut rx, 16).await;
     assert_eq!(lid_calls.load(Ordering::SeqCst), 2);
     assert_eq!(user_language_codes(&events), vec!["es".to_string()]);
+    assert_one_first_outcome(&events);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn early_in_set_low_margin_flipped_by_full_clip_decides_es() {
+    // Real-path logits (2026-11-16): early raw `en` in the set by 0.86 (< 2.0), the
+    // end-of-utterance clip clearly `es`. The summed logits decide `es`; no `en` is emitted.
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = early_allowlist_agent(
+        vec!["en|en|en=15.142,es=14.2837", "es|es|es=22.7962,en=17.9841"],
+        Some(vec!["en", "es"]),
+        Arc::clone(&lid_calls),
+    );
+    let mut rx = agent.subscribe_events();
+    let events = run_one_utterance_events(&agent, &mut rx, 40).await;
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        2,
+        "early + one second pass"
+    );
+    assert_eq!(user_language_codes(&events), vec!["es".to_string()]);
+    assert_one_first_outcome(&events);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn early_es_lead_survives_narrow_full_clip_en() {
+    // Early restricted `es` by 0.94 (raw `ja`), full clip `en` by 0.05: replacing the early pick
+    // would switch wrongly; the sum keeps `es`.
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = early_allowlist_agent(
+        vec!["es|ja|es=14.94,en=14.00", "en|ja|en=16.37,es=16.32"],
+        Some(vec!["en", "es"]),
+        Arc::clone(&lid_calls),
+    );
+    let mut rx = agent.subscribe_events();
+    let events = run_one_utterance_events(&agent, &mut rx, 40).await;
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(user_language_codes(&events), vec!["es".to_string()]);
+    assert_one_first_outcome(&events);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn early_in_set_high_margin_runs_no_second_pass() {
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = early_allowlist_agent(
+        vec!["es|es|es=17.0,en=14.0", "en|en|en=20.0,es=10.0"],
+        Some(vec!["en", "es"]),
+        Arc::clone(&lid_calls),
+    );
+    let mut rx = agent.subscribe_events();
+    let events = run_one_utterance_events(&agent, &mut rx, 40).await;
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        1,
+        "margin 3.0 >= 2.0: no second pass"
+    );
+    assert_eq!(user_language_codes(&events), vec!["es".to_string()]);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn low_margin_second_pass_without_scores_keeps_early_pick() {
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = early_allowlist_agent(
+        vec!["es|es|es=15.0,en=14.5", "en"],
+        Some(vec!["en", "es"]),
+        Arc::clone(&lid_calls),
+    );
+    let mut rx = agent.subscribe_events();
+    let events = run_one_utterance_events(&agent, &mut rx, 40).await;
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(user_language_codes(&events), vec!["es".to_string()]);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn low_margin_pass2_never_runs_emits_early_pick() {
+    // Early `en` in the set by 0.86 (< 2.0) is held for the second pass, but the utterance ends
+    // with no voiced audio after the early clip: the second pass does not run, and the held pick
+    // is final (before #606's hold it was emitted at once; it must not go undetermined).
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = early_allowlist_agent(
+        vec!["en|en|en=15.142,es=14.2837", "es|es|es=22.7962,en=17.9841"],
+        Some(vec!["en", "es"]),
+        Arc::clone(&lid_calls),
+    );
+    let mut rx = agent.subscribe_events();
+    let writer: node_webrtc_rust_speech::PcmWriter = Arc::new(|_pcm, _ms| Ok(()));
+    agent.attach(Arc::new(|| Ok(None)), writer).await.unwrap();
+    agent.start(None).await.unwrap();
+    let loud = loud_stereo_frame();
+    let silent = silent_stereo_frame();
+    // Voice only until the early identify takes its clip (current-thread runtime: the sleep
+    // lets the spawned identify run and count before the next frame).
+    for _ in 0..100 {
+        if lid_calls.load(Ordering::SeqCst) > 0 {
+            break;
+        }
+        drive_loud_frames(&agent, &loud, 1).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        1,
+        "early identify started"
+    );
+    drive_silent_frames(&agent, &silent, 15).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    drive_silent_frames(&agent, &silent, 5).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let events = drain_events(&mut rx);
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 1, "no second identify");
+    assert_eq!(user_language_codes(&events), vec!["en".to_string()]);
+    assert_one_first_outcome(&events);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn low_margin_gate_expiry_emits_early_pick_once() {
+    // Early `en` (margin 0.86) is held; the second pass takes 1500 ms, past the 300 ms LID gate.
+    // The early pick is final at the gate release, before `user_speaking_end`; the late
+    // second-pass `es` neither re-emits nor flips it.
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = agent_with_counting_lid_gate(
+        Arc::new(Mutex::new(0)),
+        Arc::clone(&lid_calls),
+        false,
+        None,
+        false,
+        vec![
+            "en|en|en=15.142,es=14.2837".to_string(),
+            "es|es|es=22.7962,en=17.9841@1500".to_string(),
+        ],
+        Some(vec!["en".to_string(), "es".to_string()]),
+        Some(LanguageIdTiming::Early),
+        200,
+        None,
+        Some(300),
+        Some(true),
+    );
+    let mut rx = agent.subscribe_events();
+    let mut events = run_one_utterance_events(&agent, &mut rx, 40).await;
+    assert_eq!(
+        lid_calls.load(Ordering::SeqCst),
+        2,
+        "the second pass started"
+    );
+    assert!(agent.lid_gate_bound_hits() >= 1, "the LID gate expired");
+    assert_eq!(user_language_codes(&events), vec!["en".to_string()]);
+    let lang_at = events
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::UserLanguage)
+        .expect("user_language");
+    let end_at = events
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::UserSpeakingEnd)
+        .expect("user_speaking_end");
+    assert!(
+        lang_at < end_at,
+        "early pick emitted no later than the gate release"
+    );
+    // Let the slow second pass finish: no second outcome, no flip.
+    tokio::time::sleep(Duration::from_millis(1800)).await;
+    events.extend(drain_events(&mut rx));
+    assert_eq!(user_language_codes(&events), vec!["en".to_string()]);
+    assert_one_first_outcome(&events);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn low_margin_gate_off_second_pass_decides_after_speaking_end() {
+    // Staging shape (SPEECH_POOL_MODE, cluster TTS): the LID gate is off, so the utterance
+    // closes without waiting; the held low-margin `en` is decided by the 600 ms second pass,
+    // which reports `es` after `user_speaking_end`. No early `en` is emitted.
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = agent_with_counting_lid_gate(
+        Arc::new(Mutex::new(0)),
+        Arc::clone(&lid_calls),
+        false,
+        None,
+        false,
+        vec![
+            "en|en|en=15.142,es=14.2837".to_string(),
+            "es|es|es=22.7962,en=17.9841@600".to_string(),
+        ],
+        Some(vec!["en".to_string(), "es".to_string()]),
+        Some(LanguageIdTiming::Early),
+        200,
+        None,
+        None,
+        Some(false),
+    );
+    let mut rx = agent.subscribe_events();
+    let mut events = run_one_utterance_events(&agent, &mut rx, 40).await;
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    events.extend(drain_events(&mut rx));
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(user_language_codes(&events), vec!["es".to_string()]);
+    let lang_at = events
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::UserLanguage)
+        .expect("user_language");
+    let end_at = events
+        .iter()
+        .position(|e| e.kind == SpeechEventKind::UserSpeakingEnd)
+        .expect("user_speaking_end");
+    assert!(
+        end_at < lang_at,
+        "gate off: pass 2 decides after user_speaking_end"
+    );
+    assert_eq!(agent.lid_gate_bound_hits(), 0);
     assert_one_first_outcome(&events);
     agent.stop().await.unwrap();
 }

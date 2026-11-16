@@ -572,6 +572,7 @@ async fn lid_result_applies_to_closing_utterance() {
         model_path: Some("/fake/lid-model".into()),
         allowlist: None,
         allowlist_max_gap: None,
+        allowlist_min_margin: None,
         min_speech_ms: Some(200),
         continuous: None,
         lid_max_clip_ms: None,

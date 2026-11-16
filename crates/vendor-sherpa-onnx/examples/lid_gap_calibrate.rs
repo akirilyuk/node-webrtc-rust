@@ -60,6 +60,7 @@ async fn main() {
         model_path: Some(args[0].clone()),
         allowlist: None,
         allowlist_max_gap: None,
+        allowlist_min_margin: None,
         min_speech_ms: None,
         continuous: None,
         timing: None,
@@ -99,14 +100,38 @@ async fn main() {
             .expect("sherpa identify")
             .map(|r| r.language)
             .unwrap_or_default();
+        // Logit of every allowlisted language, and the margin between the best and the
+        // runner-up allowed language (how close the decision among the allowed set was).
+        let mut allowed_logits: Vec<(String, f32)> = allowed
+            .iter()
+            .filter_map(|c| {
+                s.codes
+                    .iter()
+                    .position(|x| x == c)
+                    .map(|i| (c.clone(), s.logits[i]))
+            })
+            .collect();
+        allowed_logits.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let allowed_margin = if allowed_logits.len() >= 2 {
+            allowed_logits[0].1 - allowed_logits[1].1
+        } else {
+            f32::INFINITY
+        };
+        let allowed_json = allowed_logits
+            .iter()
+            .map(|(c, l)| format!("\"{c}\":{l:.4}"))
+            .collect::<Vec<_>>()
+            .join(",");
         println!(
-            "{{\"file\":\"{}\",\"top\":\"{}\",\"second\":\"{}\",\"margin12\":{:.4},\"best\":\"{}\",\"gap\":{:.4},\"sherpa\":\"{}\"}}",
+            "{{\"file\":\"{}\",\"top\":\"{}\",\"second\":\"{}\",\"margin12\":{:.4},\"best\":\"{}\",\"gap\":{:.4},\"allowed\":{{{}}},\"allowed_margin\":{:.4},\"sherpa\":\"{}\"}}",
             file.display(),
             s.codes[order[0]],
             s.codes[order[1]],
             s.logits[order[0]] - s.logits[order[1]],
             s.codes[best],
             s.logits[order[0]] - s.logits[best],
+            allowed_json,
+            allowed_margin,
             sh
         );
     }

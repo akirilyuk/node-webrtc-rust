@@ -48,6 +48,7 @@ jobs:
   # Always runs (no path filter). Catches broken lockfiles even when quality/test are skipped.
   validate-package-lock:
     name: Package-lock optional bindings
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest
@@ -65,6 +66,7 @@ jobs:
 
   changes:
     name: Detect changes
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest
@@ -123,7 +125,8 @@ jobs:
     if: |
       always() &&
       !cancelled() &&
-      needs.validate-package-lock.result == 'success'
+      needs.validate-package-lock.result == 'success' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest
@@ -172,7 +175,8 @@ jobs:
     if: |
       always() &&
       !cancelled() &&
-      needs.validate-package-lock.result == 'success'
+      needs.validate-package-lock.result == 'success' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
     container:
       image: ghcr.io/${{ github.repository }}/ci-build:latest
@@ -224,7 +228,9 @@ jobs:
   musl-lid:
     name: LID on x86_64 musl
     needs: [changes]
-    if: needs.changes.outputs.run_musl_lid == 'true'
+    if: |
+      needs.changes.outputs.run_musl_lid == 'true' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ${{ vars.NWR_RUNNER_LARGE || 'nwr-large' }}
     container:
       image: ghcr.io/${{ github.repository }}/ci-build-alpine:latest
@@ -344,7 +350,8 @@ jobs:
     if: |
       always() &&
       !cancelled() &&
-      needs.validate-package-lock.result == 'success'
+      needs.validate-package-lock.result == 'success' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     uses: ./.github/workflows/reusable-test.yml
     with:
       test_script: scripts/ci/run-pr-integration.sh
@@ -354,18 +361,23 @@ jobs:
       test_suites: ${{ needs.changes.outputs.test_suites }}
     secrets: inherit
 
+  # Required check "Test". A skipped required check counts as passing, so it never skips: a fork PR
+  # gets a GitHub-hosted runner here (never our self-hosted ones) and this job fails with an explanation.
+  # No `container:`: this job only runs a bash gate.
   test:
     name: Test
     needs: [quality, build-ts, integration-test]
     if: always() && !cancelled()
-    runs-on: ${{ vars.NWR_RUNNER_SMALL || 'nwr-small' }}
-    container:
-      image: ghcr.io/${{ github.repository }}/ci-build:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || vars.NWR_RUNNER_SMALL || 'nwr-small' }}
     steps:
+      - name: Refuse fork PRs
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::error::Pull requests from forks do not run CI on this repository's runners. A maintainer must review the change and push the branch to this repository to get CI."
+          exit 1
+
       - name: Require lint, TypeScript build and integration tests
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         run: |
           quality="${{ needs.quality.result }}"
           build_ts="${{ needs.build-ts.result }}"

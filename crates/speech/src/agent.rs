@@ -241,6 +241,16 @@ struct UttLid {
     /// Early in-set pick whose allowed-set margin was below `allowlist_min_margin`: held (not
     /// emitted) until the second pass, which decides on the summed allowed logits of both.
     early_low_margin: Option<crate::pipeline::LanguageIdResult>,
+    /// `voiced_ms` when the early identify took its clip: a second pass needs voiced audio
+    /// beyond it (otherwise the end clip holds nothing the early pass did not score).
+    early_voiced_ms: u32,
+    /// The held early outcome was made final because the second pass cannot revise it any more
+    /// (it will not run, or the LID gate released the utterance first). A later second-pass
+    /// result is ignored.
+    held_released: bool,
+    /// `user_speaking_end` was emitted with the LID gate on while an identify was still running:
+    /// a later early result is final at once (no hold for a second pass).
+    final_released: bool,
     /// VAD speech end or utterance close was reached for this utterance.
     speech_ended: bool,
 }
@@ -5321,6 +5331,29 @@ impl VoiceAgent {
         let utterance_id = {
             let mut inner = self.inner.lock().await;
             let enabled = language_id_enabled(&inner.config.language_id);
+            let gate_on = crate::config::lid_tts_exclusion_enabled(
+                &inner.config.language_id,
+                &inner.config.tts,
+            );
+            let Some(rec) = inner.record_mut(key) else {
+                return;
+            };
+            // A held early LID outcome becomes final here when the second pass will not run
+            // (not started by now) or the LID gate released the utterance while it runs.
+            let in_flight = rec.lid.identify_in_flight;
+            let held = rec.lid.early_low_margin.is_some()
+                || (rec.lid.second_pass_pending && !rec.lid.second_pass_done);
+            if gate_on && in_flight {
+                rec.lid.final_released = true;
+            }
+            if held && (!in_flight || (gate_on && rec.lid.early_low_margin.is_some())) {
+                let why = if in_flight {
+                    "LID gate released first"
+                } else {
+                    "not started by utterance close"
+                };
+                self.release_held_lid(&mut inner, key, why);
+            }
             let Some(rec) = inner.record_mut(key) else {
                 return;
             };
@@ -5344,6 +5377,47 @@ impl VoiceAgent {
     }
 
     /// Emit `language_id_skipped` once per utterance. Carries buffered speech ms, no transcript.
+    /// Makes the held early LID outcome of record `key` final, exactly once, at the point that
+    /// decides the second pass will not run (or can no longer change the outcome): the held
+    /// low-margin in-set pick is emitted as `user_language`; a held out-of-set retry becomes
+    /// `language_id_skipped` (`undetermined`). No-op when nothing is held.
+    fn release_held_lid(&self, inner: &mut AgentInner, key: u64, why: &str) {
+        let Some(rec) = inner.record_mut(key) else {
+            return;
+        };
+        let pending = rec.lid.second_pass_pending && !rec.lid.second_pass_done;
+        let held = rec.lid.early_low_margin.take();
+        if held.is_none() && !pending {
+            return;
+        }
+        rec.lid.second_pass_pending = false;
+        rec.lid.second_pass_done = true;
+        rec.lid.held_released = true;
+        let Some(early) = held else {
+            voice_debug(format!(
+                "LID out-of-set retry not run ({why}) — undetermined"
+            ));
+            if !rec.lid.language_emitted {
+                self.emit_language_id_skipped_once(rec, "undetermined");
+            }
+            return;
+        };
+        let code = early.language.trim().to_ascii_lowercase();
+        voice_debug(format!(
+            "LID second pass not run ({why}) — early pick {code} final"
+        ));
+        let language_emitted = rec.lid.language_emitted;
+        if inner.lid_last_emitted.as_deref() == Some(code.as_str()) && language_emitted {
+            return;
+        }
+        inner.lid_last_emitted = Some(code.clone());
+        let rec = inner.record_mut(key).expect("checked");
+        rec.lid.language_emitted = true;
+        voice_debug(format!("emit user_language: {code}"));
+        let utterance_id = Some(rec.id.clone());
+        self.emit(SpeechEvent::user_language(code, utterance_id));
+    }
+
     fn emit_language_id_skipped_once(&self, rec: &mut SttUtterance, reason: &str) {
         let speech_ms = rec.lid.voiced_ms;
         self.emit_language_id_skipped_with_ms(rec, reason, speech_ms);
@@ -5592,6 +5666,10 @@ impl VoiceAgent {
                 crate::pcm::STT_PCM_SAMPLE_RATE,
             );
             let duration_ms = rec.lid.voiced_ms;
+            if second_pass && (buffer_len == 0 || duration_ms <= rec.lid.early_voiced_ms) {
+                self.release_held_lid(&mut inner, key, "no voiced audio after the early clip");
+                return false;
+            }
             if buffer_len == 0 || (!force && !second_pass && duration_ms < min_ms) {
                 if !force && buffer_len > 0 && duration_ms < min_ms {
                     voice_debug(format!(
@@ -5611,6 +5689,9 @@ impl VoiceAgent {
             // at the head of the buffer), so an out-of-set pick beyond the gap can be retried
             // once on the end-of-utterance clip.
             let keep_for_second_pass = early && restricts && !rec.lid.second_pass_done;
+            if keep_for_second_pass {
+                rec.lid.early_voiced_ms = duration_ms;
+            }
             if !continuous && !keep_for_second_pass {
                 rec.lid.buffering = false;
             }
@@ -5691,6 +5772,18 @@ impl VoiceAgent {
                 // Second pass after a low-margin early pick: decide on the summed allowed-set
                 // logits of both clips. Without usable scores on the second clip the early pick
                 // stands.
+                if pass == 2 && inner.record_ref(key).is_some_and(|r| r.lid.held_released) {
+                    // The held early outcome was already made final (LID gate released the
+                    // utterance first): this result neither re-emits nor flips it.
+                    voice_debug("LID second pass result after the held pick was final — ignored");
+                    let rec = inner.record_mut(key).expect("checked");
+                    rec.lid.identify_in_flight = false;
+                    rec.lid.identify_deferred = false;
+                    inner.lid_retained.retain(|r| r.key != key);
+                    drop(inner);
+                    lid_notify.notify_waiters();
+                    return;
+                }
                 let held = if pass == 2 {
                     inner
                         .record_mut(key)
@@ -5754,6 +5847,7 @@ impl VoiceAgent {
                         } else if keep_for_second_pass
                             && language_id_allowlist_accepts(&allowlist_cfg, &code)
                             && lang_result.allowed_margin().is_some_and(|m| m < min_margin)
+                            && !inner.record_ref(key).is_some_and(|r| r.lid.final_released)
                         {
                             // In the allowed set, but the allowed languages are close on the
                             // early clip: hold the pick; the end-of-utterance pass (shared with
@@ -5801,6 +5895,11 @@ impl VoiceAgent {
                     rec.lid.buffering = false;
                     rec.lid.pcm_buffer = Vec::new();
                 }
+                if second_pass_now && rec.lid.voiced_ms <= rec.lid.early_voiced_ms {
+                    second_pass_now = false;
+                    agent.release_held_lid(&mut inner, key, "no voiced audio after the early clip");
+                }
+                let rec = inner.record_mut(key).expect("checked");
                 if second_pass_now {
                     // Speech already ended while the early identify ran: run the second pass now.
                     let max_clip_ms = crate::config::resolved_lid_max_clip_ms(&allowlist_cfg);

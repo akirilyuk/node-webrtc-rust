@@ -14,6 +14,7 @@
 //! | `UserUtteranceSplit` | Speaker gate (`split_on_speaker_change`) split an utterance at a confirmed speaker change; after the new utterance's `user_speaking_start` |
 //! | `UserLanguage` | Offline spoken-language ID on buffered user PCM |
 //! | `LanguageIdSkipped` | Utterance closed (or LID deferred for TTS) without an identify running; no `user_language` will follow unless a deferred identify later runs |
+//! | `SpeakerGateReady` | The speaker model finished loading and the gate verifies from now on (`wait_ms` = load time); not emitted when the load fails (`error` with `reason: speaker_model_load_failed`) |
 //! | `AgentSpeakingStart` | First TTS PCM frame queued to outbound; carries `first_chunk_ms` / `first_audio_ms` when timed, and `sentence_case_adjusted` for Sherpa TTS |
 //! | `AgentSpeakingEnd` | TTS queue drained — **only on the agent that plays TTS** |
 //! | `VadTriggered` | VAD `SpeechStart` when `vad.enabled` — opens STT listen for this utterance |
@@ -68,6 +69,8 @@ pub enum SpeechEventKind {
     UserLanguage,
     /// No language decision for this utterance (`reason`, `speech_ms`). No transcript text.
     LanguageIdSkipped,
+    /// The speaker model finished loading and the gate verifies from now on (`wait_ms`).
+    SpeakerGateReady,
     AgentSpeakingStart,
     AgentSpeakingEnd,
     VadTriggered,
@@ -412,6 +415,13 @@ impl SpeechEvent {
         ev
     }
 
+    /// The speaker model loaded; the gate is active (`wait_ms` = load time).
+    pub fn speaker_gate_ready(wait_ms: u32) -> Self {
+        let mut ev = Self::base(SpeechEventKind::SpeakerGateReady);
+        ev.wait_ms = Some(wait_ms);
+        ev
+    }
+
     pub fn agent_speaking_start() -> Self {
         Self::base(SpeechEventKind::AgentSpeakingStart)
     }
@@ -691,6 +701,14 @@ mod user_language_event_tests {
         assert_eq!(event.reason.as_deref(), Some("too_short"));
         assert_eq!(event.speech_ms, Some(120));
         assert_eq!(event.utterance_id.as_deref(), Some("utt-1"));
+        assert!(event.text.is_none());
+    }
+
+    #[test]
+    fn speaker_gate_ready_sets_wait_ms() {
+        let event = SpeechEvent::speaker_gate_ready(340);
+        assert_eq!(event.kind, SpeechEventKind::SpeakerGateReady);
+        assert_eq!(event.wait_ms, Some(340));
         assert!(event.text.is_none());
     }
 

@@ -28,6 +28,18 @@ describe('user_language speech events', () => {
   })
 })
 
+describe('speaker_gate_ready speech events', () => {
+  test('SPEECH_EVENT_TYPE includes speaker_gate_ready', () => {
+    expect(SPEECH_EVENT_TYPE.speakerGateReady).toBe('speaker_gate_ready')
+  })
+
+  test('speechEventToControlMessage forwards waitMs', () => {
+    const msg = speechEventToControlMessage({ type: 'speaker_gate_ready', waitMs: 340 })
+    expect(msg.event).toBe('speaker_gate_ready')
+    expect(msg.waitMs).toBe(340)
+  })
+})
+
 describe('language_id_skipped speech events', () => {
   test('SPEECH_EVENT_TYPE includes language_id_skipped', () => {
     expect(SPEECH_EVENT_TYPE.languageIdSkipped).toBe('language_id_skipped')

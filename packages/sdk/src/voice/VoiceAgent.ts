@@ -394,6 +394,8 @@ function jsEventTypeToString(eventType: JsSpeechEventType): SpeechEventType {
       return 'user_language'
     case JsSpeechEventType.LanguageIdSkipped:
       return 'language_id_skipped'
+    case JsSpeechEventType.SpeakerGateReady:
+      return 'speaker_gate_ready'
     case JsSpeechEventType.AgentSpeakingStart:
       return 'agent_speaking_start'
     case JsSpeechEventType.AgentSpeakingEnd:

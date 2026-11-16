@@ -473,6 +473,8 @@ export type SpeechEventType =
   | 'user_language'
   /** No language decision for this utterance (`reason`, `speechMs`); see VOICE-API.md. */
   | 'language_id_skipped'
+  /** Speaker model loaded; the gate verifies from now on (`waitMs` = load time). */
+  | 'speaker_gate_ready'
   | 'agent_speaking_start'
   | 'agent_speaking_end'
   | 'vad_triggered'
@@ -536,6 +538,7 @@ export const SPEECH_EVENT_TYPE = {
   userSpeechFinal: 'user_speech_final',
   userLanguage: 'user_language',
   languageIdSkipped: 'language_id_skipped',
+  speakerGateReady: 'speaker_gate_ready',
   agentSpeakingStart: 'agent_speaking_start',
   agentSpeakingEnd: 'agent_speaking_end',
   vadTriggered: 'vad_triggered',

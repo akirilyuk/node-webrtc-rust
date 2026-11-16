@@ -958,6 +958,8 @@ pub enum JsSpeechEventType {
     UserLanguage,
     #[napi(value = "language_id_skipped")]
     LanguageIdSkipped,
+    #[napi(value = "speaker_gate_ready")]
+    SpeakerGateReady,
     #[napi(value = "agent_speaking_start")]
     AgentSpeakingStart,
     #[napi(value = "agent_speaking_end")]

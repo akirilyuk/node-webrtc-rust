@@ -3648,10 +3648,11 @@ impl VoiceAgent {
                     .unwrap_or_else(|e| e.into_inner()) = Some(embedder);
                 self.start_speaker_gate();
                 gate.finish_load(true);
-                eprintln!(
-                    "[speaker-gate] info: speaker model loaded waitedMs={}",
-                    started.elapsed().as_millis()
-                );
+                let waited_ms = started.elapsed().as_millis();
+                eprintln!("[speaker-gate] info: speaker model loaded waitedMs={waited_ms}");
+                self.emit(SpeechEvent::speaker_gate_ready(
+                    u32::try_from(waited_ms).unwrap_or(u32::MAX),
+                ));
                 return;
             }
             Ok(Ok(None)) => "the vendor provides no speaker embedder".to_string(),

@@ -14,7 +14,7 @@
 //! | `UserUtteranceSplit` | Speaker gate (`split_on_speaker_change`) split an utterance at a confirmed speaker change; after the new utterance's `user_speaking_start` |
 //! | `UserLanguage` | Offline spoken-language ID on buffered user PCM |
 //! | `LanguageIdSkipped` | Utterance closed (or LID deferred for TTS) without an identify running; no `user_language` will follow unless a deferred identify later runs |
-//! | `SpeakerGateReady` | The speaker model finished loading and the gate verifies from now on (`wait_ms` = load time); not emitted when the load fails (`error` with `reason: speaker_model_load_failed`) |
+//! | `SpeakerGateReady` | The speaker model finished loading and the gate verifies from now on (`wait_ms` = load time; also emitted on start when the gate is built enabled, `wait_ms` = constructor load time); not emitted when the load fails (`error` with `reason: speaker_model_load_failed`) |
 //! | `AgentSpeakingStart` | First TTS PCM frame queued to outbound; carries `first_chunk_ms` / `first_audio_ms` when timed, and `sentence_case_adjusted` for Sherpa TTS |
 //! | `AgentSpeakingEnd` | TTS queue drained — **only on the agent that plays TTS** |
 //! | `VadTriggered` | VAD `SpeechStart` when `vad.enabled` — opens STT listen for this utterance |

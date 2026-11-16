@@ -3693,6 +3693,38 @@ async fn successful_model_load_emits_speaker_gate_ready_once() {
         .collect();
     assert_eq!(ready.len(), 1);
     assert!(ready[0].wait_ms.is_some());
+    rig.agent.set_speaker_gate(disable()).unwrap();
+    rig.agent.set_speaker_gate(enable()).unwrap();
+    rig.drain();
+    assert_eq!(
+        rig.log
+            .iter()
+            .filter(|e| e.kind == SpeechEventKind::SpeakerGateReady)
+            .count(),
+        1,
+        "disable then enable does not re-emit"
+    );
+}
+
+/// A gate built enabled emits `speaker_gate_ready` once, from `start`; a later disable and enable
+/// does not emit again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_enabled_gate_emits_speaker_gate_ready_once() {
+    let mut rig = rig_with(agent_config(gate_cfg(SpeakerMismatchAction::Flag))).await;
+    assert!(
+        rig.wait_event(SpeechEventKind::SpeakerGateReady, 2000)
+            .await
+    );
+    rig.agent.set_speaker_gate(disable()).unwrap();
+    rig.agent.set_speaker_gate(enable()).unwrap();
+    rig.drain();
+    let ready: Vec<_> = rig
+        .log
+        .iter()
+        .filter(|e| e.kind == SpeechEventKind::SpeakerGateReady)
+        .collect();
+    assert_eq!(ready.len(), 1);
+    assert!(ready[0].wait_ms.is_some());
 }
 
 /// Built disabled: finals carry no speaker fields. After an enable the next utterances are scored

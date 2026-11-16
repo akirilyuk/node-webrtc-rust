@@ -661,6 +661,9 @@ pub struct VoiceAgent {
     speaker_gate: Option<Arc<SpeakerGate>>,
     /// The embedder until `start` hands it to the gate's verifier task.
     speaker_embedder: std::sync::Mutex<Option<Box<dyn SpeakerEmbedder>>>,
+    /// Constructor load time of the embedder (0 when the gate is not built enabled); the `waitMs`
+    /// of the `speaker_gate_ready` event `start` emits.
+    speaker_gate_build_ms: u32,
     /// Finals waiting for their speaker verdict off the step lock; `wait_stt_idle` waits for them.
     speaker_finals_pending: AtomicU64,
     speaker_finals_done: Notify,
@@ -793,8 +796,12 @@ impl VoiceAgent {
         // The tracking is bounded (offsets are capped and cleared per onset, the replay ring has
         // its own cap) and only runs where a gate exists; a gate that stays off emits no change.
         let split_on_speaker_change = config.speaker_gate.split_on_speaker_change;
+        let mut speaker_gate_build_ms = 0u32;
         let (speaker_gate, speaker_embedder) = if config.speaker_gate.enabled {
+            let build_started = std::time::Instant::now();
             let embedder = registry.create_speaker_embedder(&config.speaker_gate)?;
+            speaker_gate_build_ms =
+                u32::try_from(build_started.elapsed().as_millis()).unwrap_or(u32::MAX);
             if embedder.is_none() {
                 return Err(SpeechError::Config(
                     "speakerGate.enabled but the vendor provides no speaker embedder".into(),
@@ -908,6 +915,7 @@ impl VoiceAgent {
             language_id: Mutex::new(language_id),
             speaker_gate,
             speaker_embedder: std::sync::Mutex::new(speaker_embedder),
+            speaker_gate_build_ms,
             speaker_finals_pending: AtomicU64::new(0),
             speaker_finals_done: Notify::new(),
             speaker_finals_parked: std::sync::atomic::AtomicBool::new(false),
@@ -1957,7 +1965,9 @@ impl VoiceAgent {
             tts.bind_session_context(&session_ctx);
         }
         self.ensure_tts_drain_worker().await;
-        self.start_speaker_gate();
+        if self.start_speaker_gate() {
+            self.emit(SpeechEvent::speaker_gate_ready(self.speaker_gate_build_ms));
+        }
         if let Some(this) = self.weak_self.upgrade() {
             this.ensure_c2_wall_clock_ticker();
         }
@@ -3470,9 +3480,10 @@ impl VoiceAgent {
 
     /// Starts the speaker gate's verifier task (once). Verdicts are applied on their own task so
     /// the verifier never waits for the agent's step lock.
-    fn start_speaker_gate(&self) {
+    /// Returns true only when it took the embedder and started the verifier.
+    fn start_speaker_gate(&self) -> bool {
         let Some(gate) = self.speaker_gate.as_ref() else {
-            return;
+            return false;
         };
         let Some(embedder) = self
             .speaker_embedder
@@ -3480,7 +3491,7 @@ impl VoiceAgent {
             .unwrap_or_else(|e| e.into_inner())
             .take()
         else {
-            return;
+            return false;
         };
         let weak = self.weak_self.clone();
         gate.spawn(
@@ -3496,6 +3507,7 @@ impl VoiceAgent {
                 }
             }),
         );
+        true
     }
 
     /// Change the speaker gate during a call. `enabled`, `on_mismatch` and `barge_in` apply from

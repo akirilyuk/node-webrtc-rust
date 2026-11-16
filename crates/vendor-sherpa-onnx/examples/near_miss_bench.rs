@@ -2585,16 +2585,28 @@ mod straddle {
         origin: usize,
         embedder: &Embedder,
     ) -> Vec<((u32, u32), Vec<u8>, f32)> {
+        u2_windows_raw(&p.samples, p.u_end, &p.reference, utt, k, origin, embedder)
+    }
+
+    fn u2_windows_raw(
+        samples: &[f32],
+        u_end: usize,
+        reference: &[f32],
+        utt: &Utt,
+        k: usize,
+        origin: usize,
+        embedder: &Embedder,
+    ) -> Vec<((u32, u32), Vec<u8>, f32)> {
         let mut out = Vec::new();
         let grid = utt.wins[k].0 + WINDOW_MS;
         let mut ends = vec![grid + C2_SCAN_MS];
         let mut e = grid + WINDOW_MS;
-        while e <= p.u_end && ends.len() < MAX_WINDOWS {
+        while e <= u_end && ends.len() < MAX_WINDOWS {
             ends.push(e);
             e += WINDOW_MS;
         }
         for (i, end) in ends.into_iter().enumerate() {
-            if end > p.u_end + C2_SCAN_MS || end <= origin {
+            if end > u_end + C2_SCAN_MS || end <= origin {
                 break;
             }
             let from = if i == 0 {
@@ -2602,10 +2614,10 @@ mod straddle {
             } else {
                 (end - WINDOW_MS - C2_PRE_ROLL_MS).max(origin)
             };
-            let clip = slice(&p.samples, from, end);
+            let clip = slice(samples, from, end);
             let score = embedder
                 .embed(clip)
-                .map_or(0.0, |(v, _)| cosine(&v, &p.reference));
+                .map_or(0.0, |(v, _)| cosine(&v, reference));
             let start = if i == 0 { from } else { end - WINDOW_MS };
             out.push((
                 ((start - origin) as u32, (end - origin) as u32),
@@ -3019,6 +3031,7 @@ mod straddle {
         out: UlOut,
         lost: usize,
         cause: Option<usize>,
+        c2o: bool,
     }
 
     #[derive(Default)]
@@ -3039,11 +3052,45 @@ mod straddle {
         out: UlOut,
         lost: usize,
         wins: usize,
+        /// A caller -> other split cut the part kept as caller.
+        c2o: bool,
+    }
+
+    /// Caller -> other watch on windows `from..` of an utterance kept as caller: the first window
+    /// is armed `caller` (floor 0, rule 0, as `Msg::Inherit`). `force_first`: the confirming
+    /// window of an upgrade counts as `caller`. Returns the cut (scene ms).
+    fn ul_c2o_whole(
+        samples: &[f32],
+        utt: &Utt,
+        from: usize,
+        force_first: bool,
+        threshold: f32,
+    ) -> Option<usize> {
+        let wins: Vec<((u32, u32), Vec<u8>, f32)> = utt.wins[from..]
+            .iter()
+            .enumerate()
+            .map(|(i, (start, score, _))| {
+                let clip = slice(
+                    samples,
+                    start.saturating_sub(PRE_ROLL_MS),
+                    start + WINDOW_MS,
+                );
+                let sc = if i == 0 && force_first { 1.0 } else { *score };
+                (
+                    (*start as u32, (*start + WINDOW_MS) as u32),
+                    pcm16(clip),
+                    sc,
+                )
+            })
+            .collect();
+        u2_cut(&wins, 0, threshold, 0).map(|c| c as usize)
     }
 
     /// The shipped gate on one utterance `[u, ue)` (>= 1 window): window 1 `caller` keeps it;
-    /// otherwise product other -> caller (deferred veto, mode 3) with split rule bb. Words lost
-    /// are measure A above the floor (cut at `u`), as in `caller_only_rec`.
+    /// otherwise product other -> caller (deferred veto, mode 3) with split rule bb. Then the
+    /// caller -> other watch runs on the part kept as caller (whole utterance: armed from window
+    /// 1, floor 0, rule 0; split-born U2: the 7h clock, floor from the scan, rule 1 = jj; upgrade:
+    /// from the confirming window). Words lost are measure A above the floor (cut at `u`).
     fn ul_judge(
         samples: &[f32],
         clean: &[f32],
@@ -3060,23 +3107,25 @@ mod straddle {
                 out: UlOut::Unknown,
                 lost: 0,
                 wins: 0,
+                c2o: false,
             };
         }
         let utt = Utt {
             wins,
             rechecks: Vec::new(),
         };
-        let kept_whole = Judged {
-            out: UlOut::Caller,
-            lost: 0,
-            wins: n,
-        };
-        if utt.wins[0].1 >= threshold {
-            return kept_whole;
-        }
+        let total = samples.len() / SAMPLES_PER_MS;
         let mut cache = SubCache::default();
-        let (o, _st, end_caller) =
-            product_o2c(samples, &utt, embedder, reference, threshold, 3, &mut cache);
+        let (o, _st, end_caller) = if utt.wins[0].1 >= threshold {
+            (None, ScanStat::default(), true)
+        } else {
+            product_o2c(samples, &utt, embedder, reference, threshold, 3, &mut cache)
+        };
+        let words = |a: usize, b: usize| -> Vec<String> {
+            recognize_words(slice(samples, a, b.max(a + FRAME_MS)))
+                .map(|(w, _)| w)
+                .unwrap_or_default()
+        };
         let (cref, _) = recognize_words(slice(clean, u, ue)).unwrap_or_default();
         let kept = |cut: usize| -> usize {
             let end = (cut + U2_HEAD_MS).min(ue);
@@ -3084,32 +3133,50 @@ mod straddle {
             let (del, _) = head_align(&cref, &hyp);
             cref.len() - del.min(cref.len())
         };
+        let finish = |lost: usize, c2: Option<(usize, usize)>, dropped: bool| -> Judged {
+            // c2 = (origin of the kept part, cut): caller words cut out of the kept part.
+            let extra = c2.map_or(0, |(origin, cut)| {
+                let end = (ue + C2_PRE_ROLL_MS).min(total);
+                lcs(&cref, &words(origin, end))
+                    .saturating_sub(lcs(&cref, &words(origin, cut.min(end))))
+            });
+            let lost = lost + extra;
+            Judged {
+                out: if dropped {
+                    UlOut::Dropped
+                } else if lost > 0 {
+                    UlOut::Partly
+                } else {
+                    UlOut::Caller
+                },
+                lost,
+                wins: n,
+                c2o: c2.is_some(),
+            }
+        };
         match o {
-            Some((k, cut, u1, _)) => {
+            Some((k, cut, u1, found)) => {
                 if dump {
                     dump_split_raw(embedder, samples, reference, &utt, k, threshold);
                 }
                 if u1.iter().any(|x| *x < 0.20) {
                     let lost = kept(u).saturating_sub(kept(cut));
-                    Judged {
-                        out: if lost > 0 {
-                            UlOut::Partly
-                        } else {
-                            UlOut::Caller
-                        },
-                        lost,
-                        wins: n,
-                    }
+                    let origin = cut / FRAME_MS * FRAME_MS;
+                    let floor = found.map_or(300, |f| (f + 750).saturating_sub(origin)) as u32;
+                    let w2 = u2_windows_raw(samples, ue, reference, &utt, k, origin, embedder);
+                    let c2 =
+                        u2_cut(&w2, floor, threshold, 1).map(|c| (origin, origin + c as usize));
+                    finish(lost, c2, false)
                 } else {
-                    kept_whole
+                    let c2 = ul_c2o_whole(samples, &utt, k, true, threshold).map(|c| (u, c));
+                    finish(0, c2, false)
                 }
             }
-            None if end_caller => kept_whole,
-            None => Judged {
-                out: UlOut::Dropped,
-                lost: kept(u),
-                wins: n,
-            },
+            None if end_caller => {
+                let c2 = ul_c2o_whole(samples, &utt, 0, false, threshold).map(|c| (u, c));
+                finish(0, c2, false)
+            }
+            None => finish(kept(u), None, true),
         }
     }
 
@@ -3313,6 +3380,7 @@ mod straddle {
                                     out: UlOut::Unknown,
                                     lost: 0,
                                     cause: None,
+                                    c2o: false,
                                 });
                                 continue;
                             }
@@ -3370,6 +3438,7 @@ mod straddle {
                                 out: j.out,
                                 lost: j.lost,
                                 cause,
+                                c2o: j.c2o,
                             });
                         }
                     }
@@ -3436,11 +3505,11 @@ mod straddle {
                 keys.push((r.set.clone(), r.mode));
             }
         }
-        let mut md = String::from("## Per-utterance caller loss (caller-reject-rate, chunk 1)\n\nShipped rules (`split_on_speaker_change` on: window 1 `other`, then product other -> caller with the deferred veto and split rule bb). Enrollment is the product's: whole voiced utterances appended until 3000 ms, one embed of the buffer (with the bed, when the row has one). Words are measure A above the floor of the same utterance. Outcome: `dropped` = window 1 `other` and no confirm; `partly lost` = a split cut caller words; `unknown` = VAD utterance under 1.5 s (fails open).\n\n| set | mode | utterances (>= 1.5 s) | unknown (< 1.5 s) | dropped | partly lost | lost utterances % | words lost above floor |");
+        let mut md = String::from("## Per-utterance caller loss (caller-reject-rate, chunk 1)\n\nShipped rules (`split_on_speaker_change` on: window 1 `other`, then product other -> caller with the deferred veto and split rule bb). Enrollment is the product's: whole voiced utterances appended until 3000 ms, one embed of the buffer (with the bed, when the row has one). Words are measure A above the floor of the same utterance. Outcome: `dropped` = window 1 `other` and no confirm; `partly lost` = a split cut caller words; `unknown` = VAD utterance under 1.5 s (fails open).\n\n| set | mode | utterances (>= 1.5 s) | unknown (< 1.5 s) | dropped | partly lost | caller->other splits | lost utterances % | words lost above floor | words lost per speaker: median / max |");
         for c in UL_CAUSES {
             md.push_str(&format!(" {c} |"));
         }
-        md.push_str(" top 5 speakers (words lost, utterances lost) | top 5 share of words |\n| --- | --- | --- | --- | --- | --- | --- | --- |");
+        md.push_str(" top 5 speakers (words lost, utterances lost) | top 5 share of words |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
         for _ in UL_CAUSES {
             md.push_str(" --- |");
         }
@@ -3454,6 +3523,21 @@ mod straddle {
             let dropped = known.iter().filter(|r| r.out == UlOut::Dropped).count();
             let partly = known.iter().filter(|r| r.out == UlOut::Partly).count();
             let words: usize = known.iter().map(|r| r.lost).sum();
+            let c2n = known.iter().filter(|r| r.c2o).count();
+            let mut per: std::collections::BTreeMap<&str, usize> = Default::default();
+            for r in &known {
+                *per.entry(r.speaker.as_str()).or_default() += r.lost;
+            }
+            let mut pv: Vec<usize> = per.values().copied().collect();
+            pv.sort();
+            let med = if pv.is_empty() {
+                0.0
+            } else if pv.len() % 2 == 1 {
+                pv[pv.len() / 2] as f64
+            } else {
+                (pv[pv.len() / 2 - 1] + pv[pv.len() / 2]) as f64 / 2.0
+            };
+            let mx = pv.last().copied().unwrap_or(0);
             let mut cs = [0usize; 5];
             for r in &known {
                 if let Some(c) = r.cause {
@@ -3478,7 +3562,7 @@ mod straddle {
                 .collect::<Vec<_>>()
                 .join("; ");
             md.push_str(&format!(
-                "| {set} | {mode} | {} | {} | {dropped} | {partly} | {:.1} | {words} |",
+                "| {set} | {mode} | {} | {} | {dropped} | {partly} | {c2n} | {:.1} | {words} | {med:.1} / {mx} |",
                 known.len(),
                 rs.len() - known.len(),
                 100.0 * (dropped + partly) as f64 / known.len().max(1) as f64

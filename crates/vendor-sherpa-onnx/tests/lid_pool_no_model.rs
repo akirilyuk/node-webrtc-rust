@@ -9,6 +9,7 @@ fn missing_dir_config() -> LanguageIdConfig {
         model_path: Some("/nonexistent/nwr-lid-model-dir".into()),
         allowlist: None,
         allowlist_max_gap: None,
+        allowlist_min_margin: None,
         min_speech_ms: None,
         continuous: None,
         lid_max_clip_ms: None,

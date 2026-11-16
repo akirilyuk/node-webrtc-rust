@@ -437,6 +437,8 @@ export interface JsLanguageIdConfig {
   allowlist?: Array<string>
   /** Max Whisper logit gap for choosing an allowlisted language over an out-of-list top pick. */
   allowlistMaxGap?: number
+  /** Early-timing allowed-set margin (logits) below which one end-of-utterance pass decides. */
+  allowlistMinMargin?: number
   minSpeechMs?: number
   continuous?: boolean
   timing?: string

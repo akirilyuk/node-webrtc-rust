@@ -24,6 +24,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **speech:** a split change for an utterance that is no longer live is counted as stale before any STT check, so a stale other-to-caller change can no longer upgrade the gate.
 
+## [0.19.1] - 2026-11-16
+
+### Fixed
+
+- **lid:** with `timing: early` and a `languageId.allowlist`, an early pick whose logit margin between the best and the second-best allowed language is below `languageId.allowlistMinMargin` (default 2.0) is no longer final. One identify runs on the end-of-utterance clip (the same single second pass as the out-of-set retry) and the allowed language with the highest summed logit over both clips is reported. A Spanish caller whose first 1.5 s scored narrowly English was left in English (2/300 real-path Spanish clips on 0.19.0); with the summed pass 300/300 resolve to Spanish and English, German and French decisions are unchanged. If the second pass cannot run, or the LID gate releases the utterance first, the early pick is final. `LanguageIdResult` carries `allowed_logits`; the `lid_gap_calibrate` example prints the allowed logits and their margin.
+
 ## [0.19.0] - 2026-11-16
 
 ### Changed

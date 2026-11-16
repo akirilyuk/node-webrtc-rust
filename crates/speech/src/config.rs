@@ -939,6 +939,13 @@ pub struct LanguageIdConfig {
     /// Must be a finite number >= 0.
     #[serde(default, deserialize_with = "deserialize_allowlist_max_gap")]
     pub allowlist_max_gap: Option<f32>,
+    /// With `timing: early` and an allowlist: when the early identify's margin between the best
+    /// and the second-best allowlisted language is below this (logits), its pick is not final.
+    /// One identify runs on the end-of-utterance clip and the decision is the allowlisted
+    /// language with the highest summed logit over both clips. Default
+    /// [`DEFAULT_LID_ALLOWLIST_MIN_MARGIN`]; `0` turns the check off. Must be finite and >= 0.
+    #[serde(default, deserialize_with = "deserialize_allowlist_min_margin")]
+    pub allowlist_min_margin: Option<f32>,
     /// Minimum buffered speech (ms) before identify runs at VAD `SpeechEnd` (default mode)
     /// or before the first mid-utterance identify when `continuous` is true. Default 1000.
     #[serde(default)]
@@ -990,6 +997,61 @@ where
     }
 }
 
+/// Default `allowlist_min_margin` (Whisper logits). Calibrated 2026-11-16 on Whisper-tiny int8
+/// with the product runtime, real path (Opus, RNNoise, energy VAD, early 1500 ms), allowlist
+/// {en, es}: early in-set Spanish picks decided `en` had margins 0.86-1.66; with the summed
+/// second pass at 2.0, 300/300 fresh Spanish utterances resolve to `es`, 600/600 English stay
+/// `en`, and de/fr wrong switches are unchanged against 0.19.0.
+pub const DEFAULT_LID_ALLOWLIST_MIN_MARGIN: f32 = 2.0;
+
+fn deserialize_allowlist_min_margin<'de, D>(deserializer: D) -> Result<Option<f32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<f32>::deserialize(deserializer)?;
+    match value {
+        Some(v) if !v.is_finite() || v < 0.0 => Err(serde::de::Error::custom(format!(
+            "languageId.allowlistMinMargin must be a finite number >= 0, got {v}"
+        ))),
+        other => Ok(other),
+    }
+}
+
+pub fn resolved_lid_allowlist_min_margin(config: &LanguageIdConfig) -> f32 {
+    config
+        .allowlist_min_margin
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .unwrap_or(DEFAULT_LID_ALLOWLIST_MIN_MARGIN)
+}
+
+/// Combine two identify passes over the allowlist: the allowlisted language with the highest
+/// summed logit across `early` and `full` (codes present in both). `None` when fewer than two
+/// codes are scored on both sides: one shared code is no evidence against the others, so the
+/// early pick stands.
+pub fn combine_allowed_passes(early: &[(String, f32)], full: &[(String, f32)]) -> Option<String> {
+    let shared: Vec<(&String, f32)> = early
+        .iter()
+        .filter_map(|(code, e)| {
+            full.iter()
+                .find(|(c, _)| c == code)
+                .map(|(_, f)| (code, e + f))
+        })
+        .collect();
+    if shared.len() < 2 {
+        return None;
+    }
+    shared
+        .into_iter()
+        .fold(
+            None,
+            |best: Option<(&String, f32)>, (code, sum)| match best {
+                Some((_, b)) if b >= sum => best,
+                _ => Some((code, sum)),
+            },
+        )
+        .map(|(code, _)| code.clone())
+}
+
 pub fn resolved_lid_allowlist_max_gap(config: &LanguageIdConfig) -> f32 {
     config
         .allowlist_max_gap
@@ -1034,10 +1096,15 @@ pub fn decide_language_among_allowed(
     } else {
         raw.clone()
     };
+    let allowed_logits = allowed
+        .iter()
+        .map(|&i| (codes[i].trim().to_ascii_lowercase(), logits[i]))
+        .collect();
     Some(crate::pipeline::LanguageIdResult {
         language,
         raw_language: Some(raw),
         gap: Some(gap),
+        allowed_logits: Some(allowed_logits),
     })
 }
 
@@ -1151,6 +1218,7 @@ mod language_id_config_tests {
             model_path: None,
             allowlist: None,
             allowlist_max_gap: None,
+            allowlist_min_margin: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,
@@ -1167,6 +1235,7 @@ mod language_id_config_tests {
             model_path: Some("/models/whisper-tiny".into()),
             allowlist: None,
             allowlist_max_gap: None,
+            allowlist_min_margin: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,
@@ -1183,6 +1252,7 @@ mod language_id_config_tests {
             model_path: Some("/models/whisper-tiny".into()),
             allowlist: None,
             allowlist_max_gap: None,
+            allowlist_min_margin: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,
@@ -1205,6 +1275,7 @@ mod language_id_config_tests {
             model_path: Some("/m".into()),
             allowlist: Some(vec!["en".into(), "es".into()]),
             allowlist_max_gap: gap,
+            allowlist_min_margin: None,
             min_speech_ms: None,
             continuous: None,
             timing: None,
@@ -1270,12 +1341,82 @@ mod language_id_config_tests {
     }
 
     #[test]
+    fn allowlist_min_margin_parses_and_rejects_negative() {
+        let cfg: LanguageIdConfig =
+            serde_json::from_str(r#"{"modelPath":"/m","allowlistMinMargin":1.5}"#).unwrap();
+        assert_eq!(cfg.allowlist_min_margin, Some(1.5));
+        assert_eq!(resolved_lid_allowlist_min_margin(&cfg), 1.5);
+        let cfg: LanguageIdConfig = serde_json::from_str(r#"{"modelPath":"/m"}"#).unwrap();
+        assert_eq!(
+            resolved_lid_allowlist_min_margin(&cfg),
+            DEFAULT_LID_ALLOWLIST_MIN_MARGIN
+        );
+        for bad in ["-1", "-0.5"] {
+            let json = format!(r#"{{"modelPath":"/m","allowlistMinMargin":{bad}}}"#);
+            let err = serde_json::from_str::<LanguageIdConfig>(&json).unwrap_err();
+            assert!(err.to_string().contains("allowlistMinMargin"), "{err}");
+        }
+    }
+
+    fn logits(pairs: &[(&str, f32)]) -> Vec<(String, f32)> {
+        pairs.iter().map(|(c, l)| (c.to_string(), *l)).collect()
+    }
+
+    #[test]
+    fn decision_among_allowed_reports_allowed_logits_and_margin() {
+        let (c, l) = scored(&["ja", "en", "es"], &[15.0, 14.45, 13.74]);
+        let r = decide_language_among_allowed(&en_es(None), &c, &l).unwrap();
+        assert_eq!(r.language, "en");
+        assert_eq!(
+            r.allowed_logits,
+            Some(logits(&[("en", 14.45), ("es", 13.74)]))
+        );
+        assert!((r.allowed_margin().unwrap() - 0.71).abs() < 1e-4);
+    }
+
+    #[test]
+    fn combined_passes_low_margin_in_set_pick_flipped_by_full_clip_is_es() {
+        // Real-path fresh clip (2026-11-16): early raw `en` in set by 0.86, end-of-utterance
+        // clip clearly `es`.
+        let early = logits(&[("en", 15.142), ("es", 14.2837)]);
+        let full = logits(&[("es", 22.7962), ("en", 17.9841)]);
+        assert_eq!(combine_allowed_passes(&early, &full).as_deref(), Some("es"));
+    }
+
+    #[test]
+    fn combined_passes_keep_early_es_lead_over_narrow_full_en() {
+        // The case where replacing the early pick with the full clip broke a correct `es`:
+        // early es by 0.94, full en by 0.05. The sum stays `es`.
+        let early = logits(&[("es", 14.94), ("en", 14.00)]);
+        let full = logits(&[("en", 16.37), ("es", 16.32)]);
+        assert_eq!(combine_allowed_passes(&early, &full).as_deref(), Some("es"));
+    }
+
+    #[test]
+    fn combined_passes_without_shared_scores_is_none() {
+        assert_eq!(combine_allowed_passes(&logits(&[("en", 1.0)]), &[]), None);
+    }
+
+    #[test]
+    fn combined_passes_with_one_shared_code_keeps_early() {
+        // Only `en` is scored on both clips: no evidence against `es`, the early pick stands.
+        assert_eq!(
+            combine_allowed_passes(
+                &logits(&[("en", 10.0), ("es", 15.0)]),
+                &logits(&[("en", 12.0)])
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn allowlist_filters_codes() {
         let cfg = LanguageIdConfig {
             enabled: None,
             model_path: Some("/x".into()),
             allowlist: Some(vec!["en".into(), "de".into()]),
             allowlist_max_gap: None,
+            allowlist_min_margin: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,
@@ -1295,6 +1436,7 @@ mod language_id_config_tests {
             model_path: None,
             allowlist: None,
             allowlist_max_gap: None,
+            allowlist_min_margin: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,
@@ -1313,6 +1455,7 @@ mod language_id_config_tests {
             model_path: Some("/x".into()),
             allowlist: None,
             allowlist_max_gap: None,
+            allowlist_min_margin: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,
@@ -1325,6 +1468,7 @@ mod language_id_config_tests {
             model_path: Some("/x".into()),
             allowlist: None,
             allowlist_max_gap: None,
+            allowlist_min_margin: None,
             min_speech_ms: None,
             continuous: Some(false),
             lid_max_clip_ms: None,
@@ -1341,6 +1485,7 @@ mod language_id_config_tests {
             model_path: Some("/x".into()),
             allowlist: None,
             allowlist_max_gap: None,
+            allowlist_min_margin: None,
             min_speech_ms: None,
             continuous: Some(true),
             lid_max_clip_ms: None,
@@ -1357,6 +1502,7 @@ mod language_id_config_tests {
             model_path: Some("/x".into()),
             allowlist: None,
             allowlist_max_gap: None,
+            allowlist_min_margin: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,
@@ -1421,6 +1567,7 @@ mod language_id_config_tests {
                 model_path: None,
                 allowlist: None,
                 allowlist_max_gap: None,
+                allowlist_min_margin: None,
                 min_speech_ms: None,
                 continuous,
                 lid_max_clip_ms: None,

@@ -416,6 +416,7 @@ impl node_webrtc_rust_speech::pipeline::LanguageIdProvider for CountingLid {
                 language: code.into(),
                 raw_language: Some(code.into()),
                 gap: Some(5.0),
+                allowed_logits: None,
             }));
         }
         Ok(Some(
@@ -510,6 +511,7 @@ async fn lid_tap_agent_with(
             model_path: Some("/fake/lid-model".into()),
             allowlist,
             allowlist_max_gap: None,
+            allowlist_min_margin: None,
             min_speech_ms: Some(min_speech_ms),
             continuous: None,
             lid_max_clip_ms,

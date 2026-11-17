@@ -53,6 +53,8 @@ use std::time::Instant;
 
 use sherpa_onnx::{SpeakerEmbeddingExtractor, SpeakerEmbeddingExtractorConfig};
 
+#[path = "support/cand.rs"]
+mod cand;
 #[path = "support/mod.rs"]
 mod support;
 
@@ -326,6 +328,7 @@ fn embed_voice(
     let stream_clean = synth.concat(v, &texts)?;
     embed_audio(
         models,
+        &[],
         &enroll_clean,
         &stream_clean,
         index,
@@ -340,6 +343,7 @@ fn embed_voice(
 #[allow(clippy::too_many_arguments)]
 fn embed_audio(
     models: &mut [Embedder],
+    enroll_bounds: &[usize],
     enroll_clean: &[f32],
     stream_clean: &[f32],
     index: usize,
@@ -372,7 +376,27 @@ fn embed_audio(
             windows: Vec::new(),
         };
         for (m, emb) in models.iter_mut().enumerate() {
-            ve.enroll.push(emb.embed(&enroll[e0..e1], None)?);
+            if enroll_bounds.is_empty() {
+                ve.enroll.push(emb.embed(&enroll[e0..e1], None)?);
+            } else {
+                // Product enrollment (`FA_ENROLL=product`): whole utterances, bed applied to their
+                // concatenation; shared with near_miss_bench (`support/cand.rs`).
+                let mut units: Vec<&[f32]> = Vec::new();
+                let mut from = 0;
+                for &to in enroll_bounds {
+                    units.push(&enroll[from..to]);
+                    from = to;
+                }
+                let c = cand::cand();
+                let r = cand::enroll_product(
+                    units.len(),
+                    |i| Ok(Some(units[i].to_vec())),
+                    |x| emb.embed(x, None).ok(),
+                    &c,
+                )?
+                .ok_or("product enrollment: embed failed")?;
+                ve.enroll.push(r.0);
+            }
             let mut per_w = vec![Vec::new(); WINDOWS_S.len()];
             for &wi in wins(m) {
                 let w = (WINDOWS_S[wi] * 1000.0) as usize * MS;
@@ -1193,7 +1217,14 @@ mod librispeech {
     }
 
     /// (clean enrollment source, clean talk stream, source), both at -20 dBFS.
-    fn audio(sp: &Speaker, mode: Mode) -> Result<(Vec<f32>, Vec<f32>, Source), String> {
+    fn audio(
+        sp: &Speaker,
+        mode: Mode,
+        product: bool,
+    ) -> Result<(Vec<f32>, Vec<f32>, Source, Vec<usize>), String> {
+        if product {
+            return audio_product(sp, mode);
+        }
         match mode {
             Mode::CrossSession => {
                 let (enroll, used) = join(&sp.chapters[0], ENROLL_SRC_S)?;
@@ -1212,6 +1243,7 @@ mod librispeech {
                         enroll: format!("{} ({})", chapter(&sp.chapters[0][0]), span(&used)),
                         windows: chs.join(", "),
                     },
+                    Vec::new(),
                 ))
             }
             Mode::SameSession => {
@@ -1243,9 +1275,121 @@ mod librispeech {
                         enroll: format!("{} ({}, first 3 s)", chapter(&ch[0]), stem(&ch[0])),
                         windows: format!("{} (rest, {} files)", chapter(&ch[0]), used.len()),
                     },
+                    Vec::new(),
                 ))
             }
         }
+    }
+
+    /// Voiced part of `a`: first to last 20 ms frame above -45 dBFS (the bench's voiced test).
+    fn trim_voiced(a: &[f32]) -> Option<&[f32]> {
+        let fr = 20 * MS;
+        let n = a.len() / fr;
+        let on = (0..n).find(|i| voiced_share(&a[i * fr..(i + 1) * fr]) > 0.0)?;
+        let off = (0..n)
+            .rev()
+            .find(|i| voiced_share(&a[i * fr..(i + 1) * fr]) > 0.0)?;
+        Some(&a[on * fr..(off + 1) * fr])
+    }
+
+    /// Product enrollment audio (`FA_ENROLL=product`): whole utterances in file order, each from
+    /// its voiced onset to its voiced end (no pre-roll, no gaps between utterances), appended until
+    /// the enrollment span; the windows come from the files after them. Returns (enrollment,
+    /// stream, source, cumulative end of each enrollment utterance in the enrollment). Same
+    /// -20 dBFS normalization as the fixed path (over the joined audio of the speaker's source).
+    fn audio_product(
+        sp: &Speaker,
+        mode: Mode,
+    ) -> Result<(Vec<f32>, Vec<f32>, Source, Vec<usize>), String> {
+        let span_ms = cand::cand().enroll_ms;
+        let (files, stream_files): (Vec<&PathBuf>, Vec<&PathBuf>) = match mode {
+            Mode::CrossSession => (
+                sp.chapters[0].iter().collect(),
+                sp.chapters[1..].iter().flatten().collect(),
+            ),
+            Mode::SameSession => {
+                let size = |ch: &Vec<PathBuf>| {
+                    ch.iter()
+                        .filter_map(|p| fs::metadata(p).ok())
+                        .map(|m| m.len())
+                        .sum::<u64>()
+                };
+                let ch = sp
+                    .chapters
+                    .iter()
+                    .max_by_key(|c| size(c))
+                    .ok_or("no chapter")?;
+                (ch.iter().collect(), Vec::new())
+            }
+        };
+        let (raw, used) = join(
+            files.iter().copied(),
+            match mode {
+                Mode::CrossSession => 40,
+                Mode::SameSession => ENROLL_SRC_S + STREAM_S + 30,
+            },
+        )?;
+        let all = normalize_to(&raw, MAIN_DB);
+        let mut enroll: Vec<f32> = Vec::new();
+        let mut bounds = Vec::new();
+        let mut off = 0usize;
+        let mut k = 0usize;
+        for f in &used {
+            let len = read_wav(f)?.len();
+            if let Some(u) = trim_voiced(&all[off..off + len]) {
+                enroll.extend_from_slice(u);
+                bounds.push(enroll.len());
+            }
+            off += len + GAP_MS * MS;
+            k += 1;
+            if enroll.len() >= span_ms * MS {
+                break;
+            }
+        }
+        if enroll.len() < span_ms * MS {
+            return Err(format!(
+                "speaker {}: product enrollment needs {span_ms} ms, got {}",
+                sp.id,
+                enroll.len() / MS
+            ));
+        }
+        let enroll_src = format!(
+            "{} ({}, {} utterances, {} ms)",
+            chapter(files[0]),
+            span(&used[..k]),
+            bounds.len(),
+            enroll.len() / MS
+        );
+        let (stream, windows) = match mode {
+            Mode::SameSession => {
+                let start = off.min(all.len());
+                let stream_end = (start + STREAM_S * SR as usize).min(all.len());
+                (
+                    all[start..stream_end].to_vec(),
+                    format!("{} (rest, {} files)", chapter(files[0]), used.len() - k),
+                )
+            }
+            Mode::CrossSession => {
+                let rest: Vec<&PathBuf> = stream_files
+                    .iter()
+                    .copied()
+                    .chain(files[k..].iter().copied())
+                    .collect();
+                let (st, sused) = join(rest, STREAM_S)?;
+                let mut chs: Vec<String> = sused.iter().map(|p| chapter(p)).collect();
+                chs.dedup();
+                (normalize_to(&st, MAIN_DB), chs.join(", "))
+            }
+        };
+        Ok((
+            enroll,
+            stream,
+            Source {
+                enroll: enroll_src,
+                windows,
+            },
+            bounds,
+        ))
     }
 
     fn windows_15_20(_model: usize) -> &'static [usize] {
@@ -1906,6 +2050,20 @@ mod librispeech {
         let mut models = vec![Embedder::open(
             &args.speaker_dir.join("nemo_en_titanet_small.onnx"),
         )?];
+        // `FA_ENROLL=product`: product enrollment (whole utterances until `NM_CAND` span, one
+        // embed; `c2`: mean of per-utterance embeddings). Default: today's fixed 3000 ms from the
+        // voiced onset (reproduces the published rows). C4 and C7 do not change per-window scores:
+        // their window FAR is that of the enrollment they sit on, so they are not re-run here.
+        let product = std::env::var("FA_ENROLL").is_ok_and(|v| v == "product");
+        let c = cand::cand();
+        if c.c3 || c.c4 > 0 || c.c7_nm || c.c7_scan || c.c7_run != 2 {
+            eprintln!(
+                "false_accept_bench: NM_CAND tokens other than e<ms>/c2 do not change per-window scores; ignored"
+            );
+        }
+        if (c.c2 || c.enroll_ms != cand::ENROLL_MS_DEFAULT) && !product {
+            return Err("NM_CAND c2 / e<ms> need FA_ENROLL=product".into());
+        }
         let test_sp = speakers(root, "test-clean")?;
         let dev = speakers(root, "dev-clean")?;
         let mut tune_sp = Vec::new();
@@ -1926,7 +2084,7 @@ mod librispeech {
 
         let ls_clips = cohort_sp
             .iter()
-            .map(|sp| audio(sp, Mode::CrossSession).map(|(e, _, _)| e))
+            .map(|sp| audio(sp, Mode::CrossSession, false).map(|(e, _, _, _)| e))
             .collect::<Result<Vec<_>, _>>()?;
         let ls_cohort = cohort_from_clips(&mut models, &ls_clips, &bed, args.bed_db)?;
         let mut synth = Synth {
@@ -1963,6 +2121,16 @@ mod librispeech {
         };
 
         let mut md = format!(
+            "Enrollment: {} (`FA_ENROLL`={}, `NM_CAND`={}).\n\n",
+            if product {
+                "product (whole utterances appended until the span, one embed; c2: mean of per-utterance embeddings)"
+            } else {
+                "fixed 3000 ms from the voiced onset (published rows)"
+            },
+            if product { "product" } else { "fixed" },
+            std::env::var("NM_CAND").unwrap_or_default()
+        );
+        md.push_str(&format!(
             "Test: LibriSpeech `test-clean`, {} speakers ({} F / {} M), each caller and other. Tune: \
              `dev-clean` {} speakers ({}). Cohort: `dev-clean` {} other speakers ({}), disjoint from \
              tune and test; cohort clips are 3.3 s from each cohort speaker's first chapter. Bed: \
@@ -1981,18 +2149,19 @@ mod librispeech {
                 .collect::<Vec<_>>()
                 .join(", "),
             args.bed_db,
-        );
+        ));
         for mode in [Mode::CrossSession, Mode::SameSession] {
             let mut test = Vec::new();
             let mut src = Vec::new();
             let mut stream_s = 0.0;
             for (i, sp) in test_sp.iter().enumerate() {
                 eprintln!("{} test speaker {}", mode.name(), sp.label());
-                let (e, s, so) = audio(sp, mode)?;
+                let (e, s, so, eb) = audio(sp, mode, product)?;
                 stream_s += s.len() as f64 / f64::from(SR);
                 src.push(so);
                 test.push(embed_audio(
                     &mut models,
+                    &eb,
                     &e,
                     &s,
                     i,
@@ -2004,9 +2173,10 @@ mod librispeech {
             let mut tune = Vec::new();
             for (i, sp) in tune_sp.iter().enumerate() {
                 eprintln!("{} tune speaker {}", mode.name(), sp.label());
-                let (e, s, _) = audio(sp, mode)?;
+                let (e, s, _, eb) = audio(sp, mode, product)?;
                 tune.push(embed_audio(
                     &mut models,
+                    &eb,
                     &e,
                     &s,
                     60 + i,
@@ -2040,5 +2210,35 @@ mod librispeech {
             fs::write(out, &md).map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod product_enroll_tests {
+        use super::*;
+
+        fn tone(ms: usize) -> Vec<f32> {
+            (0..ms * MS)
+                .map(|i| 0.1 * (i as f32 * 0.3).sin())
+                .collect()
+        }
+
+        #[test]
+        fn trim_voiced_cuts_the_silence_around_speech() {
+            let mut a = vec![0.0f32; 300 * MS];
+            a.extend(tone(1000));
+            a.extend(vec![0.0f32; 400 * MS]);
+            let t = trim_voiced(&a).unwrap();
+            assert!((t.len() / MS).abs_diff(1000) <= 20, "{}", t.len() / MS);
+            assert!(trim_voiced(&vec![0.0f32; 1000 * MS]).is_none());
+        }
+
+        #[test]
+        fn product_enrollment_needs_c2_or_span_flag_only_with_product_mode() {
+            // The default NM_CAND is today's rules: the span is the gate's 3000 ms.
+            let c = cand::parse_cand("", 0.35).unwrap();
+            assert_eq!(c.enroll_ms, ENROLL_MS);
+            assert!(!c.c2);
+            assert!(cand::parse_cand("c2,c4n3", 0.35).unwrap().c2);
+        }
     }
 }

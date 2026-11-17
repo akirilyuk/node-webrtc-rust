@@ -558,6 +558,27 @@ fn load_scene(fixtures: &Path, scene: &Json, embedder: &Embedder) -> Result<Opti
     }))
 }
 
+/// `--window-dist`: per fixture set, the distribution of the 1.5 s TitaNet window scores of the
+/// merged and bystander-only utterances (the windows the rules act on): p10 / p50 / p90, the
+/// share below the confident-other bound and the share in the near-miss band.
+fn window_dist_table(dist: &mut std::collections::BTreeMap<String, Vec<f64>>, thr: f32) -> String {
+    let mut md = format!(
+        "## Window score distribution (threshold {thr})\n\n| set | windows | p10 | p50 | p90 | share < 0.20 | share in [0.30, thr) |\n| --- | --- | --- | --- | --- | --- | --- |\n"
+    );
+    for (dir, v) in dist.iter_mut() {
+        let n = v.len();
+        let low = v.iter().filter(|x| **x < 0.20).count();
+        let nm = v.iter().filter(|x| **x >= 0.30 && **x < f64::from(thr)).count();
+        let (p10, p50, p90) = (pct(v, 0.10), pct(v, 0.50), pct(v, 0.90));
+        md.push_str(&format!(
+            "| {dir} | {n} | {p10:.3} | {p50:.3} | {p90:.3} | {:.1} % | {:.1} % |\n",
+            100.0 * low as f64 / n.max(1) as f64,
+            100.0 * nm as f64 / n.max(1) as f64
+        ));
+    }
+    md
+}
+
 /// Wilson 95 % interval of `k / n` in percent.
 fn wilson(k: usize, n: usize) -> (f64, f64) {
     if n == 0 {
@@ -678,6 +699,7 @@ fn run() -> Result<(), String> {
     let mut tap_utt = None;
     let mut tap_enroll = None;
     let mut tap_scores: Vec<f32> = Vec::new();
+    let mut window_dist = false;
     let mut straddle_piper: Vec<PathBuf> = Vec::new();
     let mut librispeech: Option<PathBuf> = None;
     let mut bed: Option<PathBuf> = None;
@@ -704,6 +726,13 @@ fn run() -> Result<(), String> {
             }
             "--evidence" => {
                 let _ = straddle::EVIDENCE.set(());
+                let c = cand::cand();
+                if c.c2 || c.enroll_ms != cand::ENROLL_MS_DEFAULT {
+                    eprintln!("note: --evidence ignores NM_CAND c2 / e<ms>: the Piper fixtures enroll from one sentence");
+                }
+                if c.c7_nm || c.c7_scan || c.c7_run != 2 {
+                    eprintln!("note: --evidence ignores NM_CAND c7*: this path has no caller -> other watch");
+                }
             }
             "--utterance-loss" => {
                 let _ = straddle::UTT_LOSS.set(());
@@ -726,6 +755,7 @@ fn run() -> Result<(), String> {
                     .parse()
                     .map_err(|e| format!("--ls-callers: {e}"))?
             }
+            "--window-dist" => window_dist = true,
             "--tap-scores" => {
                 tap_scores = value("--tap-scores")?
                     .split(',')
@@ -747,6 +777,7 @@ fn run() -> Result<(), String> {
         md.push_str(&tap(&embedder, u, e, &tap_scores, threshold)?);
     }
     let mut scenes = Vec::new();
+    let mut dist: std::collections::BTreeMap<String, Vec<f64>> = Default::default();
     for dir in &fixtures {
         let manifest = parse_json(
             &fs::read_to_string(dir.join("manifest.json")).map_err(|e| format!("manifest: {e}"))?,
@@ -760,9 +791,23 @@ fn run() -> Result<(), String> {
             }
             if let Some(s) = load_scene(dir, scene, &embedder)? {
                 eprintln!("{} loaded", s.id);
+                if window_dist {
+                    let v = dist.entry(dir.display().to_string()).or_default();
+                    for u in [&s.merged, &s.by_only].into_iter().flatten() {
+                        v.extend(u.wins.iter().map(|w| f64::from(w.1)));
+                    }
+                }
                 scenes.push(s);
             }
         }
+    }
+    if window_dist {
+        md.push_str(&window_dist_table(&mut dist, threshold));
+        print!("{md}");
+        if let Some(path) = out {
+            fs::write(&path, &md).map_err(|e| format!("write {}: {e}", path.display()))?;
+        }
+        return Ok(());
     }
     if straddle::UTT_LOSS.get().is_some() {
         let root = librispeech
@@ -1380,17 +1425,29 @@ mod straddle {
                                 early: cut + 1500 < p.c_on,
                                 st,
                                 end_caller,
+                                c4acc: false,
                             }
                         }
-                        None => ModeRec {
-                            k: None,
-                            split: None,
-                            u1: Vec::new(),
-                            nosplit_lost: if end_caller { 0 } else { floor_kept },
-                            early: false,
-                            st,
-                            end_caller,
-                        },
+                        None => {
+                            let (c4acc, lost) = no_confirm(
+                                &utt.wins,
+                                threshold,
+                                cand().c4,
+                                end_caller,
+                                floor_kept,
+                                false,
+                            );
+                            ModeRec {
+                                k: None,
+                                split: None,
+                                u1: Vec::new(),
+                                nosplit_lost: lost,
+                                early: false,
+                                st,
+                                end_caller,
+                                c4acc,
+                            }
+                        }
                     }
                 })
                 .collect();
@@ -1403,7 +1460,11 @@ mod straddle {
                 caller_only: false,
                 u1: m0.u1,
                 split: m0.split,
-                upgrade_leak: if m0.split.is_some() { bref.len() } else { 0 },
+                upgrade_leak: if m0.split.is_some() || m0.c4acc {
+                    bref.len()
+                } else {
+                    0
+                },
                 nosplit_lost: m0.nosplit_lost,
                 ref_words: cref.len(),
                 floor_gap: cref.len().saturating_sub(floor_kept),
@@ -2307,12 +2368,17 @@ mod straddle {
             for (m, name) in O2C_MODES.iter().enumerate() {
                 let (mut lost, mut leak, mut same, mut d1, mut d2, mut gone) = (0, 0, 0, 0, 0, 0);
                 let (mut s2u, mut u2s, mut cofs, mut early, mut endc) = (0, 0, 0, 0, 0);
+                let mut c4n = 0;
                 let (mut scans, mut embeds, mut ms, mut max_ms) = (0, 0, 0.0, 0f64);
                 for r in &rs {
                     let (t, x) = (&r.modes[0], &r.modes[m]);
                     lost += x.nosplit_lost;
                     if x.end_caller {
                         endc += 1;
+                        leak += r.upgrade_leak;
+                    }
+                    if x.c4acc {
+                        c4n += 1;
                         leak += r.upgrade_leak;
                     }
                     if let Some((l, k)) = x.split {
@@ -2348,6 +2414,11 @@ mod straddle {
                     "| {set} | {name} | {lost} | {leak} | {same} | {d1} / {d2} | {gone} | {s2u} / {u2s} | {} | {early} | {endc} | {scans} / {embeds} / {ms:.0} / {max_ms:.0} |\n",
                     if *co { cofs.to_string() } else { "-".into() }
                 ));
+                if cand().c4 > 0 {
+                    md.push_str(&format!(
+                        "|  | {name} C4 accepts (no confirm, whole utterance `caller`) | {c4n} |  |  |  |  |  |  |  |  |  |\n"
+                    ));
+                }
             }
         }
         let far = FAR_O2C.lock().unwrap();
@@ -2420,6 +2491,9 @@ mod straddle {
         st: ScanStat,
         /// Mode 3: the utterance ended with the veto pending and falls back to `caller` whole.
         end_caller: bool,
+        /// C4 (`NM_CAND` c4n<N>): no confirm, but the near-miss rule accepts the whole utterance
+        /// as `caller` (no caller loss; every bystander word leaks). Always false by default.
+        c4acc: bool,
     }
 
     type SubCache = std::collections::HashMap<usize, Vec<(usize, f32, f64)>>;
@@ -2873,24 +2947,30 @@ mod straddle {
                         early: false,
                         st,
                         end_caller,
+                        c4acc: false,
                     },
                     // Window 1 `other` and no `caller` window: the whole utterance is dropped
                     // (a gate false reject under today's rule), counted above the floor.
-                    None => ModeRec {
-                        k: None,
-                        split: None,
-                        u1: Vec::new(),
-                        nosplit_lost: if !end_caller
-                            && utt.wins.first().is_some_and(|w| w.1 < threshold)
-                        {
-                            floor_kept
-                        } else {
-                            0
-                        },
-                        early: false,
-                        st,
-                        end_caller,
-                    },
+                    None => {
+                        let (c4acc, lost) = no_confirm(
+                            &utt.wins,
+                            threshold,
+                            cand().c4,
+                            end_caller,
+                            floor_kept,
+                            true,
+                        );
+                        ModeRec {
+                            k: None,
+                            split: None,
+                            u1: Vec::new(),
+                            nosplit_lost: lost,
+                            early: false,
+                            st,
+                            end_caller,
+                            c4acc,
+                        }
+                    }
                 }
             })
             .collect();
@@ -3123,6 +3203,24 @@ mod straddle {
     }
 
     use super::cand::{c4_scores, cand};
+
+    /// An utterance with no other -> caller confirm: (accepted whole by C4, caller words lost).
+    /// `first_other_only`: a caller-only utterance counts as lost only when window 1 is `other`.
+    fn no_confirm(
+        wins: &[Win],
+        threshold: f32,
+        c4: usize,
+        end_caller: bool,
+        floor_kept: usize,
+        first_other_only: bool,
+    ) -> (bool, usize) {
+        let scores: Vec<f32> = wins.iter().map(|w| w.1).collect();
+        let acc = !end_caller && c4_scores(&scores, threshold, c4);
+        let dropped = !end_caller
+            && !acc
+            && (!first_other_only || wins.first().is_some_and(|w| w.1 < threshold));
+        (acc, if dropped { floor_kept } else { 0 })
+    }
 
     fn c4_accept(wins: &[Win], threshold: f32) -> bool {
         let scores: Vec<f32> = wins.iter().map(|w| w.1).collect();
@@ -4331,6 +4429,24 @@ mod straddle {
             assert!(c.c2 && c.c7_nm && !c.c3 && !c.c7_scan);
             assert_eq!(c.c3_min, 0.4);
             assert!(parse_cand("c7scan,c3", 0.35).unwrap().c7_scan);
+        }
+
+        #[test]
+        fn c4_turns_a_dropped_caller_only_utterance_into_caller() {
+            let w = |v: &[f32]| -> Vec<Win> { v.iter().map(|s| (0, *s, 0.0)).collect() };
+            let t = 0.459;
+            // Window 1 `other`, no confirm: today the utterance is dropped (7 words lost).
+            let near = w(&[0.31, 0.35, 0.33]);
+            assert_eq!(no_confirm(&near, t, 0, false, 7, true), (false, 7));
+            // C4 n=3: accepted whole, no caller loss.
+            assert_eq!(no_confirm(&near, t, 3, false, 7, true), (true, 0));
+            // A window below 0.20: not accepted, still dropped.
+            let low = w(&[0.31, 0.35, 0.33, 0.19]);
+            assert_eq!(no_confirm(&low, t, 3, false, 7, true), (false, 7));
+            // Fewer than N near-miss windows: not accepted.
+            assert_eq!(no_confirm(&w(&[0.31, 0.35]), t, 3, false, 7, true), (false, 7));
+            // The deferred veto already ended `caller`: nothing lost, not a C4 accept.
+            assert_eq!(no_confirm(&near, t, 3, true, 7, true), (false, 0));
         }
 
         #[test]

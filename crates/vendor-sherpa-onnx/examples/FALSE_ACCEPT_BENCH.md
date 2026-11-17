@@ -538,4 +538,8 @@ Default-path check (`FA_ENROLL=fixed`, same build, `.test-logs/crr2b1-fa-default
 | product, today's rules | cross-session | 0.1 / 0.1 | 20 | 0.0 / 0.0 / 1.3 / 62.7 | 8 / 3 | 36.0 | 7.2 / 5.4 |
 | product, C2 reference | cross-session | 0.1 / 0.1 | 23 | 0.0 / 0.0 / 1.3 / 62.7 | 9 / 3 | 36.0 | 7.0 / 5.4 |
 
-Logs: `.test-logs/crr2b1-fa-product-today.log`, `.test-logs/crr2b1-fa-product-c2.log` (exit 0). The product baseline is not the published fixed-enrollment row: same-session pairs >= 20 % are 3 in both, worst pair 65.7 % against 43.5 %. Bar 4 compares C2 with the product baseline, not with the fixed row.
+Logs: `.test-logs/crr2b1-fa-product-today.log`, `.test-logs/crr2b1-fa-product-c2.log` (exit 0). The product baseline is not comparable to the published fixed row: both the enrollment and the test windows differ (same-session: 120 s from the file after the enrollment, 72 windows/speaker, vs the rest of the chapter after 3 s, 76; the worst pair is 1089 M ← 8230 M 65.7 % here vs 8230 M ← 1089 M 43.5 % fixed). Bar 4 compares C2 with the product baseline only; those two rows use identical windows and differ only in the reference.
+
+Known gap: the bench enrollment trims each file to its voiced span, while the product appends the whole VAD utterance (trailing hangover included, internal long pauses dropped). This is the same approximation as chunk 1, and slightly optimistic.
+
+Default-path re-check after the report-header change (`FA_ENROLL=fixed`, `.test-logs/crr2b1-fa-default-fixed2.log`): the fresh md differs from the earlier fixed run only in the TitaNet embed-latency line (17.5 / 18.7 ms vs 18.5 / 19.4 ms, machine timing); every table is identical.

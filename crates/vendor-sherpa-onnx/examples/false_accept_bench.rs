@@ -1708,6 +1708,30 @@ mod librispeech {
     }
 
     #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+    /// Per-mode enrollment sentence of the report header.
+    fn mode_enroll_text(mode: Mode, product: bool) -> &'static str {
+        match (mode, product) {
+            (Mode::CrossSession, false) => {
+                "Enrollment: 3000 ms from the voiced onset of the first chapter's utterances; \
+                 windows from the other chapters. "
+            }
+            (Mode::SameSession, false) => {
+                "Enrollment: the first 3000 ms from the voiced onset of the speaker's longest \
+                 chapter; windows: the rest of that chapter after the enrollment span (no \
+                 overlap). "
+            }
+            (Mode::CrossSession, true) => {
+                "Enrollment (product): whole voiced utterances of the first chapter until 3000 ms; \
+                 windows from the other chapters, then the rest of the first chapter. "
+            }
+            (Mode::SameSession, true) => {
+                "Enrollment (product): whole voiced utterances of the speaker's longest chapter in \
+                 file order until 3000 ms, one embed; windows: up to 120 s from the next file (no \
+                 overlap). "
+            }
+        }
+    }
+
     fn report(
         mode: Mode,
         models: &mut [Embedder],
@@ -1717,6 +1741,7 @@ mod librispeech {
         test_sp: &[Speaker],
         src: &[Source],
         stream_s: f64,
+        product: bool,
     ) -> Result<String, String> {
         let m = mode.name();
         let today_tune = set_scores(tune, 0, Norm::Raw, &sh.ls_cohort);
@@ -1739,17 +1764,7 @@ mod librispeech {
              and condition: mean {w15:.0} (min {w15min}) at 1.5 s, {w20:.0} (min {w20min}) at 2.0 s; \
              {n_pairs} pairs. **Tune FRR target ({m}): {:.1} %** (today's gate's tune FRR {} %, \
              floor 1 %).\n\n",
-            match mode {
-                Mode::CrossSession => {
-                    "Enrollment: 3000 ms from the voiced onset of the first chapter's utterances; \
-                     windows from the other chapters. "
-                }
-                Mode::SameSession => {
-                    "Enrollment: the first 3000 ms from the voiced onset of the speaker's longest \
-                     chapter; windows: the rest of that chapter after the enrollment span (no \
-                     overlap). "
-                }
-            },
+            mode_enroll_text(mode, product),
             target * 100.0,
             pct(today_tune_frr.0, today_tune_frr.1),
         );
@@ -2194,6 +2209,7 @@ mod librispeech {
                 &test_sp,
                 &src,
                 stream_s / test_sp.len() as f64,
+                product,
             )?);
         }
         let mut times0 = models[0].times.get(&0).cloned().unwrap_or_default();
@@ -2230,6 +2246,16 @@ mod librispeech {
             let t = trim_voiced(&a).unwrap();
             assert!((t.len() / MS).abs_diff(1000) <= 20, "{}", t.len() / MS);
             assert!(trim_voiced(&vec![0.0f32; 1000 * MS]).is_none());
+        }
+
+        #[test]
+        fn mode_header_names_product_enrollment() {
+            assert!(mode_enroll_text(Mode::SameSession, true).contains("(product)"));
+            assert!(mode_enroll_text(Mode::CrossSession, true).contains("(product)"));
+            assert_eq!(
+                mode_enroll_text(Mode::SameSession, false),
+                "Enrollment: the first 3000 ms from the voiced onset of the speaker's longest chapter; windows: the rest of that chapter after the enrollment span (no overlap). "
+            );
         }
 
         #[test]

@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-11-17
+
 ### Added
 
 - **helpers:** `SessionPodOptions.iceServers` also accepts a resolver `(sessionId) => IceServerConfig[] | Promise<IceServerConfig[]>`. `SessionPod` calls it once per session when the slot is prepared and uses the result for that session only, so each session can get its own TURN credentials. The array form behaves as before. A resolver that throws or rejects fails only that session's `ensureSession` with the new `SessionPodIceServersResolverError` (`code: 'ice_servers_resolver_failed'`); the pod keeps serving other sessions. `IceServerConfig` now types `username` and `credential`.

@@ -526,22 +526,89 @@ Other speakers' utterances (3 bystanders per caller, 3 files each) scored agains
 - Cause: the oracle reference recovers most lost utterances. Same-session: 13 of 24 (test-clean bed), 11 of 13 (clean), 16 of 22 (dev-clean bed), 9 of 9 (clean), 5 of 7 (dev-other bed); cross-session 24 of 25, 11 of 11, 28 of 30, 25 of 25, 48 of 54, 53 of 54. Removing the bed from the test utterance recovers 0 - 3 per bed row, short utterances 0 - 4, the speaker-model cause 0 - 4, unexplained 0 - 1.
 - Bystander accepts per set are 0 - 4 of about 240 - 340 utterances; the window FAR is 0.00 - 0.97 %, highest on dev-other same-session (one pair at or above 20 %).
 
-## Candidate bench against the ship bar (caller-reject-rate, chunk 2) - PARTIAL, no verdict
+## Candidate bench against the ship bar (caller-reject-rate, chunk 2a) - tuning set only, not a verdict
 
-Bench-only: `near_miss_bench --utterance-loss` takes `NM_CAND` (comma list: `e<ms>` enrollment span, `c2` multi-segment enrollment, `c3` reject a poor enrollment with bound `NM_C3_MIN`, `c4n<N>` repeated near-miss accept, `c7r<N>` N consecutive `other` windows for a caller -> other cut, `c7nm` near-miss windows are not `other` evidence). With `NM_CAND` unset the harness reproduces the chunk 1 baseline (test-clean same-session: bed 189 words / 15 dropped / 9 partly, clean 118 / 10 / 3). Commit e0318f26 is the first line of each log (`.test-logs/crr2-<label>-<set>.log`).
+Chunk 2a: test-clean only, bed -12 dB and clean, 40 callers. Held-out sets (dev-clean, dev-other, Piper reroll), the step 0 baselines and the bar table are chunk 2b. Bench-only: `near_miss_bench --utterance-loss` takes `NM_CAND` (comma list; an unknown token is an error): `e<ms>` enrollment span, `c2` multi-segment enrollment (mean of unit embeddings per enrolled utterance), `c3` reject a poor enrollment (the enrollment's own 1.5 s sub-windows against the reference; minimum below `NM_C3_MIN` discards it, at most 3 tries, then the best try, also when the files run out), `c4n<N>` repeated near-miss accept, `c7r<N>` N consecutive `other` windows for a caller -> other cut, `c7nm` near-miss windows ([`NEAR_MISS_MIN_SCORE`, threshold)) are neutral for that run, `c7scan` the 750/125 caller sub-window scan over the confirming windows vetoes the cut and restarts the run. Logs `.test-logs/crr2a-<cand>-test-clean.log` carry the commit (aadf1815) and `NM_CAND` on line 1; the driver is one heavy-run (`/tmp/crr2a_run.sh`, 5 candidates in parallel).
 
-Finding on enrollment: the product appends whole utterances, so the median enrollment already consumes 8.7 s of voiced speech on LibriSpeech (`enrollSpeechMs` 3000 is only the floor). C1 5000 therefore changes little (median 9.6 s) and moves the test set (a longer enrollment uses more files, so the tested utterances differ: 539 vs 557); C1 8000 was not run.
+Design notes (decisions of the parent, 2026-11-17):
 
-Tuning set, test-clean, same-session (words lost above floor / dropped / partly; bystander-only utterances accepted):
+- **Fixed test set across candidates.** Per chapter the test utterances are the last 15 files (cross-session: the last 10 files of the test chapter). Enrollment, for every candidate including today's rules, draws only from the files before them, in order; a speaker whose pre-test files cannot reach the span is **skipped** (5 speakers in every row, listed in the tables). The baseline therefore changed from chunk 1 (test-clean same-session bed 189 -> 194 words, clean 118 -> 91) and the first run's PARTIAL rows are replaced. The oracle reference pool is the 40 files just before the tests, the same for every candidate (it can overlap the enrollment files; it only attributes causes).
+- **c7nm is neutral:** a near-miss window neither counts toward the `other` run nor resets it and does not become `prev` (unit test: [other, near-miss, other] with run 2 confirms on the third window; today's rules confirm on the second).
+- **c7scan** scans every window of the confirming run with the product's 750/125 sub-windows and the verify-budget-free bench scan (optimistic: the product bounds it by `verify_timeout_ms`). A hit vetoes the cut, the run restarts and the scanned window becomes `prev`.
+- **C4 accept does not arm the caller -> other watch** (as the product's upgrade arm). This is optimistic for C4: an accepted utterance gets no later cut.
+- **C3 bounds** come from the enrollment self-score distribution (minimum 1.5 s sub-window cosine of the first enrollment of each speaker, all 128 enrollments of the test-clean enrollment-only run, bed and clean, same- and cross-session): min 0.385, p10 0.589, p25 0.683, median 0.764, p75 0.804, max 0.886. The bounds are p10 (0.589) and p25 (0.683): they reject about 10 % and 25 % of the enrollments. C3 at 0.35 (the first guess) would reject none.
+- Words are measure A above the floor; `partly` and `dropped` are utterances.
 
-| candidate | bed words | bed dropped / partly | clean words | clean dropped / partly | words per speaker median / max (bed, clean) | bystander accepted (bed, clean) |
-| --- | --- | --- | --- | --- | --- | --- |
-| today | 189 | 15 / 9 | 118 | 10 / 3 | 0 / 66, 0 / 58 | 2/333, 0/337 |
-| C2 | 186 | 15 / 8 | 101 | 9 / 3 | 0 / 66, 0 / 41 | 2/333, 0/337 |
-| C1 5000 | 186 | 15 / 8 | 118 | 10 / 3 | 0 / 66, 0 / 58 | 2/324, 0/328 |
+Tuning set, test-clean, same-session (words lost above floor / dropped / partly; bystander-only utterances accepted of tested):
 
-Cross-session (not gating): C2 302 -> 315 words (bed), 184 -> 184 (clean); C1 5000 302 -> 327 (bed), 184 -> 197 (clean).
+bed row, same-session:
 
-Not run: C3, C2+C3, C1 8000, C4, C7 variants (switches are implemented and compile), and every held-out set (dev-clean, dev-other), the Piper reroll, the `false_accept_bench`-scale baselines, long-other 12/18 s, airport A/B and the C7 takeover set. No bar row is therefore evaluated and no candidate passes or fails the bar yet. C7's third variant (caller sub-window scan veto before the cut) is not implemented.
+| candidate | words lost | dropped | partly | words per speaker median / max | top 5 speakers (words lost, utterances lost) | bystander-only accepted | speakers skipped | enrollment ms median / p90 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| today (empty) | 194 | 12 | 14 | 0.0 / 71 | 1284: 71, 3; 672: 57, 7; 8555: 27, 3; 4507: 15, 4; 3729: 9, 1 | 2 of 342 | 5 | 9520 / 17120 |
+| C2 | 167 | 11 | 12 | 0.0 / 71 | 1284: 71, 3; 672: 31, 5; 8555: 27, 3; 4507: 15, 4; 3729: 9, 1 | 2 of 342 | 5 | 9520 / 17120 |
+| C3 bound 0.589 (p10) | 193 | 11 | 14 | 0.0 / 71 | 1284: 71, 3; 672: 56, 6; 8555: 27, 3; 4507: 15, 4; 3729: 9, 1 | 2 of 342 | 5 | 9560 / 21360 |
+| C3 bound 0.683 (p25) | 193 | 11 | 14 | 0.0 / 71 | 1284: 71, 3; 672: 56, 6; 8555: 27, 3; 4507: 15, 4; 3729: 9, 1 | 2 of 342 | 5 | 10980 / 33260 |
+| C2+C3 0.589 | 192 | 11 | 13 | 0.0 / 71 | 1284: 71, 3; 672: 56, 6; 8555: 27, 3; 4507: 15, 4; 3729: 9, 1 | 2 of 342 | 5 | 9560 / 21360 |
+| C2+C3 0.683 | 187 | 11 | 12 | 0.0 / 71 | 1284: 71, 3; 672: 56, 6; 8555: 27, 3; 4507: 10, 3; 3729: 9, 1 | 2 of 342 | 5 | 10980 / 33260 |
+| C4 N=2 | 134 | 8 | 14 | 0.0 / 50 | 1284: 50, 2; 672: 36, 6; 4507: 15, 4; 8555: 13, 2; 3729: 9, 1 | 6 of 342 | 5 | 9520 / 17120 |
+| C4 N=3 | 138 | 9 | 14 | 0.0 / 50 | 1284: 50, 2; 672: 36, 6; 4507: 15, 4; 8555: 13, 2; 3729: 9, 1 | 2 of 342 | 5 | 9520 / 17120 |
+| C7 run 3 | 144 | 12 | 2 | 0.0 / 71 | 1284: 71, 3; 672: 52, 6; 8555: 17, 2; 8455: 4, 1; 2961: 0, 2 | 2 of 342 | 5 | 9520 / 17120 |
+| C7 near-miss neutral | 106 | 12 | 1 | 0.0 / 52 | 672: 52, 6; 1284: 33, 2; 8555: 17, 2; 8455: 4, 1; 2961: 0, 2 | 2 of 342 | 5 | 9520 / 17120 |
+| C7 scan veto | 182 | 12 | 11 | 0.0 / 71 | 1284: 71, 3; 672: 52, 6; 8555: 27, 3; 4507: 12, 3; 3729: 9, 1 | 2 of 342 | 5 | 9520 / 17120 |
+| C2+C7 run 3 | 123 | 11 | 2 | 0.0 / 71 | 1284: 71, 3; 672: 31, 5; 8555: 17, 2; 8455: 4, 1; 2961: 0, 2 | 2 of 342 | 5 | 9520 / 17120 |
+| C2+C7 near-miss neutral | 85 | 11 | 1 | 0.0 / 33 | 1284: 33, 2; 672: 31, 5; 8555: 17, 2; 8455: 4, 1; 2961: 0, 2 | 2 of 342 | 5 | 9520 / 17120 |
+| C2+C7 scan veto | 160 | 11 | 10 | 0.0 / 71 | 1284: 71, 3; 672: 31, 5; 8555: 27, 3; 4507: 12, 3; 3729: 9, 1 | 2 of 342 | 5 | 9520 / 17120 |
+
+clean row, same-session:
+
+| candidate | words lost | dropped | partly | words per speaker median / max | top 5 speakers (words lost, utterances lost) | bystander-only accepted | speakers skipped | enrollment ms median / p90 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| today (empty) | 91 | 6 | 2 | 0.0 / 42 | 1284: 42, 2; 672: 40, 4; 7127: 5, 1; 8455: 4, 1 | 0 of 346 | 5 | 9520 / 17120 |
+| C2 | 91 | 6 | 2 | 0.0 / 42 | 1284: 42, 2; 672: 40, 4; 7127: 5, 1; 8455: 4, 1 | 0 of 346 | 5 | 9520 / 17120 |
+| C3 bound 0.589 (p10) | 91 | 6 | 2 | 0.0 / 42 | 1284: 42, 2; 672: 40, 4; 7127: 5, 1; 8455: 4, 1 | 0 of 346 | 5 | 9560 / 17440 |
+| C3 bound 0.683 (p25) | 89 | 6 | 3 | 0.0 / 42 | 1284: 42, 2; 672: 38, 5; 7127: 5, 1; 8455: 4, 1 | 0 of 346 | 5 | 9560 / 28400 |
+| C2+C3 0.589 | 91 | 6 | 2 | 0.0 / 42 | 1284: 42, 2; 672: 40, 4; 7127: 5, 1; 8455: 4, 1 | 0 of 346 | 5 | 9560 / 17440 |
+| C2+C3 0.683 | 89 | 6 | 3 | 0.0 / 42 | 1284: 42, 2; 672: 38, 5; 7127: 5, 1; 8455: 4, 1 | 0 of 346 | 5 | 9560 / 28400 |
+| C4 N=2 | 79 | 5 | 2 | 0.0 / 40 | 672: 40, 4; 1284: 30, 1; 7127: 5, 1; 8455: 4, 1 | 0 of 346 | 5 | 9520 / 17120 |
+| C4 N=3 | 91 | 6 | 2 | 0.0 / 42 | 1284: 42, 2; 672: 40, 4; 7127: 5, 1; 8455: 4, 1 | 0 of 346 | 5 | 9520 / 17120 |
+| C7 run 3 | 61 | 6 | 1 | 0.0 / 40 | 672: 40, 4; 1284: 12, 1; 7127: 5, 1; 8455: 4, 1 | 0 of 346 | 5 | 9520 / 17120 |
+| C7 near-miss neutral | 47 | 6 | 0 | 0.0 / 26 | 672: 26, 3; 1284: 12, 1; 7127: 5, 1; 8455: 4, 1 | 0 of 346 | 5 | 9520 / 17120 |
+| C7 scan veto | 91 | 6 | 2 | 0.0 / 42 | 1284: 42, 2; 672: 40, 4; 7127: 5, 1; 8455: 4, 1 | 0 of 346 | 5 | 9520 / 17120 |
+| C2+C7 run 3 | 61 | 6 | 1 | 0.0 / 40 | 672: 40, 4; 1284: 12, 1; 7127: 5, 1; 8455: 4, 1 | 0 of 346 | 5 | 9520 / 17120 |
+| C2+C7 near-miss neutral | 47 | 6 | 0 | 0.0 / 26 | 672: 26, 3; 1284: 12, 1; 7127: 5, 1; 8455: 4, 1 | 0 of 346 | 5 | 9520 / 17120 |
+| C2+C7 scan veto | 91 | 6 | 2 | 0.0 / 42 | 1284: 42, 2; 672: 40, 4; 7127: 5, 1; 8455: 4, 1 | 0 of 346 | 5 | 9520 / 17120 |
+
+Cross-session (reported, not gating), words lost (bed / clean): today (empty) 300 / 197; C2 283 / 197; C3 bound 0.589 (p10) 241 / 197; C3 bound 0.683 (p25) 241 / 193; C2+C3 0.589 228 / 197; C2+C3 0.683 228 / 193; C4 N=2 257 / 180; C4 N=3 257 / 180; C7 run 3 249 / 188; C7 near-miss neutral 189 / 131; C7 scan veto 290 / 184; C2+C7 run 3 236 / 188; C2+C7 near-miss neutral 176 / 131; C2+C7 scan veto 273 / 184.
+
+
+C7 takeover rows (`near_miss_bench --second-cut --takeover-db -3`, LibriSpeech test-clean, shipped rule jj of the table; U2s = takeover scenes whose U1 splits; `caller -> other splits` = U2s whose takeover was cut; "bystander-2 words left" = bystander words still in the caller part). Missed takeover splits are baseline splits minus the candidate's, as a share of the U2s:
+
+| candidate | bed: U2s | bed: splits | bed: missed vs today | bed: caller words cut (utts) | bed: bystander-2 words left / total | clean: U2s | clean: splits | clean: missed vs today | clean: caller words cut (utts) | clean: bystander-2 words left / total |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| today | 65 | 53 | 0 | 24 (18) | 97 / 492 | 93 | 79 | 0 | 57 (35) | 124 / 717 |
+| C7 run 3 | 65 | 20 | 33 (51 %) | 12 (9) | 269 / 492 | 93 | 19 | 60 (65 %) | 28 (16) | 477 / 717 |
+| C7 near-miss neutral | 65 | 42 | 11 (17 %) | 6 (5) | 211 / 492 | 93 | 58 | 21 (23 %) | 19 (11) | 310 / 717 |
+| C7 scan veto | 65 | 26 | 27 (42 %) | 4 (3) | 270 / 492 | 93 | 30 | 49 (53 %) | 10 (7) | 418 / 717 |
+
+Reading (tuning only):
+
+- **Enrollment.** C2 helps the bed row (194 -> 167 words, 672 loses 57 -> 31) and leaves clean level (91). C3 does almost nothing at either bound (bed 193, clean 91 / 89): the poorly enrolled speakers do not have a low enrollment minimum, so the check does not find them. C3 adds fail-open time (median 9.5 -> 11.0 s and p90 17 -> 33 s at 0.683), so it is not worth it on this evidence. C2+C3 is no better than C2 alone (187 / 89 at 0.683).
+- **C4.** N=2 lowers the bed row to 134 words and clean to 79, but raises bed bystander-only accepts from 2 to 6 of 342 (fails the keep rule). N=3 lowers bed to 138 and leaves clean level (91), with no rise in bystander accepts (2 of 342; 0 of 346). The same-session `dropped` count goes 12 -> 9 (bed). C4 is benched with the watch unarmed (optimistic).
+- **C7.** Every C7 variant cuts the caller words lost in the loss rows by a lot (bed 194 -> 106 for near-miss neutral, 144 for run 3, 182 for scan; clean 91 -> 47, 61, 91) but the takeover rows show what that costs: 17 - 65 % of the takeovers that today split are no longer split, and 311 - 477 of 717 bystander words stay in the caller final instead of 124. All three exceed the +5 % missed takeovers bound by a wide margin; the smallest miss is near-miss neutral at 17 % (bed) and 23 % (clean). C7 x C2 does not change that (C2 does not touch the caller -> other watch).
+- Bystander-only accepts do not change for any candidate except C4 N=2 (bed 2 -> 6 of 342).
+
+Keep rule (test-clean words lost down in the bed or the clean row and at least level in the other, no rise in bystander-only accepts, and for C7 at most +5 % missed takeovers) and the 2b input:
+
+| candidate | kept | why |
+| --- | --- | --- |
+| C2 | yes | bed 194 -> 167, clean 91 -> 91, accepts level |
+| C4 N=3 | yes | bed 194 -> 138, clean 91 -> 91, accepts level; reported on the `dropped` subset in 2b; watch-unarmed optimism noted |
+| C3 0.589 / 0.683 | marginal (1-2 words, +1.5 s median fail-open at 0.683) | not recommended for 2b: effect is within noise |
+| C2+C3 | no benefit over C2 | not recommended |
+| C4 N=2 | no | bed bystander accepts 2 -> 6 |
+| C7 run 3, near-miss neutral, scan veto (alone and with C2) | no | missed takeovers 17 - 65 % against a 5 % bound |
+
+Not run in 2a: C2 + C4 N=3 together (the parent can add it in 2b), C1 8000, every held-out set, the `false_accept_bench`-scale baselines, long-other 12/18 s, airport A/B, the 375-takeover `caller_to_other_bench` set. The takeover rows above are the librispeech takeover scenes of `near_miss_bench`, not that set.
 
 Common Voice: not used. The official dataset page (commonvoice.mozilla.org/en/datasets) is script-rendered and shows no licence text to a plain fetch; the only CC0 statement reachable is the project README on GitHub, which is not the dataset page, and the download needs an account and terms acceptance. Per decision oo it is skipped.

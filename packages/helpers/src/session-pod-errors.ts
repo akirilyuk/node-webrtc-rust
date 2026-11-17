@@ -23,3 +23,18 @@ export class SessionPodRecycleRequiredError extends Error {
     )
   }
 }
+
+/** Thrown when the `iceServers` resolver of a {@link SessionPod} throws or rejects for a session. */
+export class SessionPodIceServersResolverError extends Error {
+  readonly name = 'SessionPodIceServersResolverError'
+  readonly code = 'ice_servers_resolver_failed'
+
+  constructor(
+    readonly sessionId: string,
+    override readonly cause: unknown,
+  ) {
+    super(
+      `ice_servers_resolver_failed: ${cause instanceof Error ? cause.message : String(cause)} (sessionId=${sessionId})`,
+    )
+  }
+}

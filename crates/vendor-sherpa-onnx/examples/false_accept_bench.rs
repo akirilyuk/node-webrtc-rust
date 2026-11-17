@@ -1216,12 +1216,10 @@ mod librispeech {
         }
     }
 
+    type VoicedSrc = (Vec<f32>, Vec<f32>, Source, Vec<usize>);
+
     /// (clean enrollment source, clean talk stream, source), both at -20 dBFS.
-    fn audio(
-        sp: &Speaker,
-        mode: Mode,
-        product: bool,
-    ) -> Result<(Vec<f32>, Vec<f32>, Source, Vec<usize>), String> {
+    fn audio(sp: &Speaker, mode: Mode, product: bool) -> Result<VoicedSrc, String> {
         if product {
             return audio_product(sp, mode);
         }
@@ -1297,10 +1295,7 @@ mod librispeech {
     /// the enrollment span; the windows come from the files after them. Returns (enrollment,
     /// stream, source, cumulative end of each enrollment utterance in the enrollment). Same
     /// -20 dBFS normalization as the fixed path (over the joined audio of the speaker's source).
-    fn audio_product(
-        sp: &Speaker,
-        mode: Mode,
-    ) -> Result<(Vec<f32>, Vec<f32>, Source, Vec<usize>), String> {
+    fn audio_product(sp: &Speaker, mode: Mode) -> Result<VoicedSrc, String> {
         let span_ms = cand::cand().enroll_ms;
         let (files, stream_files): (Vec<&PathBuf>, Vec<&PathBuf>) = match mode {
             Mode::CrossSession => (
@@ -1707,7 +1702,6 @@ mod librispeech {
         x + x.abs() * 1e-6 + 1e-6
     }
 
-    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     /// Per-mode enrollment sentence of the report header.
     fn mode_enroll_text(mode: Mode, product: bool) -> &'static str {
         match (mode, product) {
@@ -1732,6 +1726,7 @@ mod librispeech {
         }
     }
 
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     fn report(
         mode: Mode,
         models: &mut [Embedder],
@@ -2233,9 +2228,7 @@ mod librispeech {
         use super::*;
 
         fn tone(ms: usize) -> Vec<f32> {
-            (0..ms * MS)
-                .map(|i| 0.1 * (i as f32 * 0.3).sin())
-                .collect()
+            (0..ms * MS).map(|i| 0.1 * (i as f32 * 0.3).sin()).collect()
         }
 
         #[test]

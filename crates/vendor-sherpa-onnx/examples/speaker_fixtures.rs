@@ -2113,8 +2113,14 @@ mod tests {
         assert!(scene_seed("x") < (1 << 48));
         // The default seed is unchanged by `--seed`: scene_seed == scene_seed_with(SEED, ..), and a
         // new seed changes it.
-        assert_eq!(scene_seed("s4_test_n05"), scene_seed_with(SEED, "s4_test_n05"));
-        assert_ne!(scene_seed_with(SEED, "s4_test_n05"), scene_seed_with(SEED + 1, "s4_test_n05"));
+        assert_eq!(
+            scene_seed("s4_test_n05"),
+            scene_seed_with(SEED, "s4_test_n05")
+        );
+        assert_ne!(
+            scene_seed_with(SEED, "s4_test_n05"),
+            scene_seed_with(SEED + 1, "s4_test_n05")
+        );
     }
 
     #[test]

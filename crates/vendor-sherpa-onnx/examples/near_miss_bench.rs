@@ -568,7 +568,10 @@ fn window_dist_table(dist: &mut std::collections::BTreeMap<String, Vec<f64>>, th
     for (dir, v) in dist.iter_mut() {
         let n = v.len();
         let low = v.iter().filter(|x| **x < 0.20).count();
-        let nm = v.iter().filter(|x| **x >= 0.30 && **x < f64::from(thr)).count();
+        let nm = v
+            .iter()
+            .filter(|x| **x >= 0.30 && **x < f64::from(thr))
+            .count();
         let (p10, p50, p90) = (pct(v, 0.10), pct(v, 0.50), pct(v, 0.90));
         md.push_str(&format!(
             "| {dir} | {n} | {p10:.3} | {p50:.3} | {p90:.3} | {:.1} % | {:.1} % |\n",
@@ -2750,8 +2753,10 @@ mod straddle {
                 return false;
             };
             let samples: Vec<f32> = clip
-                .chunks_exact(2)
-                .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / 32768.0)
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&[a, b]| f32::from(i16::from_le_bytes([a, b])) / 32768.0)
                 .collect();
             let end = samples.len() / SAMPLES_PER_MS;
             subs_for(&samples, 0, end, (P_SUB, P_HOP), embedder, reference)
@@ -3162,7 +3167,7 @@ mod straddle {
     const UL_TEST_SAME: usize = 15;
     const UL_TEST_CROSS: usize = 10;
     const UL_ORACLE_MS: usize = 30_000;
-    
+
     const UL_BYSTANDERS: usize = 3;
     const UL_BY_FILES: usize = 3;
     const UL_CAUSES: [&str; 5] = [
@@ -3588,7 +3593,7 @@ mod straddle {
                             None => continue,
                         }
                     };
-                    let set = format!("{cname}");
+                    let set = cname.to_string();
                     let t_n = if mode == "same-session" {
                         UL_TEST_SAME
                     } else {
@@ -3604,7 +3609,7 @@ mod straddle {
                     UL_ENR
                         .lock()
                         .unwrap()
-                        .push((format!("{cname}"), mode, enr_ms));
+                        .push((cname.to_string(), mode, enr_ms));
                     if std::env::var_os("NM_ENROLL_ONLY").is_some() {
                         continue;
                     }
@@ -3824,7 +3829,7 @@ mod straddle {
                 }
             }
             let mut sp: Vec<(&str, (usize, usize))> = by.into_iter().collect();
-            sp.sort_by(|a, b| b.1.cmp(&a.1));
+            sp.sort_by_key(|a| std::cmp::Reverse(a.1));
             let top: usize = sp.iter().take(5).map(|x| x.1 .0).sum();
             let top_s = sp
                 .iter()
@@ -4444,7 +4449,10 @@ mod straddle {
             let low = w(&[0.31, 0.35, 0.33, 0.19]);
             assert_eq!(no_confirm(&low, t, 3, false, 7, true), (false, 7));
             // Fewer than N near-miss windows: not accepted.
-            assert_eq!(no_confirm(&w(&[0.31, 0.35]), t, 3, false, 7, true), (false, 7));
+            assert_eq!(
+                no_confirm(&w(&[0.31, 0.35]), t, 3, false, 7, true),
+                (false, 7)
+            );
             // The deferred veto already ended `caller`: nothing lost, not a C4 accept.
             assert_eq!(no_confirm(&near, t, 3, true, 7, true), (false, 0));
         }

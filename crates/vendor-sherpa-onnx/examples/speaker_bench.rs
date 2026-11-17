@@ -3611,9 +3611,9 @@ fn long_other_product_enroll() -> bool {
 
 /// C4 for a stream (`NM_CAND` c4n<N>, consecutive scheme only): the end of the first prefix of
 /// window scores that the near-miss rule accepts as a whole utterance (no window below the
-/// confident-other bound, at least N near-miss windows). Optimistic against the product, which
-/// decides at the end of the utterance and arms the caller -> other watch on an accept: here the
-/// accept lands at the earliest window, so the FAR is an upper bound.
+/// confident-other bound, at least N near-miss windows). Matches §5 C4: the barge is released at the
+/// N-th near-miss window if no earlier window scored below the confident-other bound; not arming
+/// the caller -> other watch does not change the first accept.
 fn c4_first_accept(ends: &[usize], scores: &[f32], threshold: f32, n: usize) -> Option<usize> {
     (0..scores.len())
         .find(|&j| cand::c4_scores(&scores[..=j], threshold, n))
@@ -3645,7 +3645,9 @@ fn load_set_data(
                 ranges.len(),
                 |i| {
                     let (a, b) = ranges[i];
-                    Ok(Some(audio[(a * 16).min(audio.len())..(b * 16).min(audio.len())].to_vec()))
+                    Ok(Some(
+                        audio[(a * 16).min(audio.len())..(b * 16).min(audio.len())].to_vec(),
+                    ))
                 },
                 |x| emb.embed(x).map(|(e, _)| e),
                 &c,
@@ -4259,9 +4261,15 @@ mod tests {
     fn c4_first_accept_needs_n_near_miss_windows_and_none_below_the_bound() {
         let ends = [100, 200, 300, 400];
         // Three near-miss windows, none below 0.20: accepted at the third window.
-        assert_eq!(c4_first_accept(&ends, &[0.31, 0.35, 0.33, 0.1], 0.459, 3), Some(300));
+        assert_eq!(
+            c4_first_accept(&ends, &[0.31, 0.35, 0.33, 0.1], 0.459, 3),
+            Some(300)
+        );
         // A window below 0.20 before the third near-miss window: never accepted.
-        assert_eq!(c4_first_accept(&ends, &[0.31, 0.1, 0.33, 0.35], 0.459, 3), None);
+        assert_eq!(
+            c4_first_accept(&ends, &[0.31, 0.1, 0.33, 0.35], 0.459, 3),
+            None
+        );
         // Off.
         assert_eq!(c4_first_accept(&ends, &[0.31, 0.35, 0.33], 0.459, 0), None);
     }

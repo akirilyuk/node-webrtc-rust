@@ -65,15 +65,13 @@ pub fn parse_cand(s: &str, c3_min: f32) -> Result<Cand, String> {
             _ => {
                 if let Some(v) = t.strip_prefix('e').and_then(|v| v.parse().ok()) {
                     c.enroll_ms = v;
-                } else if let Some(v) =
-                    t.strip_prefix("c4n").and_then(|v| v.parse::<usize>().ok())
+                } else if let Some(v) = t.strip_prefix("c4n").and_then(|v| v.parse::<usize>().ok())
                 {
                     if v == 0 {
                         return Err("c4n0: N must be >= 1".into());
                     }
                     c.c4 = v;
-                } else if let Some(v) =
-                    t.strip_prefix("c7r").and_then(|v| v.parse::<usize>().ok())
+                } else if let Some(v) = t.strip_prefix("c7r").and_then(|v| v.parse::<usize>().ok())
                 {
                     if v < 2 {
                         return Err(format!("c7r{v}: the run must be >= 2"));
@@ -199,7 +197,7 @@ pub fn enroll_product(
             }
         }
         let prev_best = best.as_ref().map(|(m, _)| *m);
-        if best.as_ref().map_or(true, |(m, _)| mn > *m) {
+        if best.as_ref().is_none_or(|(m, _)| mn > *m) {
             best = Some((mn, r));
         }
         match c3_step(mn, c.c3_min, tries, prev_best, i + 1 == n) {

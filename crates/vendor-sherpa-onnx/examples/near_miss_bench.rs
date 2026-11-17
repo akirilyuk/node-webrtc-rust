@@ -2653,7 +2653,7 @@ mod straddle {
         for ((s, e), clip, score) in wins {
             let w = (*s, *e, clip.clone());
             let pre_floor = rule == 1 && s + (e - s) / 2 < floor;
-            if *score >= threshold || pre_floor {
+            if *score >= threshold || pre_floor || (cand().c7_nm && *score >= 0.30) {
                 run = 0;
                 first = None;
                 prev = Some(w);
@@ -2663,7 +2663,7 @@ mod straddle {
                 first = Some(w.clone());
             }
             run += 1;
-            if run >= 2 {
+            if run >= cand().c7_run {
                 return Some((
                     node_webrtc_rust_speech::speaker_gate::bench_caller_to_other_cut(
                         prev.take(),
@@ -3056,6 +3056,69 @@ mod straddle {
         pairs: Vec<(usize, usize)>,
     }
 
+    /// caller-reject-rate chunk 2: candidate switches from `NM_CAND` (comma list, default none =
+    /// today's rules): `e<ms>` enrollment span, `c2` multi-segment enrollment, `c3` reject a poor
+    /// enrollment (bound `NM_C3_MIN`, default 0.35), `c4n<N>` repeated near-miss accept, `c7r<N>`
+    /// run of N `other` windows for a caller -> other cut, `c7nm` near-miss windows are not
+    /// `other` evidence.
+    #[derive(Clone, Copy)]
+    struct Cand {
+        enroll_ms: usize,
+        c2: bool,
+        c3: bool,
+        c3_min: f32,
+        c4: usize,
+        c7_run: usize,
+        c7_nm: bool,
+    }
+
+    fn cand() -> Cand {
+        static C: std::sync::OnceLock<Cand> = std::sync::OnceLock::new();
+        *C.get_or_init(|| {
+            let mut c = Cand {
+                enroll_ms: UL_ENROLL_MS,
+                c2: false,
+                c3: false,
+                c3_min: std::env::var("NM_C3_MIN")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0.35),
+                c4: 0,
+                c7_run: 2,
+                c7_nm: false,
+            };
+            for t in std::env::var("NM_CAND").unwrap_or_default().split(',') {
+                match t {
+                    "c2" => c.c2 = true,
+                    "c3" => c.c3 = true,
+                    "c7nm" => c.c7_nm = true,
+                    _ => {
+                        if let Some(v) = t.strip_prefix('e').and_then(|v| v.parse().ok()) {
+                            c.enroll_ms = v;
+                        } else if let Some(v) = t.strip_prefix("c4n").and_then(|v| v.parse().ok()) {
+                            c.c4 = v;
+                        } else if let Some(v) = t.strip_prefix("c7r").and_then(|v| v.parse().ok()) {
+                            c.c7_run = v;
+                        }
+                    }
+                }
+            }
+            c
+        })
+    }
+
+    /// C4: at least `N` windows in the near-miss band [0.30, thr) and none below 0.20.
+    fn c4_accept(wins: &[Win], threshold: f32) -> bool {
+        let n = cand().c4;
+        n > 0
+            && wins.iter().all(|w| w.1 >= 0.20)
+            && wins.iter().filter(|w| w.1 >= 0.30 && w.1 < threshold).count() >= n
+    }
+
+    /// Voiced ms consumed before the gate is enrolled: (set, mode, ms).
+    static UL_ENR: std::sync::Mutex<Vec<(String, &'static str, usize)>> =
+        std::sync::Mutex::new(Vec::new());
+
     static UL: std::sync::Mutex<Vec<UlRec>> = std::sync::Mutex::new(Vec::new());
     static UL_FAR: std::sync::Mutex<Vec<UlFar>> = std::sync::Mutex::new(Vec::new());
 
@@ -3215,6 +3278,7 @@ mod straddle {
                 finish(0, c2, false)
             }
             None if end_caller => finish(0, None, false),
+            None if c4_accept(&utt.wins, threshold) => finish(0, None, false),
             None => finish(kept(u), None, true),
         }
     }
@@ -3257,26 +3321,73 @@ mod straddle {
         (s, clean)
     }
 
-    /// Product enrollment: whole voiced utterances appended until >= 3000 ms, one embed of the
-    /// whole buffer. The bed (when set) is on the enrollment audio too.
+    /// Product enrollment: whole voiced utterances appended until >= the enrollment span, one embed
+    /// of the whole buffer (C2: mean of per-utterance unit embeddings; C3: reject a poor one).
+    /// The bed (when set) is on the enrollment audio too. Returns (reference, files used, voiced
+    /// ms consumed).
     fn ul_enroll(
         files: &[PathBuf],
         embedder: &Embedder,
         bed: Option<&[f32]>,
         salt: usize,
-    ) -> Result<Option<Vec<f32>>, String> {
+    ) -> Result<Option<(Vec<f32>, usize, usize)>, String> {
+        let c = cand();
         let mut buf: Vec<f32> = Vec::new();
+        let mut acc: Vec<f32> = Vec::new();
+        let (mut ms, mut tries) = (0usize, 0usize);
+        let mut best: Option<(f32, Vec<f32>)> = None;
         for (i, f) in files.iter().enumerate() {
             let a = load(f)?;
             let Some((on, off)) = voiced(&a) else {
                 continue;
             };
-            let mut c = slice(&a, on, off).to_vec();
-            add_bed(&mut c, bed.map(|b| (b, (salt + i * 7919) % b.len())));
-            buf.extend(c);
-            if buf.len() >= UL_ENROLL_MS * SAMPLES_PER_MS {
-                return Ok(embedder.embed(&buf).map(|(e, _)| e));
+            let mut u = slice(&a, on, off).to_vec();
+            add_bed(&mut u, bed.map(|b| (b, (salt + i * 7919) % b.len())));
+            ms += u.len() / SAMPLES_PER_MS;
+            if c.c2 && u.len() >= SAMPLES_PER_MS * 1000 {
+                if let Some((e, _)) = embedder.embed(&u) {
+                    let n = e.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-9);
+                    if acc.is_empty() {
+                        acc = vec![0.0; e.len()];
+                    }
+                    for (a, x) in acc.iter_mut().zip(&e) {
+                        *a += x / n;
+                    }
+                }
             }
+            buf.extend(u);
+            if buf.len() < c.enroll_ms * SAMPLES_PER_MS {
+                continue;
+            }
+            let reference = if c.c2 && !acc.is_empty() {
+                Some(acc.clone())
+            } else {
+                embedder.embed(&buf).map(|(e, _)| e)
+            };
+            let Some(r) = reference else {
+                return Ok(None);
+            };
+            if !c.c3 {
+                return Ok(Some((r, i + 1, ms)));
+            }
+            // C3: the enrollment's own 1.5 s sub-windows against the reference.
+            let w = WINDOW_MS * SAMPLES_PER_MS;
+            let mn = buf
+                .chunks_exact(w)
+                .filter_map(|ch| embedder.embed(ch).map(|(e, _)| cosine(&e, &r)))
+                .fold(f32::MAX, f32::min);
+            tries += 1;
+            if mn >= c.c3_min || tries >= 3 {
+                if best.as_ref().map_or(true, |(m, _)| mn > *m) {
+                    best = Some((mn, r));
+                }
+                return Ok(best.map(|(_, r)| (r, i + 1, ms)));
+            }
+            if best.as_ref().map_or(true, |(m, _)| mn > *m) {
+                best = Some((mn, r));
+            }
+            buf.clear();
+            acc.clear();
         }
         Ok(None)
     }
@@ -3397,26 +3508,16 @@ mod straddle {
                                 None => continue,
                             }
                         };
-                    let Some(reference) = ul_enroll(enroll_src, embedder, *cbed, salt)? else {
+                    let Some((reference, enr_files, enr_ms)) =
+                        ul_enroll(enroll_src, embedder, *cbed, salt)?
+                    else {
                         continue;
                     };
-                    // Files used by enrollment (same-session: not tested or pooled).
-                    let used = if mode == "same-session" {
-                        let mut buf = 0usize;
-                        let mut k = 0usize;
-                        for f in rest.iter() {
-                            k += 1;
-                            if let Some((on, off)) = voiced(&load(f)?) {
-                                buf += off - on;
-                            }
-                            if buf >= UL_ENROLL_MS {
-                                break;
-                            }
-                        }
-                        k
-                    } else {
-                        0
-                    };
+                    UL_ENR
+                        .lock()
+                        .unwrap()
+                        .push((format!("{cname}"), mode, enr_ms));
+                    let used = if mode == "same-session" { enr_files } else { 0 };
                     let t_n = if mode == "same-session" {
                         UL_TEST_SAME
                     } else {
@@ -3542,7 +3643,9 @@ mod straddle {
                                     rechecks: Vec::new(),
                                 };
                                 u_n += 1;
-                                let acc = utt.wins[0].1 >= threshold || {
+                                let acc = utt.wins[0].1 >= threshold
+                                    || c4_accept(&utt.wins, threshold)
+                                    || {
                                     let mut cache = SubCache::default();
                                     let (o, _, end) = product_o2c(
                                         &s, &utt, embedder, &reference, threshold, 3, &mut cache,
@@ -3683,6 +3786,24 @@ mod straddle {
                 e.utts,
                 e.accepted
             ));
+        }
+        md.push_str("\nCandidate `NM_CAND`=");
+        md.push_str(&std::env::var("NM_CAND").unwrap_or_default());
+        md.push_str(" enrollment voiced ms before the gate is enrolled (median / p90 / max over speakers):\n\n");
+        let enr = std::mem::take(&mut *UL_ENR.lock().unwrap());
+        for (set, mode) in &keys {
+            let mut v: Vec<usize> = enr
+                .iter()
+                .filter(|e| e.0 == *set && e.1 == *mode)
+                .map(|e| e.2)
+                .collect();
+            v.sort_unstable();
+            if let (Some(m), Some(x)) = (v.get(v.len() / 2), v.last()) {
+                md.push_str(&format!(
+                    "- {set}, {mode}: {m} / {} / {x}\n",
+                    v[(v.len() * 9 / 10).min(v.len() - 1)]
+                ));
+            }
         }
         md.push('\n');
         md

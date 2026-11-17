@@ -522,3 +522,20 @@ Mean over the voice's windows of the window-side cohort mean / std (`μt` / `σt
 | ---------------- | --------------- | ----------- | ------------------------------------------------------------------------ |
 | A utt-12 (key 3) | 22500           | 0.048       | -0.039, -0.009, 0.005, -0.072, -0.058, 0.033, 0.158, 0.245, 0.744, 0.714 |
 | B utt-10 (key 4) | 36400           | 0.056       | 0.084, -0.023, -0.011, 0.005, 0.587, 0.606, 0.557                        |
+
+## Bar-4 baseline with product enrollment (caller-reject-rate, chunk 2b-1)
+
+`FA_ENROLL=product` (bench-only): the enrollment is whole voiced utterances in file order, appended until 3000 ms of voiced speech, one embed (the product's rule); the windows come from the files after them. `NM_CAND=c2` takes the reference as the normalized mean of the per-utterance embeddings (utterances of at least 1 s), the same code as `near_miss_bench` (`support/cand.rs`). C4 and C7 do not change per-window scores, so their window FAR is that of the enrollment they sit on (today / C2); they are not re-run. The airport columns are the fixed-enrollment cross-check (the scene's own enrollment) and do not depend on the enrollment mode, so read them as unchanged, not as a product-mode result.
+
+Default-path check (`FA_ENROLL=fixed`, same build, `.test-logs/crr2b1-fa-default-fixed.log`, exit 0): the `1.5s raw @0.459` rows equal the published ones in every column, cross-session (0.1 / 0.1, 29 / 1560 pairs, 9 / 2 pairs >= 5 % / >= 20 %, max 24.3, FRR 9.3 / 8.1) and same-session (0.1 / 0.0, 31 / 1560, 8 / 3, max 18.8, FRR 3.0 / 2.0).
+
+`1.5s raw @0.459`, test-clean, 40 speakers, 1560 pairs (product enrollment, bar-4 baseline):
+
+| enrollment | mode | test FAR bed / clean % | pairs with FAR > 0 | pair FAR p50 / p90 / p99 / max bed % | pairs >= 5 % / >= 20 % | pair FAR max clean % | test FRR bed / clean % |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| product, today's rules | same-session | 0.2 / 0.1 | 26 | 0.0 / 0.0 / 1.5 / 65.7 | 9 / 3 | 38.6 | 2.5 / 1.5 |
+| product, C2 reference | same-session | 0.2 / 0.1 | 30 | 0.0 / 0.0 / 1.6 / 65.7 | 9 / 3 | 38.6 | 2.5 / 1.4 |
+| product, today's rules | cross-session | 0.1 / 0.1 | 20 | 0.0 / 0.0 / 1.3 / 62.7 | 8 / 3 | 36.0 | 7.2 / 5.4 |
+| product, C2 reference | cross-session | 0.1 / 0.1 | 23 | 0.0 / 0.0 / 1.3 / 62.7 | 9 / 3 | 36.0 | 7.0 / 5.4 |
+
+Logs: `.test-logs/crr2b1-fa-product-today.log`, `.test-logs/crr2b1-fa-product-c2.log` (exit 0). The product baseline is not the published fixed-enrollment row: same-session pairs >= 20 % are 3 in both, worst pair 65.7 % against 43.5 %. Bar 4 compares C2 with the product baseline, not with the fixed row.

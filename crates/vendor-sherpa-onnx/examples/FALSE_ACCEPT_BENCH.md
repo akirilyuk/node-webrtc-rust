@@ -615,7 +615,8 @@ Cross-session (information): FRR bed / clean 6.2 / 5.8 % on dev-clean and 16.8 /
 
 ### Candidates
 
-#### `nemo_en_speakerverification_speakernet` (S3 pass (118 ms / 14.0 ms))
+
+#### `nemo_en_speakerverification_speakernet` (S3 pass (118 ms / 14.0 ms); ran on older binary (no harness column), original scenes)
 
 | mode | set | cond | thr | FRR % | FAR % | FRR vs ref | FAR vs ref pt | pairs >= 5 % | pairs >= 20 % | new pair >= 20 % |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -628,11 +629,11 @@ Cross-session (information): FRR bed / clean 6.2 / 5.8 % on dev-clean and 16.8 /
 | cross-session | dev-other | bed | 0.550 | 41.0 (977/2381) | 0.4 (282/76192) | +144.9 % | +0.226 | 16 | 7 | **yes** |
 | cross-session | dev-other | clean | 0.569 | 46.2 (1101/2381) | 0.2 (165/76192) | +118.9 % | +0.063 | 10 | 3 | **yes** |
 
-S1 (worst relative FRR change, need <= -25 %): **FAIL** +2026.9 %. S2 (max FAR delta pt, pairs >= 5 % delta, new pair >= 20 %): **FAIL** +0.137 pt, +13, new pair. S4 (airport min reproduced margin at the bed threshold 0.543): **FAIL** -0.085.
+S1 (worst relative FRR change, need <= -25 %): **FAIL** +2026.9 %. S2 (max FAR delta pt, pairs >= 5 % delta, new pair >= 20 %): **FAIL** +0.137 pt, +13, new pair. S4 (airport min reproduced margin at the bed threshold 0.543): **FAIL** -0.085. Harness column: not available on this binary.
 
-Known bad callers (test-clean, FRR bed / clean %, own tuned thresholds; reference above): 61 M 26.6 / 40.5; 672 M 57.1 / 67.1; 1284 F 23.9 / 28.4; 8555 F 32.8 / 31.3; 4446 F 92.1 / 89.5.
+Known bad callers (test-clean, FRR bed / clean %, own tuned thresholds; same-session, then cross-session 4446): 61 M 26.6 / 40.5; 672 M 57.1 / 67.1; 1284 F 23.9 / 28.4; 8555 F 32.8 / 31.3; 4446 F 92.1 / 89.5.
 
-#### `3dspeaker_speech_campplus_sv_en_voxceleb_16k` (S3 pass (253 ms / 27.6 ms))
+#### `3dspeaker_speech_campplus_sv_en_voxceleb_16k` (S3 pass (253 ms / 27.6 ms); ran on fab_v2, regenerated scenes)
 
 | mode | set | cond | thr | FRR % | FAR % | FRR vs ref | FAR vs ref pt | pairs >= 5 % | pairs >= 20 % | new pair >= 20 % |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -645,11 +646,164 @@ Known bad callers (test-clean, FRR bed / clean %, own tuned thresholds; referenc
 | cross-session | dev-other | bed | 0.478 | 56.7 (1350/2381) | 0.2 (156/76192) | +238.3 % | +0.060 | 12 | 4 | **yes** |
 | cross-session | dev-other | clean | 0.500 | 58.9 (1403/2381) | 0.1 (52/76192) | +178.9 % | -0.085 | 5 | 0 | no |
 
-S1 (worst relative FRR change, need <= -25 %): **FAIL** +6907.7 %. S2 (max FAR delta pt, pairs >= 5 % delta, new pair >= 20 %): **FAIL** -0.027 pt, -1, new pair. S4 (airport min reproduced margin at the bed threshold 0.502): **FAIL** -0.437.
+S1 (worst relative FRR change, need <= -25 %): **FAIL** +6907.7 %. S2 (max FAR delta pt, pairs >= 5 % delta, new pair >= 20 %): **FAIL** -0.027 pt, -1, new pair. S4 (airport min reproduced margin at the bed threshold 0.502): **FAIL** -0.473. Harness: **check: EER 23.6 x ref**.
 
-Known bad callers (test-clean, FRR bed / clean %, own tuned thresholds; reference above): 61 M 100.0 / 100.0; 672 M 34.3 / 30.0; 1284 F 13.4 / 14.9; 8555 F 100.0 / 100.0; 4446 F 100.0 / 100.0.
+Known bad callers (test-clean, FRR bed / clean %, own tuned thresholds; same-session, then cross-session 4446): 61 M 100.0 / 100.0; 672 M 34.3 / 30.0; 1284 F 13.4 / 14.9; 8555 F 100.0 / 100.0; 4446 F 100.0 / 100.0.
 
-Verdict label: **FAIL (harness check flagged, cleared by probe)**. This is a result for the sherpa-onnx release asset (the 512-dim en file), not for the CAM++ architecture: upstream reports about 0.7 % EER for CAM++ on VoxCeleb, and the 192-dim zh_en asset below shares only the metadata, not the weights or the architecture variant. A one-off probe with the bench's extractor config (model, `num_threads` 1, 16 kHz float samples in [-1, 1]) separated speakers for the other 3D-Speaker model, whose metadata is the same (`framework` 3d-speaker, `normalize_samples` 1, `feature_normalize_type` global-mean): campplus zh_en advanced scored a LibriSpeech 1.8 s genuine median of 0.731 against a cross-speaker median of 0.078 (TitaNet-small: 0.707 / 0.050). campplus en scored 0.582 / 0.099, with per-speaker genuine medians split between 0.64-0.70 (1089, 1284, 2300) and 0.23-0.28 (61, 121, 5683). On the sherpa-onnx release's own wavs it scored leijun-sr-2 against fangjun's enrollment at 0.854, above leijun's own 0.663. Scaling the input by 32768 left its scores unchanged to 0.005, so the global-mean normalization is applied. The extractor config has no other documented field to set.
+Tune-set score check (`test-clean`; mode cond: gen p10 / p50, imp p50 / p99.9, EER %, sane): same bed: 0.216 / 0.466, 0.153 / 0.518, 15.36, **no**; same clean: 0.220 / 0.468, 0.151 / 0.514, 14.87, **no**; cros bed: 0.208 / 0.398, 0.148 / 0.485, 16.54, **no**; cros clean: 0.207 / 0.409, 0.146 / 0.492, 16.38, **no**.
 
-Status (partial): reference, `speakernet` and `3dspeaker campplus en` are measured above; both candidates fail S1, S2 and S4. Not yet measured: `campplus zh_en advanced`, `wespeaker CAM++`, `wespeaker CAM++_LM` (full screen) and `eres2net`, `titanet_large`, `resnet34`, `resnet34_LM` (accuracy only, "needs a scan change").
-Logs: `.test-logs/20261117-210015-fa-default-pre.log`, `.test-logs/20261117-211029-fa-default-post.log` (exit 0, identity diff equal), `.test-logs/20261117-212043-fa-screen-ref.log`, `.test-logs/20261117-213210-fa-screen-nemo_en_speakerverification_speakernet.log`, `.test-logs/20261117-215129-fa-screen-3dspeaker_speech_campplus_sv_en_voxceleb_16k.log` (all exit 0).
+#### `3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced` (S3 pass (261 ms / 27.3 ms); ran on fab_v2, regenerated scenes)
+
+| mode | set | cond | thr | FRR % | FAR % | FRR vs ref | FAR vs ref pt | pairs >= 5 % | pairs >= 20 % | new pair >= 20 % |
+|---|---|---|---|---|---|---|---|---|---|---|
+| same-session | dev-clean | bed | 0.457 | 0.5 (13/2791) | 0.1 (119/108849) | -69.0 % | +0.008 | 11 | 0 | no |
+| same-session | dev-clean | clean | 0.468 | 0.5 (14/2791) | 0.1 (70/108849) | -46.2 % | +0.002 | 4 | 0 | no |
+| same-session | dev-other | bed | 0.457 | 1.7 (38/2299) | 0.1 (61/73568) | -55.3 % | +0.018 | 4 | 2 | **yes** |
+| same-session | dev-other | clean | 0.468 | 1.7 (39/2299) | 0.1 (56/73568) | -44.3 % | +0.001 | 5 | 1 | **yes** |
+| cross-session | dev-clean | bed | 0.464 | 2.9 (86/2960) | 0.1 (88/115440) | -53.0 % | -0.006 | 5 | 0 | no |
+| cross-session | dev-clean | clean | 0.472 | 2.8 (82/2960) | 0.0 (54/115440) | -52.3 % | -0.008 | 3 | 0 | no |
+| cross-session | dev-other | bed | 0.464 | 13.3 (317/2381) | 0.1 (69/76192) | -20.6 % | -0.054 | 4 | 1 | **yes** |
+| cross-session | dev-other | clean | 0.472 | 14.7 (351/2381) | 0.1 (55/76192) | -30.2 % | -0.081 | 3 | 1 | **yes** |
+
+S1 (worst relative FRR change, need <= -25 %): pass -44.3 %. S2 (max FAR delta pt, pairs >= 5 % delta, new pair >= 20 %): **FAIL** +0.018 pt, +4, new pair. S4 (airport min reproduced margin at the bed threshold 0.457): pass +0.114. Harness: ok.
+
+Known bad callers (test-clean, FRR bed / clean %, own tuned thresholds; same-session, then cross-session 4446): 61 M 2.5 / 2.5; 672 M 21.4 / 17.1; 1284 F 17.9 / 10.4; 8555 F 0.0 / 0.0; 4446 F 97.4 / 100.0.
+
+Tune-set score check (`test-clean`; mode cond: gen p10 / p50, imp p50 / p99.9, EER %, sane): same bed: 0.607 / 0.721, 0.088 / 0.472, 0.63, yes; same clean: 0.614 / 0.728, 0.079 / 0.461, 0.52, yes; cros bed: 0.535 / 0.673, 0.090 / 0.471, 1.35, yes; cros clean: 0.548 / 0.681, 0.082 / 0.461, 1.64, yes.
+
+#### `wespeaker_en_voxceleb_CAM++` (S3 pass (260 ms / 27.1 ms); ran on older binary (no harness column), original scenes)
+
+| mode | set | cond | thr | FRR % | FAR % | FRR vs ref | FAR vs ref pt | pairs >= 5 % | pairs >= 20 % | new pair >= 20 % |
+|---|---|---|---|---|---|---|---|---|---|---|
+| same-session | dev-clean | bed | 0.890 | 99.5 (2778/2791) | 0.2 (216/108849) | +6514.3 % | +0.097 | 18 | 5 | **yes** |
+| same-session | dev-clean | clean | 0.869 | 98.6 (2753/2791) | 0.0 (23/108849) | +10488.5 % | -0.041 | 1 | 0 | no |
+| same-session | dev-other | bed | 0.890 | 99.4 (2285/2299) | 0.1 (99/73568) | +2588.2 % | +0.069 | 10 | 0 | no |
+| same-session | dev-other | clean | 0.869 | 98.6 (2267/2299) | 0.1 (50/73568) | +3138.6 % | -0.007 | 4 | 1 | **yes** |
+| cross-session | dev-clean | bed | 0.878 | 98.2 (2907/2960) | 0.4 (467/115440) | +1488.5 % | +0.322 | 31 | 7 | **yes** |
+| cross-session | dev-clean | clean | 0.839 | 97.6 (2889/2960) | 0.1 (155/115440) | +1579.7 % | +0.080 | 12 | 2 | **yes** |
+| cross-session | dev-other | bed | 0.878 | 98.3 (2341/2381) | 0.3 (217/76192) | +486.7 % | +0.140 | 17 | 2 | **yes** |
+| cross-session | dev-other | clean | 0.839 | 99.2 (2361/2381) | 0.1 (56/76192) | +369.4 % | -0.080 | 3 | 0 | no |
+
+S1 (worst relative FRR change, need <= -25 %): **FAIL** +10488.5 %. S2 (max FAR delta pt, pairs >= 5 % delta, new pair >= 20 %): **FAIL** +0.097 pt, +11, new pair. S4 (airport min reproduced margin at the bed threshold 0.890): **FAIL** -0.491. Harness column: not available on this binary.
+
+Known bad callers (test-clean, FRR bed / clean %, own tuned thresholds; same-session, then cross-session 4446): 61 M 100.0 / 100.0; 672 M 100.0 / 100.0; 1284 F 94.0 / 100.0; 8555 F 100.0 / 100.0; 4446 F 100.0 / 100.0.
+
+#### `wespeaker_en_voxceleb_CAM++_LM` (S3 pass (265 ms / 27.9 ms); ran on older binary (no harness column), original scenes)
+
+| mode | set | cond | thr | FRR % | FAR % | FRR vs ref | FAR vs ref pt | pairs >= 5 % | pairs >= 20 % | new pair >= 20 % |
+|---|---|---|---|---|---|---|---|---|---|---|
+| same-session | dev-clean | bed | 0.773 | 98.9 (2760/2791) | 0.1 (121/108849) | +6471.4 % | +0.010 | 10 | 0 | no |
+| same-session | dev-clean | clean | 0.768 | 98.9 (2761/2791) | 0.0 (40/108849) | +10519.2 % | -0.026 | 2 | 1 | **yes** |
+| same-session | dev-other | bed | 0.773 | 98.9 (2273/2299) | 0.0 (19/73568) | +2574.1 % | -0.039 | 2 | 0 | no |
+| same-session | dev-other | clean | 0.768 | 98.5 (2265/2299) | 0.0 (3/73568) | +3135.7 % | -0.071 | 0 | 0 | no |
+| cross-session | dev-clean | bed | 0.727 | 98.5 (2916/2960) | 0.4 (474/115440) | +1493.4 % | +0.328 | 36 | 8 | **yes** |
+| cross-session | dev-clean | clean | 0.711 | 98.3 (2909/2960) | 0.2 (224/115440) | +1591.3 % | +0.139 | 13 | 5 | **yes** |
+| cross-session | dev-other | bed | 0.727 | 99.3 (2365/2381) | 0.1 (57/76192) | +492.7 % | -0.070 | 3 | 0 | no |
+| cross-session | dev-other | clean | 0.711 | 98.1 (2336/2381) | 0.2 (142/76192) | +364.4 % | +0.033 | 9 | 2 | **yes** |
+
+S1 (worst relative FRR change, need <= -25 %): **FAIL** +10519.2 %. S2 (max FAR delta pt, pairs >= 5 % delta, new pair >= 20 %): **FAIL** +0.010 pt, +3, new pair. S4 (airport min reproduced margin at the bed threshold 0.773): **FAIL** -0.681. Harness column: not available on this binary.
+
+Known bad callers (test-clean, FRR bed / clean %, own tuned thresholds; same-session, then cross-session 4446): 61 M 100.0 / 100.0; 672 M 100.0 / 100.0; 1284 F 100.0 / 100.0; 8555 F 100.0 / 100.0; 4446 F 100.0 / 100.0.
+
+#### `3dspeaker_speech_eres2net_sv_en_voxceleb_16k` (S3 FAIL (585 ms / 71.0 ms), needs a scan change; ran on fab_v2, regenerated scenes; accuracy only)
+
+| mode | set | cond | thr | FRR % | FAR % | FRR vs ref | FAR vs ref pt | pairs >= 5 % | pairs >= 20 % | new pair >= 20 % |
+|---|---|---|---|---|---|---|---|---|---|---|
+| same-session | dev-clean | bed | 0.460 | 2.6 (73/2791) | 0.1 (139/108849) | +73.8 % | +0.027 | 10 | 2 | **yes** |
+| same-session | dev-clean | clean | 0.477 | 2.1 (59/2791) | 0.1 (77/108849) | +126.9 % | +0.008 | 6 | 0 | no |
+| same-session | dev-other | bed | 0.460 | 6.7 (154/2299) | 0.1 (39/73568) | +81.2 % | -0.012 | 3 | 0 | no |
+| same-session | dev-other | clean | 0.477 | 7.0 (160/2299) | 0.0 (24/73568) | +128.6 % | -0.042 | 2 | 0 | no |
+| cross-session | dev-clean | bed | 0.465 | 4.2 (125/2960) | 0.1 (142/115440) | -31.7 % | +0.041 | 10 | 2 | **yes** |
+| cross-session | dev-clean | clean | 0.474 | 3.6 (108/2960) | 0.1 (123/115440) | -37.2 % | +0.052 | 10 | 0 | no |
+| cross-session | dev-other | bed | 0.465 | 13.1 (313/2381) | 0.1 (111/76192) | -21.6 % | +0.001 | 8 | 4 | **yes** |
+| cross-session | dev-other | clean | 0.474 | 12.5 (297/2381) | 0.1 (72/76192) | -41.0 % | -0.059 | 5 | 1 | **yes** |
+
+S1 (worst relative FRR change, need <= -25 %): **FAIL** +128.6 %. S2 (max FAR delta pt, pairs >= 5 % delta, new pair >= 20 %): **FAIL** +0.027 pt, +3, new pair. S4 (airport min reproduced margin at the bed threshold 0.460): pass +0.013. Harness: ok.
+
+Known bad callers (test-clean, FRR bed / clean %, own tuned thresholds; same-session, then cross-session 4446): 61 M 11.4 / 11.4; 672 M 28.6 / 27.1; 1284 F 16.4 / 17.9; 8555 F 4.5 / 4.5; 4446 F 76.3 / 80.3.
+
+Tune-set score check (`test-clean`; mode cond: gen p10 / p50, imp p50 / p99.9, EER %, sane): same bed: 0.548 / 0.684, 0.076 / 0.479, 1.15, yes; same clean: 0.566 / 0.698, 0.074 / 0.467, 0.94, yes; cros bed: 0.498 / 0.648, 0.076 / 0.475, 1.50, yes; cros clean: 0.512 / 0.661, 0.073 / 0.463, 1.35, yes.
+
+#### `nemo_en_titanet_large` (S3 FAIL (619 ms / 78.1 ms), needs a scan change; ran on fab_v2, regenerated scenes; accuracy only)
+
+| mode | set | cond | thr | FRR % | FAR % | FRR vs ref | FAR vs ref pt | pairs >= 5 % | pairs >= 20 % | new pair >= 20 % |
+|---|---|---|---|---|---|---|---|---|---|---|
+| same-session | dev-clean | bed | 0.462 | 1.2 (34/2791) | 0.1 (66/108849) | -19.0 % | -0.040 | 6 | 0 | no |
+| same-session | dev-clean | clean | 0.470 | 1.3 (37/2791) | 0.0 (20/108849) | +42.3 % | -0.044 | 0 | 0 | no |
+| same-session | dev-other | bed | 0.462 | 4.7 (107/2299) | 0.0 (35/73568) | +25.9 % | -0.018 | 4 | 1 | no |
+| same-session | dev-other | clean | 0.470 | 4.0 (93/2299) | 0.1 (42/73568) | +32.9 % | -0.018 | 4 | 1 | no |
+| cross-session | dev-clean | bed | 0.464 | 5.3 (157/2960) | 0.0 (55/115440) | -14.2 % | -0.035 | 7 | 0 | no |
+| cross-session | dev-clean | clean | 0.471 | 6.1 (181/2960) | 0.0 (23/115440) | +5.2 % | -0.035 | 1 | 0 | no |
+| cross-session | dev-other | bed | 0.464 | 14.4 (344/2381) | 0.1 (60/76192) | -13.8 % | -0.066 | 7 | 0 | no |
+| cross-session | dev-other | clean | 0.471 | 17.0 (404/2381) | 0.1 (62/76192) | -19.7 % | -0.072 | 5 | 1 | no |
+
+S1 (worst relative FRR change, need <= -25 %): **FAIL** +42.3 %. S2 (max FAR delta pt, pairs >= 5 % delta, new pair >= 20 %): **FAIL** -0.018 pt, +2, no new pair. S4 (airport min reproduced margin at the bed threshold 0.462): pass +0.025. Harness: ok.
+
+Known bad callers (test-clean, FRR bed / clean %, own tuned thresholds; same-session, then cross-session 4446): 61 M 5.1 / 3.8; 672 M 25.7 / 27.1; 1284 F 17.9 / 16.4; 8555 F 14.9 / 9.0; 4446 F 100.0 / 100.0.
+
+Tune-set score check (`test-clean`; mode cond: gen p10 / p50, imp p50 / p99.9, EER %, sane): same bed: 0.580 / 0.719, 0.049 / 0.484, 0.77, yes; same clean: 0.598 / 0.735, 0.038 / 0.460, 0.66, yes; cros bed: 0.495 / 0.665, 0.046 / 0.475, 1.74, yes; cros clean: 0.504 / 0.679, 0.035 / 0.458, 1.64, yes.
+
+#### `wespeaker_en_voxceleb_resnet34` (S3 FAIL (722 ms / 87.9 ms), needs a scan change; ran on fab_v2, regenerated scenes; accuracy only)
+
+| mode | set | cond | thr | FRR % | FAR % | FRR vs ref | FAR vs ref pt | pairs >= 5 % | pairs >= 20 % | new pair >= 20 % |
+|---|---|---|---|---|---|---|---|---|---|---|
+| same-session | dev-clean | bed | 0.878 | 73.1 (2041/2791) | 0.1 (55/108849) | +4759.5 % | -0.051 | 4 | 0 | no |
+| same-session | dev-clean | clean | 0.856 | 58.7 (1639/2791) | 0.0 (18/108849) | +6203.8 % | -0.046 | 1 | 0 | no |
+| same-session | dev-other | bed | 0.878 | 71.5 (1643/2299) | 0.2 (172/73568) | +1832.9 % | +0.169 | 10 | 3 | **yes** |
+| same-session | dev-other | clean | 0.856 | 59.0 (1357/2299) | 0.2 (170/73568) | +1838.6 % | +0.156 | 9 | 5 | **yes** |
+| cross-session | dev-clean | bed | 0.885 | 88.6 (2624/2960) | 0.0 (28/115440) | +1333.9 % | -0.058 | 1 | 0 | no |
+| cross-session | dev-clean | clean | 0.859 | 74.9 (2217/2960) | 0.0 (18/115440) | +1189.0 % | -0.039 | 0 | 0 | no |
+| cross-session | dev-other | bed | 0.885 | 86.6 (2061/2381) | 0.2 (121/76192) | +416.5 % | +0.014 | 9 | 1 | **yes** |
+| cross-session | dev-other | clean | 0.859 | 79.5 (1894/2381) | 0.2 (147/76192) | +276.5 % | +0.039 | 13 | 2 | **yes** |
+
+S1 (worst relative FRR change, need <= -25 %): **FAIL** +6203.8 %. S2 (max FAR delta pt, pairs >= 5 % delta, new pair >= 20 %): **FAIL** +0.169 pt, +8, new pair. S4 (airport min reproduced margin at the bed threshold 0.878): **FAIL** -0.164. Harness: **check: EER 13.6 x ref**.
+
+Known bad callers (test-clean, FRR bed / clean %, own tuned thresholds; same-session, then cross-session 4446): 61 M 78.5 / 67.1; 672 M 85.7 / 67.1; 1284 F 79.1 / 59.7; 8555 F 92.5 / 83.6; 4446 F 100.0 / 100.0.
+
+Tune-set score check (`test-clean`; mode cond: gen p10 / p50, imp p50 / p99.9, EER %, sane): same bed: 0.740 / 0.848, 0.640 / 0.883, 12.79, **no**; same clean: 0.748 / 0.841, 0.595 / 0.853, 8.28, **no**; cros bed: 0.733 / 0.836, 0.646 / 0.887, 14.58, **no**; cros clean: 0.732 / 0.830, 0.598 / 0.855, 10.50, **no**.
+
+#### `wespeaker_en_voxceleb_resnet34_LM` (S3 FAIL (738 ms / 87.4 ms), needs a scan change; ran on fab_v2, regenerated scenes; accuracy only)
+
+| mode | set | cond | thr | FRR % | FAR % | FRR vs ref | FAR vs ref pt | pairs >= 5 % | pairs >= 20 % | new pair >= 20 % |
+|---|---|---|---|---|---|---|---|---|---|---|
+| same-session | dev-clean | bed | 0.903 | 96.9 (2705/2791) | 0.0 (24/108849) | +6340.5 % | -0.079 | 0 | 0 | no |
+| same-session | dev-clean | clean | 0.890 | 95.2 (2658/2791) | 0.0 (7/108849) | +10123.1 % | -0.056 | 0 | 0 | no |
+| same-session | dev-other | bed | 0.903 | 91.5 (2103/2299) | 0.1 (94/73568) | +2374.1 % | +0.063 | 7 | 1 | **yes** |
+| same-session | dev-other | clean | 0.890 | 87.6 (2013/2299) | 0.1 (63/73568) | +2775.7 % | +0.011 | 5 | 0 | no |
+| cross-session | dev-clean | bed | 0.907 | 99.1 (2932/2960) | 0.0 (14/115440) | +1502.2 % | -0.070 | 1 | 0 | no |
+| cross-session | dev-clean | clean | 0.894 | 98.0 (2901/2960) | 0.0 (5/115440) | +1586.6 % | -0.050 | 0 | 0 | no |
+| cross-session | dev-other | bed | 0.907 | 95.5 (2274/2381) | 0.1 (97/76192) | +469.9 % | -0.017 | 6 | 0 | no |
+| cross-session | dev-other | clean | 0.894 | 93.4 (2223/2381) | 0.1 (69/76192) | +341.9 % | -0.063 | 4 | 0 | no |
+
+S1 (worst relative FRR change, need <= -25 %): **FAIL** +10123.1 %. S2 (max FAR delta pt, pairs >= 5 % delta, new pair >= 20 %): **FAIL** +0.063 pt, +5, new pair. S4 (airport min reproduced margin at the bed threshold 0.903): **FAIL** -0.223. Harness: **check: EER 25.2 x ref**.
+
+Known bad callers (test-clean, FRR bed / clean %, own tuned thresholds; same-session, then cross-session 4446): 61 M 89.9 / 83.5; 672 M 100.0 / 97.1; 1284 F 100.0 / 98.5; 8555 F 100.0 / 100.0; 4446 F 100.0 / 100.0.
+
+Tune-set score check (`test-clean`; mode cond: gen p10 / p50, imp p50 / p99.9, EER %, sane): same bed: 0.715 / 0.822, 0.656 / 0.907, 19.30, **no**; same clean: 0.698 / 0.810, 0.606 / 0.887, 15.89, **no**; cros bed: 0.699 / 0.810, 0.659 / 0.910, 21.46, **no**; cros clean: 0.677 / 0.795, 0.607 / 0.890, 17.98, **no**.
+
+Verdict label: **FAIL (harness check flagged, cleared by probe)**. This is a result for the sherpa-onnx release asset (the 512-dim en file), not for the CAM++ architecture: upstream reports about 0.7 % EER for CAM++ on VoxCeleb, and the 192-dim zh_en asset in this section shares only the metadata, not the weights or the architecture variant. A one-off probe with the bench's extractor config (model, `num_threads` 1, 16 kHz float samples in [-1, 1]) separated speakers for the other 3D-Speaker model, whose metadata is the same (`framework` 3d-speaker, `normalize_samples` 1, `feature_normalize_type` global-mean): campplus zh_en advanced scored a LibriSpeech 1.8 s genuine median of 0.731 against a cross-speaker median of 0.078 (TitaNet-small: 0.707 / 0.050). campplus en scored 0.582 / 0.099, with per-speaker genuine medians split between 0.64-0.70 (1089, 1284, 2300) and 0.23-0.28 (61, 121, 5683). On the sherpa-onnx release's own wavs it scored leijun-sr-2 against fangjun's enrollment at 0.854, above leijun's own 0.663. Scaling the input by 32768 left its scores unchanged to 0.005, so the global-mean normalization is applied. The extractor config has no other documented field to set.
+
+### Verdict (plan §5 bar S1-S4)
+
+**No model passes S1-S4.** Only `campplus zh_en advanced` passes S1 (-44.3 %, need <= -25 %), and it fails S2 (+0.018 pt FAR, +4 pairs >= 5 %, a new pair >= 20 %). Its S4 airport margin was -0.066 on the original scenes and is +0.114 on the regenerated ones. S4 therefore depends on the TTS build that produced the airport scenes, which makes it weak evidence for any model: it never decides a verdict here, and zh_en fails S2 either way. `titanet_large` (accuracy only, S3 FAIL) has a higher FRR than TitaNet-small at a FAR-matched threshold (+42.3 % worst case, dev-clean clean), so the larger model does not buy accuracy. `eres2net` is +128.6 % FRR. Three models (`campplus en`, `wespeaker resnet34`, `resnet34_LM`) carry a harness flag (tune EER 23.6 / 13.6 / 25.2 x the reference). Only `campplus en` was probed (see its verdict label); `resnet34` and `resnet34_LM` were not probed, their S verdicts stand and they are flagged here, not cleared. The three older-binary models (`speakernet`, `wespeaker CAM++`, `CAM++_LM`) fail S1 by more than 2000 %, so neither the missing harness column nor their S4 on the original scenes can change their verdict.
+
+### S table (same-session, held-out dev-clean and dev-other, bed and clean; TitaNet-small @0.459 is the reference)
+
+| model | S3 | S1 | S2 | S4 | harness | binary / scenes |
+|---|---|---|---|---|---|---|
+| `nemo_en_speakerverification_speakernet` | pass | **FAIL** +2026.9 % | **FAIL** +0.137 pt, +13, new pair | **FAIL** -0.085 | n/a | older / original |
+| `3dspeaker_speech_campplus_sv_en_voxceleb_16k` | pass | **FAIL** +6907.7 % | **FAIL** -0.027 pt, -1, new pair | **FAIL** -0.473 | **check: EER 23.6 x ref** | fab_v2 / regenerated |
+| `3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced` | pass | pass -44.3 % | **FAIL** +0.018 pt, +4, new pair | pass +0.114 | ok | fab_v2 / regenerated |
+| `wespeaker_en_voxceleb_CAM++` | pass | **FAIL** +10488.5 % | **FAIL** +0.097 pt, +11, new pair | **FAIL** -0.491 | n/a | older / original |
+| `wespeaker_en_voxceleb_CAM++_LM` | pass | **FAIL** +10519.2 % | **FAIL** +0.010 pt, +3, new pair | **FAIL** -0.681 | n/a | older / original |
+| `3dspeaker_speech_eres2net_sv_en_voxceleb_16k` | FAIL | **FAIL** +128.6 % | **FAIL** +0.027 pt, +3, new pair | pass +0.013 | ok | fab_v2 / regenerated |
+| `nemo_en_titanet_large` | FAIL | **FAIL** +42.3 % | **FAIL** -0.018 pt, +2, no new pair | pass +0.025 | ok | fab_v2 / regenerated |
+| `wespeaker_en_voxceleb_resnet34` | FAIL | **FAIL** +6203.8 % | **FAIL** +0.169 pt, +8, new pair | **FAIL** -0.164 | **check: EER 13.6 x ref** | fab_v2 / regenerated |
+| `wespeaker_en_voxceleb_resnet34_LM` | FAIL | **FAIL** +10123.1 % | **FAIL** +0.063 pt, +5, new pair | **FAIL** -0.223 | **check: EER 25.2 x ref** | fab_v2 / regenerated |
+
+### Inputs, binaries and logs
+
+- Input loss and regeneration: at 2026-11-18 00:00 something outside the bench emptied `/tmp/fa-bench` (airport wavs, cache), `/tmp/sg-demo/bed` and the `test-clean` and `dev-clean` LibriSpeech trees. They were rebuilt in `/tmp/sms-inputs/` as the airport demo README and OpenSLR describe: Tocumen flac (sha256 `daf587a4a6d461c8ca62045c2feac8eae3c849329e22da5c9bfe73a41ead7d39`) decoded to 48 kHz mono f32le, scenes A and B from `build_scene.py` with `sherpa-onnx==1.13.2` converted to 16 kHz mono s16 (A 86.004 s, sha256 `235049bf2827b20949c6ec31126c061f064781197106c7177f2a0e85a7a7efce`; B 72.088 s, sha256 `8c04f6e42f8adf17d07edf21d1a068ce32bb5df846a9c1c52e562851b538bbb6`), `test-clean` and `dev-clean` re-downloaded (md5 matches OpenSLR) and decoded with `flac -d`.
+- The regenerated scenes are not the original ones: the TTS output differs in length (A 86.004 s vs 87.358 s, B 72.088 s vs 72.782 s), so TitaNet-small's reproduced airport margin moved from +0.098 to +0.086 (logged +0.055 unchanged). The LibriSpeech rows of the reference are identical before and after. S4 is judged per model on the same scenes as the reference row of the same run, so the regenerated pair is a valid S4 input, but a weak one (see the verdict).
+- Binaries: `speakernet`, `wespeaker CAM++` and `CAM++_LM` ran on the earlier build without the harness column and on the original scenes (`.test-logs/20261117-213210-...speakernet.log`, `...224449-...CAM++.log`, `...231007-...CAM++_LM.log`, exit 0). The other six models ran on the HEAD build (`fab_v2`) on the regenerated inputs.
+- Logs (all exit 0): `.test-logs/20261118-001200-fa-screen-ref.log` (reference on the new inputs), `.test-logs/20261118-002323-fa-screen-3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.log`, `.test-logs/20261118-004848-fa-screen-3dspeaker_speech_campplus_sv_en_voxceleb_16k.log`, `.test-logs/20261118-011405-fa-screen-3dspeaker_speech_eres2net_sv_en_voxceleb_16k.log`, `.test-logs/20261118-020423-fa-screen-nemo_en_titanet_large.log`, `.test-logs/20261118-025343-fa-screen-wespeaker_en_voxceleb_resnet34.log`, `.test-logs/20261118-035334-fa-screen-wespeaker_en_voxceleb_resnet34_LM.log`. Earlier: `.test-logs/20261117-210015-fa-default-pre.log`, `.test-logs/20261117-211029-fa-default-post.log` (identity diff equal). An earlier queue attempt for eres2net, titanet_large, resnet34 and resnet34_LM failed with exit 1 because of the input loss.

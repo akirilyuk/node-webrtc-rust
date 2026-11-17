@@ -231,7 +231,19 @@ fn fnv1a(text: &str) -> u64 {
 /// Per-scene seed: independent of which other scenes are generated (so `--quick` scenes equal
 /// their full-run counterparts). Masked to 48 bits so it is exact as a JSON number.
 fn scene_seed(id: &str) -> u64 {
-    Rng::new(SEED ^ fnv1a(id)).next_u64() & 0xFFFF_FFFF_FFFF
+    scene_seed_with(base_seed(), id)
+}
+
+fn scene_seed_with(base: u64, id: &str) -> u64 {
+    Rng::new(base ^ fnv1a(id)).next_u64() & 0xFFFF_FFFF_FFFF
+}
+
+/// `--seed <u64>` (a fresh reroll of the scenes); the default is [`SEED`], so existing sets are
+/// unchanged.
+static SEED_OVERRIDE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
+fn base_seed() -> u64 {
+    SEED_OVERRIDE.get().copied().unwrap_or(SEED)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1379,7 +1391,7 @@ fn manifest_json(scenes: &[Scene]) -> String {
     let mut out = String::new();
     out.push_str("{\n");
     out.push_str("  \"tool\": \"speaker_fixtures\",\n");
-    out.push_str(&format!("  \"seed\": {SEED},\n"));
+    out.push_str(&format!("  \"seed\": {},\n", base_seed()));
     out.push_str(&format!("  \"main_ref_db\": {MAIN_REF_DB:.1},\n"));
     out.push_str("  \"scenes\": [\n");
     for (i, scene) in scenes.iter().enumerate() {
@@ -1581,6 +1593,11 @@ fn parse_args() -> Result<Args, String> {
                 long_bystanders = text
                     .parse()
                     .map_err(|e| format!("--long-bystanders {text:?}: {e}"))?;
+            }
+            "--seed" => {
+                let text = value("--seed")?.to_string_lossy().into_owned();
+                let v: u64 = text.parse().map_err(|e| format!("--seed {text:?}: {e}"))?;
+                let _ = SEED_OVERRIDE.set(v);
             }
             "--other-to-caller" => {
                 let text = value("--other-to-caller")?.to_string_lossy().into_owned();
@@ -2094,6 +2111,10 @@ mod tests {
         assert_eq!(scene_seed("s1_tune_p00_m10"), scene_seed("s1_tune_p00_m10"));
         assert_ne!(scene_seed("s1_tune_p00_m10"), scene_seed("s1_tune_p01_m10"));
         assert!(scene_seed("x") < (1 << 48));
+        // The default seed is unchanged by `--seed`: scene_seed == scene_seed_with(SEED, ..), and a
+        // new seed changes it.
+        assert_eq!(scene_seed("s4_test_n05"), scene_seed_with(SEED, "s4_test_n05"));
+        assert_ne!(scene_seed_with(SEED, "s4_test_n05"), scene_seed_with(SEED + 1, "s4_test_n05"));
     }
 
     #[test]

@@ -997,6 +997,7 @@ fn main() {
 /// is adjusted (up to 3 VAD passes) until the measured `t` is within 40 ms of the target.
 mod straddle {
     use super::*;
+    use node_webrtc_rust_speech::speaker_gate::{CONFIDENT_OTHER_MAX_SCORE, NEAR_MISS_MIN_SCORE};
 
     const LEAD_MS: usize = 800;
     const TAIL_MS: usize = 2000;
@@ -2632,38 +2633,100 @@ mod straddle {
     /// `Msg::Inherit`): two `other` windows in a row confirm; rule 1 (jj) counts a window whose
     /// middle is before the floor as a reset. Returns the cut on U2's clock.
     fn u2_cut(
-        wins: &[((u32, u32), Vec<u8>, f32)],
+        wins: &[U2Win],
         floor: u32,
         threshold: f32,
         rule: usize,
+        ctx: Scan<'_>,
     ) -> Option<u32> {
-        u2_cut_span(wins, floor, threshold, rule).map(|(c, _)| c)
+        u2_cut_span(wins, floor, threshold, rule, ctx).map(|(c, _)| c)
+    }
+
+    type U2Win = ((u32, u32), Vec<u8>, f32);
+    /// Embedder and reference for the C7 `c7scan` veto (`None`: no scan available).
+    type Scan<'a> = Option<(&'a Embedder, &'a [f32])>;
+
+    /// The C7 switches of the caller -> other confirm.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct C7 {
+        run: usize,
+        nm: bool,
+        scan: bool,
     }
 
     /// [`u2_cut`] with the confirming window's span (same clock as `wins`): (cut, (start, end)).
+    /// The `NM_CAND` C7 switches apply; `c7scan` needs `ctx`.
     fn u2_cut_span(
-        wins: &[((u32, u32), Vec<u8>, f32)],
+        wins: &[U2Win],
         floor: u32,
         threshold: f32,
         rule: usize,
+        ctx: Scan<'_>,
+    ) -> Option<(u32, (u32, u32))> {
+        let c = cand();
+        let c7 = C7 {
+            run: c.c7_run,
+            nm: c.c7_nm,
+            scan: c.c7_scan,
+        };
+        let mut scan = |clip: &[u8]| -> bool {
+            let Some((embedder, reference)) = ctx else {
+                return false;
+            };
+            let samples: Vec<f32> = clip
+                .chunks_exact(2)
+                .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / 32768.0)
+                .collect();
+            let end = samples.len() / SAMPLES_PER_MS;
+            subs_for(&samples, 0, end, (P_SUB, P_HOP), embedder, reference)
+                .iter()
+                .any(|(_, sc, _)| *sc >= threshold)
+        };
+        u2_cut_core(wins, floor, threshold, rule, c7, &mut scan)
+    }
+
+    /// The caller -> other watch. A window at or above the threshold (or, rule 1, whose middle is
+    /// before the floor) resets the run. `c7.nm`: a near-miss window ([`NEAR_MISS_MIN_SCORE`],
+    /// threshold) is neutral: it neither counts toward the `other` run nor resets it, and does not
+    /// become `prev`. `c7.scan`: before a cut is confirmed, the 750/125 caller sub-window scan
+    /// runs over the confirming windows' clips (`scan` = a sub-window at or above the threshold);
+    /// a hit vetoes the cut and the run restarts (the scanned window becomes `prev`). The bench
+    /// scan has no verify budget (optimistic).
+    fn u2_cut_core(
+        wins: &[U2Win],
+        floor: u32,
+        threshold: f32,
+        rule: usize,
+        c7: C7,
+        scan: &mut dyn FnMut(&[u8]) -> bool,
     ) -> Option<(u32, (u32, u32))> {
         let mut prev: Option<(u32, u32, Vec<u8>)> = None;
         let mut first: Option<(u32, u32, Vec<u8>)> = None;
-        let mut run = 0;
-        for ((s, e), clip, score) in wins {
+        let mut run: Vec<&U2Win> = Vec::new();
+        for win in wins {
+            let ((s, e), clip, score) = win;
             let w = (*s, *e, clip.clone());
             let pre_floor = rule == 1 && s + (e - s) / 2 < floor;
-            if *score >= threshold || pre_floor || (cand().c7_nm && *score >= 0.30) {
-                run = 0;
+            if *score >= threshold || pre_floor {
+                run.clear();
                 first = None;
                 prev = Some(w);
                 continue;
             }
-            if run == 0 {
+            if c7.nm && *score >= NEAR_MISS_MIN_SCORE {
+                continue;
+            }
+            if run.is_empty() {
                 first = Some(w.clone());
             }
-            run += 1;
-            if run >= cand().c7_run {
+            run.push(win);
+            if run.len() >= c7.run {
+                if c7.scan && run.iter().any(|r| scan(&r.1)) {
+                    run.clear();
+                    first = None;
+                    prev = Some(w);
+                    continue;
+                }
                 return Some((
                     node_webrtc_rust_speech::speaker_gate::bench_caller_to_other_cut(
                         prev.take(),
@@ -2714,7 +2777,8 @@ mod straddle {
             b2_left: [0; 3],
         };
         for r in 0..3 {
-            let c2 = u2_cut(&wins, floor, threshold, r).map(|c| origin + c as usize);
+            let c2 = u2_cut(&wins, floor, threshold, r, Some((embedder, &p.reference)))
+                .map(|c| origin + c as usize);
             let hyp = words(c2.unwrap_or(u2_end).min(u2_end));
             rec.c2[r] = c2;
             rec.lost[r] = full.saturating_sub(lcs(cref, &hyp));
@@ -3058,10 +3122,11 @@ mod straddle {
 
     /// caller-reject-rate chunk 2: candidate switches from `NM_CAND` (comma list, default none =
     /// today's rules): `e<ms>` enrollment span, `c2` multi-segment enrollment, `c3` reject a poor
-    /// enrollment (bound `NM_C3_MIN`, default 0.35), `c4n<N>` repeated near-miss accept, `c7r<N>`
-    /// run of N `other` windows for a caller -> other cut, `c7nm` near-miss windows are not
-    /// `other` evidence.
-    #[derive(Clone, Copy)]
+    /// enrollment (bound `NM_C3_MIN`, default 0.35), `c4n<N>` (N >= 1) repeated near-miss accept,
+    /// `c7r<N>` (N >= 2) run of N `other` windows for a caller -> other cut, `c7nm` near-miss
+    /// windows are neutral for the caller -> other run, `c7scan` the 750/125 caller sub-window
+    /// scan vetoes a caller -> other cut. An unknown token is an error.
+    #[derive(Clone, Copy, Debug, PartialEq)]
     struct Cand {
         enroll_ms: usize,
         c2: bool,
@@ -3070,53 +3135,108 @@ mod straddle {
         c4: usize,
         c7_run: usize,
         c7_nm: bool,
+        c7_scan: bool,
+    }
+
+    fn parse_cand(s: &str, c3_min: f32) -> Result<Cand, String> {
+        let mut c = Cand {
+            enroll_ms: UL_ENROLL_MS,
+            c2: false,
+            c3: false,
+            c3_min,
+            c4: 0,
+            c7_run: 2,
+            c7_nm: false,
+            c7_scan: false,
+        };
+        for t in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+            match t {
+                "c2" => c.c2 = true,
+                "c3" => c.c3 = true,
+                "c7nm" => c.c7_nm = true,
+                "c7scan" => c.c7_scan = true,
+                _ => {
+                    if let Some(v) = t.strip_prefix('e').and_then(|v| v.parse().ok()) {
+                        c.enroll_ms = v;
+                    } else if let Some(v) =
+                        t.strip_prefix("c4n").and_then(|v| v.parse::<usize>().ok())
+                    {
+                        if v == 0 {
+                            return Err("c4n0: N must be >= 1".into());
+                        }
+                        c.c4 = v;
+                    } else if let Some(v) =
+                        t.strip_prefix("c7r").and_then(|v| v.parse::<usize>().ok())
+                    {
+                        if v < 2 {
+                            return Err(format!("c7r{v}: the run must be >= 2"));
+                        }
+                        c.c7_run = v;
+                    } else {
+                        return Err(format!("unknown NM_CAND token {t:?}"));
+                    }
+                }
+            }
+        }
+        Ok(c)
     }
 
     fn cand() -> Cand {
         static C: std::sync::OnceLock<Cand> = std::sync::OnceLock::new();
         *C.get_or_init(|| {
-            let mut c = Cand {
-                enroll_ms: UL_ENROLL_MS,
-                c2: false,
-                c3: false,
-                c3_min: std::env::var("NM_C3_MIN")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(0.35),
-                c4: 0,
-                c7_run: 2,
-                c7_nm: false,
-            };
-            for t in std::env::var("NM_CAND").unwrap_or_default().split(',') {
-                match t {
-                    "c2" => c.c2 = true,
-                    "c3" => c.c3 = true,
-                    "c7nm" => c.c7_nm = true,
-                    _ => {
-                        if let Some(v) = t.strip_prefix('e').and_then(|v| v.parse().ok()) {
-                            c.enroll_ms = v;
-                        } else if let Some(v) = t.strip_prefix("c4n").and_then(|v| v.parse().ok()) {
-                            c.c4 = v;
-                        } else if let Some(v) = t.strip_prefix("c7r").and_then(|v| v.parse().ok()) {
-                            c.c7_run = v;
-                        }
-                    }
-                }
-            }
-            c
+            let c3_min = std::env::var("NM_C3_MIN")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.35);
+            parse_cand(&std::env::var("NM_CAND").unwrap_or_default(), c3_min)
+                .unwrap_or_else(|e| panic!("NM_CAND: {e}"))
         })
     }
 
-    /// C4: at least `N` windows in the near-miss band [0.30, thr) and none below 0.20.
-    fn c4_accept(wins: &[Win], threshold: f32) -> bool {
-        let n = cand().c4;
+    /// C4 on window scores: at least `n` windows in the near-miss band [`NEAR_MISS_MIN_SCORE`,
+    /// thr) and none below [`CONFIDENT_OTHER_MAX_SCORE`]. `n == 0`: off. (Optimistic against the
+    /// product: an accept does not arm the caller -> other watch, as the product's upgrade arm.)
+    fn c4_scores(scores: &[f32], threshold: f32, n: usize) -> bool {
         n > 0
-            && wins.iter().all(|w| w.1 >= 0.20)
-            && wins.iter().filter(|w| w.1 >= 0.30 && w.1 < threshold).count() >= n
+            && scores.iter().all(|s| *s >= CONFIDENT_OTHER_MAX_SCORE)
+            && scores
+                .iter()
+                .filter(|s| **s >= NEAR_MISS_MIN_SCORE && **s < threshold)
+                .count()
+                >= n
+    }
+
+    fn c4_accept(wins: &[Win], threshold: f32) -> bool {
+        let scores: Vec<f32> = wins.iter().map(|w| w.1).collect();
+        c4_scores(&scores, threshold, cand().c4)
+    }
+
+    /// What the C3 enrollment loop does after one embed whose own sub-windows' minimum is `mn`
+    /// (`best` = the best minimum of the earlier tries, `tries` includes this one).
+    #[derive(Debug, PartialEq)]
+    enum C3Step {
+        Accept,
+        Retry,
+        /// Out of retries or files: the best minimum seen (this one included).
+        TakeBest(f32),
+    }
+
+    fn c3_step(mn: f32, min: f32, tries: usize, best: Option<f32>, exhausted: bool) -> C3Step {
+        if mn >= min {
+            C3Step::Accept
+        } else if tries >= 3 || exhausted {
+            C3Step::TakeBest(best.map_or(mn, |b| b.max(mn)))
+        } else {
+            C3Step::Retry
+        }
     }
 
     /// Voiced ms consumed before the gate is enrolled: (set, mode, ms).
     static UL_ENR: std::sync::Mutex<Vec<(String, &'static str, usize)>> =
+        std::sync::Mutex::new(Vec::new());
+
+    /// Speakers whose pre-test files could not enroll the gate: (set, mode).
+    static UL_SKIP: std::sync::Mutex<Vec<(String, &'static str)>> =
         std::sync::Mutex::new(Vec::new());
 
     static UL: std::sync::Mutex<Vec<UlRec>> = std::sync::Mutex::new(Vec::new());
@@ -3152,7 +3272,12 @@ mod straddle {
     /// is armed `caller` (floor 0, rule 0, as `Msg::Inherit`); only an utterance whose window 1 is
     /// `caller` has this watch (an upgrade or a deferred end-of-speech upgrade has none). Returns
     /// the cut and the confirming window's span (scene ms).
-    fn ul_c2o_whole(samples: &[f32], utt: &Utt, threshold: f32) -> Option<(usize, (usize, usize))> {
+    fn ul_c2o_whole(
+        samples: &[f32],
+        utt: &Utt,
+        threshold: f32,
+        ctx: Scan<'_>,
+    ) -> Option<(usize, (usize, usize))> {
         let wins: Vec<((u32, u32), Vec<u8>, f32)> = utt
             .wins
             .iter()
@@ -3169,7 +3294,7 @@ mod straddle {
                 )
             })
             .collect();
-        u2_cut_span(&wins, 0, threshold, 0)
+        u2_cut_span(&wins, 0, threshold, 0, ctx)
             .map(|(c, (cs, ce))| (c as usize, (cs as usize, ce as usize)))
     }
 
@@ -3261,20 +3386,22 @@ mod straddle {
                     let origin = cut / FRAME_MS * FRAME_MS;
                     let floor = found.map_or(300, |f| (f + 750).saturating_sub(origin)) as u32;
                     let w2 = u2_windows_raw(samples, ue, reference, &utt, k, origin, embedder);
-                    let c2 = u2_cut_span(&w2, floor, threshold, 1).map(|(c, (cs, ce))| {
-                        (
-                            origin,
-                            origin + c as usize,
-                            (origin + cs as usize, origin + ce as usize),
-                        )
-                    });
+                    let c2 = u2_cut_span(&w2, floor, threshold, 1, Some((embedder, reference)))
+                        .map(|(c, (cs, ce))| {
+                            (
+                                origin,
+                                origin + c as usize,
+                                (origin + cs as usize, origin + ce as usize),
+                            )
+                        });
                     finish(lost, c2, false)
                 } else {
                     finish(0, None, false)
                 }
             }
             None if end_caller && first_caller => {
-                let c2 = ul_c2o_whole(samples, &utt, threshold).map(|(c, span)| (u, c, span));
+                let c2 = ul_c2o_whole(samples, &utt, threshold, Some((embedder, reference)))
+                    .map(|(c, span)| (u, c, span));
                 finish(0, c2, false)
             }
             None if end_caller => finish(0, None, false),
@@ -3334,7 +3461,7 @@ mod straddle {
         let c = cand();
         let mut buf: Vec<f32> = Vec::new();
         let mut acc: Vec<f32> = Vec::new();
-        let (mut ms, mut tries) = (0usize, 0usize);
+        let (mut ms, mut tries, mut used) = (0usize, 0usize, 0usize);
         let mut best: Option<(f32, Vec<f32>)> = None;
         for (i, f) in files.iter().enumerate() {
             let a = load(f)?;
@@ -3377,19 +3504,35 @@ mod straddle {
                 .filter_map(|ch| embedder.embed(ch).map(|(e, _)| cosine(&e, &r)))
                 .fold(f32::MAX, f32::min);
             tries += 1;
-            if mn >= c.c3_min || tries >= 3 {
-                if best.as_ref().map_or(true, |(m, _)| mn > *m) {
-                    best = Some((mn, r));
+            if let Some(path) = std::env::var_os("NM_C3_DIST") {
+                // Self-score distribution of the enrollment's own 1.5 s sub-windows (never committed).
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                {
+                    let _ = writeln!(f, "{tries}\t{mn:.4}");
                 }
-                return Ok(best.map(|(_, r)| (r, i + 1, ms)));
             }
+            let prev_best = best.as_ref().map(|(m, _)| *m);
             if best.as_ref().map_or(true, |(m, _)| mn > *m) {
                 best = Some((mn, r));
             }
-            buf.clear();
-            acc.clear();
+            match c3_step(mn, c.c3_min, tries, prev_best, i + 1 == files.len()) {
+                C3Step::Accept | C3Step::TakeBest(_) => {
+                    used = i + 1;
+                    break;
+                }
+                C3Step::Retry => {
+                    buf.clear();
+                    acc.clear();
+                }
+            }
         }
-        Ok(None)
+        // C3 out of files before it accepted: take the best try instead of dropping the speaker.
+        let used = if used == 0 { files.len() } else { used };
+        Ok(best.map(|(_, r)| (r, used, ms)))
     }
 
     /// Oracle reference: mean of the unit embeddings of about 30 s of other same-session
@@ -3499,37 +3642,48 @@ mod straddle {
                 };
                 let salt = ci * 6151;
                 for mode in ["same-session", "cross-session"] {
-                    let (enroll_src, rest): (&Vec<PathBuf>, &Vec<PathBuf>) =
-                        if mode == "same-session" {
-                            (ch_a, ch_a)
-                        } else {
-                            match chapters[ci].get(1) {
-                                Some(b) => (ch_a, b),
-                                None => continue,
-                            }
-                        };
-                    let Some((reference, enr_files, enr_ms)) =
+                    // Decision rr (i): the test utterances are the LAST files of the test chapter, the
+                    // same for every candidate; enrollment draws only from the files before them.
+                    let (enroll_src, rest): (&[PathBuf], &Vec<PathBuf>) = if mode == "same-session"
+                    {
+                        (&ch_a[..ch_a.len().saturating_sub(UL_TEST_SAME)], ch_a)
+                    } else {
+                        match chapters[ci].get(1) {
+                            Some(b) => (&ch_a[..], b),
+                            None => continue,
+                        }
+                    };
+                    let set = format!("{cname}");
+                    let t_n = if mode == "same-session" {
+                        UL_TEST_SAME
+                    } else {
+                        UL_TEST_CROSS
+                    };
+                    let split_at = rest.len().saturating_sub(t_n);
+                    let Some((reference, _enr_files, enr_ms)) =
                         ul_enroll(enroll_src, embedder, *cbed, salt)?
                     else {
+                        UL_SKIP.lock().unwrap().push((set.clone(), mode));
                         continue;
                     };
                     UL_ENR
                         .lock()
                         .unwrap()
                         .push((format!("{cname}"), mode, enr_ms));
-                    let used = if mode == "same-session" { enr_files } else { 0 };
-                    let t_n = if mode == "same-session" {
-                        UL_TEST_SAME
-                    } else {
-                        UL_TEST_CROSS
-                    };
-                    let tests: Vec<&PathBuf> = rest.iter().skip(used).take(t_n).collect();
-                    let pool: Vec<PathBuf> =
-                        rest.iter().skip(used + t_n).take(40).cloned().collect();
+                    if std::env::var_os("NM_ENROLL_ONLY").is_some() {
+                        continue;
+                    }
+                    let tests: Vec<&PathBuf> = rest.iter().skip(split_at).collect();
+                    // Oracle pool: the (up to) 40 files just before the tests, the same for every
+                    // candidate (it may overlap the enrollment files: attribution only).
+                    let pool: Vec<PathBuf> = rest[..split_at]
+                        .iter()
+                        .skip(split_at.saturating_sub(40))
+                        .cloned()
+                        .collect();
                     let Some(oracle) = ul_oracle(&pool, embedder, *cbed, salt + 17)? else {
                         continue;
                     };
-                    let set = format!("{cname}");
                     let mut scenes: Vec<UlScene> = Vec::new();
                     for (r, f) in tests.iter().enumerate() {
                         let a = load(f)?;
@@ -3646,12 +3800,13 @@ mod straddle {
                                 let acc = utt.wins[0].1 >= threshold
                                     || c4_accept(&utt.wins, threshold)
                                     || {
-                                    let mut cache = SubCache::default();
-                                    let (o, _, end) = product_o2c(
-                                        &s, &utt, embedder, &reference, threshold, 3, &mut cache,
-                                    );
-                                    o.is_some() || end
-                                };
+                                        let mut cache = SubCache::default();
+                                        let (o, _, end) = product_o2c(
+                                            &s, &utt, embedder, &reference, threshold, 3,
+                                            &mut cache,
+                                        );
+                                        o.is_some() || end
+                                    };
                                 u_acc += usize::from(acc);
                             }
                         }
@@ -3791,7 +3946,12 @@ mod straddle {
         md.push_str(&std::env::var("NM_CAND").unwrap_or_default());
         md.push_str(" enrollment voiced ms before the gate is enrolled (median / p90 / max over speakers):\n\n");
         let enr = std::mem::take(&mut *UL_ENR.lock().unwrap());
+        let skip = std::mem::take(&mut *UL_SKIP.lock().unwrap());
         for (set, mode) in &keys {
+            let sk = skip.iter().filter(|e| e.0 == *set && e.1 == *mode).count();
+            md.push_str(&format!(
+                "- {set}, {mode}: speakers skipped (no enrollment from the files before the test set): {sk}\n"
+            ));
             let mut v: Vec<usize> = enr
                 .iter()
                 .filter(|e| e.0 == *set && e.1 == *mode)
@@ -4264,7 +4424,8 @@ mod straddle {
                 ],
                 rechecks: Vec::new(),
             };
-            let (cut, span) = ul_c2o_whole(&clean, &utt, 0.459).expect("two other windows confirm");
+            let (cut, span) =
+                ul_c2o_whole(&clean, &utt, 0.459, None).expect("two other windows confirm");
             assert_eq!(span, (5300, 6800));
             assert!(
                 cut <= 3800 + WINDOW_MS / 2,
@@ -4275,6 +4436,125 @@ mod straddle {
             eprintln!("blind-spot check: cut {cut} ms, confirm {span:?}, v_end {v_end}: old class {old}, new class {new}");
             assert_eq!(old, 2, "old classifier: (c) mid-speech");
             assert_eq!(new, 0, "new classifier: (a) bed tail");
+        }
+
+        fn drive(mins: &[f32], min: f32, exhausted_at_end: bool) -> (usize, C3Step) {
+            let mut best: Option<f32> = None;
+            for (i, mn) in mins.iter().enumerate() {
+                let tries = i + 1;
+                let last = i + 1 == mins.len();
+                let step = c3_step(*mn, min, tries, best, last && exhausted_at_end);
+                if step != C3Step::Retry {
+                    return (tries, step);
+                }
+                best = Some(best.map_or(*mn, |b| b.max(*mn)));
+            }
+            (mins.len(), C3Step::Retry)
+        }
+
+        #[test]
+        fn c3_takes_the_best_try_when_files_run_out() {
+            assert_eq!(drive(&[0.2, 0.25], 0.35, true), (2, C3Step::TakeBest(0.25)));
+        }
+
+        #[test]
+        fn c3_takes_the_best_try_after_three_tries() {
+            assert_eq!(
+                drive(&[0.2, 0.25, 0.22], 0.35, false),
+                (3, C3Step::TakeBest(0.25))
+            );
+        }
+
+        #[test]
+        fn c3_accepts_a_good_enrollment() {
+            assert_eq!(drive(&[0.4], 0.35, false), (1, C3Step::Accept));
+            assert_eq!(drive(&[0.2, 0.4], 0.35, false), (2, C3Step::Accept));
+        }
+
+        #[test]
+        fn parse_cand_rejects_unknown_tokens() {
+            assert!(parse_cand("c4", 0.35).is_err());
+            assert!(parse_cand("C2", 0.35).is_err());
+            assert!(parse_cand("c7r", 0.35).is_err());
+            assert!(parse_cand("c4n0", 0.35).is_err());
+            assert!(parse_cand("c7r1", 0.35).is_err());
+            assert!(parse_cand("c2,bogus", 0.35).is_err());
+        }
+
+        #[test]
+        fn parse_cand_defaults_and_fields() {
+            let d = parse_cand("", 0.35).unwrap();
+            assert_eq!(d.enroll_ms, 3000);
+            assert_eq!(d.c7_run, 2);
+            assert!(!(d.c2 || d.c3 || d.c7_nm || d.c7_scan));
+            assert_eq!(d.c4, 0);
+            let c = parse_cand("e5000,c2,c4n2,c7r3,c7nm", 0.4).unwrap();
+            assert_eq!((c.enroll_ms, c.c4, c.c7_run), (5000, 2, 3));
+            assert!(c.c2 && c.c7_nm && !c.c3 && !c.c7_scan);
+            assert_eq!(c.c3_min, 0.4);
+            assert!(parse_cand("c7scan,c3", 0.35).unwrap().c7_scan);
+        }
+
+        #[test]
+        fn c4_accept_band() {
+            let t = 0.42;
+            assert!(c4_scores(&[0.31, 0.35, 0.25], t, 2));
+            assert!(!c4_scores(&[0.31, 0.35, 0.19], t, 2));
+            assert!(!c4_scores(&[0.31, 0.25, 0.25], t, 2));
+            assert!(!c4_scores(&[0.42, 0.31], t, 2));
+            assert!(!c4_scores(&[0.31, 0.35, 0.25], t, 0));
+        }
+
+        fn win(i: u32, score: f32) -> U2Win {
+            ((i * 1500, i * 1500 + 1500), vec![i as u8; 4], score)
+        }
+
+        fn c7(run: usize, nm: bool, scan: bool) -> C7 {
+            C7 { run, nm, scan }
+        }
+
+        fn cut(wins: &[U2Win], c: C7, hit: u8) -> Option<(u32, u32)> {
+            let mut scan = |clip: &[u8]| clip.first() == Some(&hit);
+            u2_cut_core(wins, 0, 0.459, 0, c, &mut scan).map(|(_, span)| span)
+        }
+
+        #[test]
+        fn c7_near_miss_window_is_neutral() {
+            let w = [win(0, 0.1), win(1, 0.35), win(2, 0.1)];
+            // Neutral: [other, near-miss, other] with run 2 confirms on the third window.
+            assert_eq!(cut(&w, c7(2, true, false), 99), Some((3000, 4500)));
+            // Today's rules: the near-miss window counts as `other` and confirms on the second.
+            assert_eq!(cut(&w, c7(2, false, false), 99), Some((1500, 3000)));
+            // A near-miss window does not reset: [other, nm, nm] never confirms.
+            assert_eq!(
+                cut(
+                    &[win(0, 0.1), win(1, 0.35), win(2, 0.35)],
+                    c7(2, true, false),
+                    99
+                ),
+                None
+            );
+        }
+
+        #[test]
+        fn c7_run_of_three() {
+            let w = [win(0, 0.1), win(1, 0.1), win(2, 0.1)];
+            assert_eq!(cut(&w, c7(3, false, false), 99), Some((3000, 4500)));
+            assert_eq!(cut(&w[..2], c7(3, false, false), 99), None);
+        }
+
+        #[test]
+        fn c7_scan_hit_vetoes_the_cut_and_restarts_the_run() {
+            let w = [win(0, 0.1), win(1, 0.1), win(2, 0.1), win(3, 0.1)];
+            // A sub-window hit in window 1's clip vetoes the cut at window 1; the run restarts at
+            // window 2 and confirms at window 3 (window 1 is the new `prev`, so clean).
+            assert_eq!(cut(&w, c7(2, false, true), 1), Some((4500, 6000)));
+            // A hit in the first window of the run vetoes too.
+            assert_eq!(cut(&w[..2], c7(2, false, true), 0), None);
+            // No hit: the cut is confirmed as without the scan.
+            assert_eq!(cut(&w[..2], c7(2, false, true), 99), Some((1500, 3000)));
+            // The scan is off: a would-be hit does nothing.
+            assert_eq!(cut(&w[..2], c7(2, false, false), 0), Some((1500, 3000)));
         }
 
         #[test]

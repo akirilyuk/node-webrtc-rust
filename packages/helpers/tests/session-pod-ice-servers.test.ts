@@ -124,6 +124,32 @@ describe('SessionPod iceServers', () => {
     expect(byId).toEqual({ first: 'u:first', second: 'u:second' })
   })
 
+  it('session parked at signaling connect keeps its own servers while another session prepares', async () => {
+    const firstConnectGate = deferred<void>()
+    connectGates.set('first', firstConnectGate.promise)
+    const pod = makePod(async (id) => [
+      { urls: 'turn:turn.example.test', username: `u:${id}`, credential: `c:${id}` },
+    ])
+
+    const first = pod.ensureSession('first')
+    await new Promise((r) => setImmediate(r))
+    // First has resolved its servers and is parked at signaling.connect().
+    expect(hostCalls).toEqual([])
+
+    await pod.ensureSession('second')
+    expect(hostCalls.map((c) => c.sessionId)).toEqual(['second'])
+
+    firstConnectGate.resolve()
+    await first
+    const byId = Object.fromEntries(
+      hostCalls.map((c) => [
+        c.sessionId,
+        (c.iceServers as Array<{ username: string }>)[0]!.username,
+      ]),
+    )
+    expect(byId).toEqual({ first: 'u:first', second: 'u:second' })
+  })
+
   it('resolver rejection fails only that session with a named error', async () => {
     const pod = makePod(async (id) => {
       if (id === 'bad') throw new Error('mint failed')

@@ -612,3 +612,14 @@ Keep rule (test-clean words lost down in the bed or the clean row and at least l
 Not run in 2a: C2 + C4 N=3 together (the parent can add it in 2b), C1 8000, every held-out set, the `false_accept_bench`-scale baselines, long-other 12/18 s, airport A/B, the 375-takeover `caller_to_other_bench` set. The takeover rows above are the librispeech takeover scenes of `near_miss_bench`, not that set.
 
 Common Voice: not used. The official dataset page (commonvoice.mozilla.org/en/datasets) is script-rendered and shows no licence text to a plain fetch; the only CC0 statement reachable is the project README on GitHub, which is not the dataset page, and the download needs an account and terms acceptance. Per decision oo it is skipped.
+
+### Piper reroll, seed 20261117 (caller-reject-rate, chunk 2b-1)
+
+`speaker_fixtures --seed 20261117`, no-pause set (n, 400 scenes) and paused set (p, 200), same flags as the published sets. Window scores by `near_miss_bench --window-dist` (TitaNet-small, threshold 0.459; the 1.5 s windows of the merged and bystander-only utterances, the windows the rules act on; log `.test-logs/20261117-105800-crr2b1-window-dist.log`). The reroll exercises the same rule bands as the published sets:
+
+| set | windows | p10 | p50 | p90 | share < 0.20 | share in [0.30, thr) |
+| --- | --- | --- | --- | --- | --- | --- |
+| reroll n (400) | 1913 | 0.054 | 0.355 | 0.780 | 33.3 % | 11.9 % |
+| published n400 | 1976 | 0.043 | 0.358 | 0.783 | 34.2 % | 12.2 % |
+| reroll p (200) | 635 | 0.010 | 0.134 | 0.351 | 67.7 % | 12.9 % |
+| published p200 | 628 | 0.004 | 0.109 | 0.360 | 67.7 % | 12.4 % |

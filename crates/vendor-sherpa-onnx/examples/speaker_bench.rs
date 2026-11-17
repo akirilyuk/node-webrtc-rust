@@ -85,6 +85,8 @@ use node_webrtc_rust_speech::config::VadConfig;
 use node_webrtc_rust_speech::vad::{VadEngine, VadTransition};
 use sherpa_onnx::{SpeakerEmbeddingExtractor, SpeakerEmbeddingExtractorConfig};
 
+#[path = "support/cand.rs"]
+mod cand;
 #[path = "support/mod.rs"]
 mod support;
 
@@ -3602,6 +3604,22 @@ fn union_spans(segments: &[Seg], same_voice: bool) -> Vec<(usize, usize)> {
         .collect()
 }
 
+/// `LO_ENROLL=product`: product enrollment for `--long-other` (default: the segments concatenated).
+fn long_other_product_enroll() -> bool {
+    std::env::var("LO_ENROLL").is_ok_and(|v| v == "product")
+}
+
+/// C4 for a stream (`NM_CAND` c4n<N>, consecutive scheme only): the end of the first prefix of
+/// window scores that the near-miss rule accepts as a whole utterance (no window below the
+/// confident-other bound, at least N near-miss windows). Optimistic against the product, which
+/// decides at the end of the utterance and arms the caller -> other watch on an accept: here the
+/// accept lands at the earliest window, so the FAR is an upper bound.
+fn c4_first_accept(ends: &[usize], scores: &[f32], threshold: f32, n: usize) -> Option<usize> {
+    (0..scores.len())
+        .find(|&j| cand::c4_scores(&scores[..=j], threshold, n))
+        .map(|j| ends[j])
+}
+
 fn load_set_data(
     fx: &mut Fixtures,
     emb: &Embedder,
@@ -3617,6 +3635,25 @@ fn load_set_data(
         .collect();
     let mut refs = Vec::new();
     for scene in ref_scenes {
+        if long_other_product_enroll() {
+            // `LO_ENROLL=product` (bench-only): whole enrollment segments in order until the
+            // `NM_CAND` span, one embed (C2: mean of the per-segment unit embeddings of >= 1 s).
+            let ranges = enrollment_ranges(fx, scene)?;
+            let audio = fx.audio16(scene)?.clone();
+            let c = cand::cand();
+            let got = cand::enroll_product(
+                ranges.len(),
+                |i| {
+                    let (a, b) = ranges[i];
+                    Ok(Some(audio[(a * 16).min(audio.len())..(b * 16).min(audio.len())].to_vec()))
+                },
+                |x| emb.embed(x).map(|(e, _)| e),
+                &c,
+            )?;
+            let (e, _, _) = got.ok_or("product enrollment: too little enrollment speech")?;
+            refs.push((fx.scenes[scene].level_db, e));
+            continue;
+        }
         let enroll = enrollment(fx, scene)?;
         let (e, _) = emb.embed(&enroll).ok_or("enrollment too short to embed")?;
         refs.push((fx.scenes[scene].level_db, e));
@@ -3753,9 +3790,21 @@ fn stream_trials(
                 .iter()
                 .map(|e| e.as_ref().is_some_and(|e| cosine(r, e) >= threshold))
                 .collect();
+            let mut first_accept = first_accept_end(&ends, &accepts);
+            let n4 = cand::cand().c4;
+            if n4 > 0 && scheme == Scheme::Consecutive {
+                // A window without an embedding stops the prefix: it scores like `other`.
+                let scores: Vec<f32> = embs
+                    .iter()
+                    .map(|e| e.as_ref().map_or(0.0, |e| cosine(r, e)))
+                    .collect();
+                if let Some(c4) = c4_first_accept(&ends, &scores, threshold, n4) {
+                    first_accept = Some(first_accept.map_or(c4, |f| f.min(c4)));
+                }
+            }
             trials.push(StreamTrial {
                 len: stream.len(),
-                first_accept: first_accept_end(&ends, &accepts),
+                first_accept,
             });
         }
     }
@@ -4152,6 +4201,13 @@ fn long_other_run(
         args.checks,
         args.fixtures.display()
     );
+    if long_other_product_enroll() || std::env::var("NM_CAND").is_ok_and(|v| !v.is_empty()) {
+        md.push_str(&format!(
+            "Candidate: `LO_ENROLL`=`{}`, `NM_CAND`=`{}` (enrollment per `support/cand.rs`; C4 applies to the consecutive scheme of table B only, table C is not changed).\n\n",
+            std::env::var("LO_ENROLL").unwrap_or_default(),
+            std::env::var("NM_CAND").unwrap_or_default()
+        ));
+    }
     let mut runs = Vec::new();
     for path in model_files {
         let emb = Embedder::open(path, 1)?;
@@ -4198,6 +4254,17 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn c4_first_accept_needs_n_near_miss_windows_and_none_below_the_bound() {
+        let ends = [100, 200, 300, 400];
+        // Three near-miss windows, none below 0.20: accepted at the third window.
+        assert_eq!(c4_first_accept(&ends, &[0.31, 0.35, 0.33, 0.1], 0.459, 3), Some(300));
+        // A window below 0.20 before the third near-miss window: never accepted.
+        assert_eq!(c4_first_accept(&ends, &[0.31, 0.1, 0.33, 0.35], 0.459, 3), None);
+        // Off.
+        assert_eq!(c4_first_accept(&ends, &[0.31, 0.35, 0.33], 0.459, 0), None);
+    }
 
     #[test]
     fn recall_input_adds_other_only_from_the_onset() {

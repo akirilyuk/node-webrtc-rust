@@ -2637,6 +2637,16 @@ mod straddle {
         threshold: f32,
         rule: usize,
     ) -> Option<u32> {
+        u2_cut_span(wins, floor, threshold, rule).map(|(c, _)| c)
+    }
+
+    /// [`u2_cut`] with the confirming window's span (same clock as `wins`): (cut, (start, end)).
+    fn u2_cut_span(
+        wins: &[((u32, u32), Vec<u8>, f32)],
+        floor: u32,
+        threshold: f32,
+        rule: usize,
+    ) -> Option<(u32, (u32, u32))> {
         let mut prev: Option<(u32, u32, Vec<u8>)> = None;
         let mut first: Option<(u32, u32, Vec<u8>)> = None;
         let mut run = 0;
@@ -2654,7 +2664,7 @@ mod straddle {
             }
             run += 1;
             if run >= 2 {
-                return Some(
+                return Some((
                     node_webrtc_rust_speech::speaker_gate::bench_caller_to_other_cut(
                         prev.take(),
                         first.take()?,
@@ -2662,7 +2672,8 @@ mod straddle {
                         Some(floor),
                         rule == 2,
                     ),
-                );
+                    (*s, *e),
+                ));
             }
         }
         None
@@ -3053,16 +3064,32 @@ mod straddle {
         lost: usize,
         wins: usize,
         /// A caller -> other split cut the part kept as caller: (class, caller words cut out).
-        /// Class 0 = cut at or after the clean voiced end (bed-tail cut), 1 = within 1.5 s of the
-        /// 15 s truncation point (artefact), 2 = mid-speech.
+        /// Classed by the confirming window ([`c2o_class`]): 0 = confirmed by a bed-tail window,
+        /// 1 = confirmed by post-truncation audio (artefact), 2 = confirmed mid-speech.
         c2o: Option<(usize, usize)>,
+        /// The utterance's window scores (U1 grid), for the lost-utterance TSV.
+        scores: Vec<f32>,
+    }
+
+    /// Class of a caller -> other split by its confirming window `(cs, ce)` (scene ms): 1 when
+    /// the scene was truncated at 15 s and the window ends after the truncation point; else 0
+    /// when the window's middle is at or after the clean voiced end `v_end` (the window holds
+    /// mostly the bed after the caller stopped); else 2 (confirmed mid-speech).
+    fn c2o_class(trunc: bool, v_end: usize, (cs, ce): (usize, usize)) -> usize {
+        if trunc && ce > LEAD_MS + 15_000 {
+            1
+        } else if cs + (ce - cs) / 2 >= v_end {
+            0
+        } else {
+            2
+        }
     }
 
     /// Caller -> other watch on windows `from..` of an utterance kept as caller: the first window
     /// is armed `caller` (floor 0, rule 0, as `Msg::Inherit`); only an utterance whose window 1 is
     /// `caller` has this watch (an upgrade or a deferred end-of-speech upgrade has none). Returns
-    /// the cut (scene ms).
-    fn ul_c2o_whole(samples: &[f32], utt: &Utt, threshold: f32) -> Option<usize> {
+    /// the cut and the confirming window's span (scene ms).
+    fn ul_c2o_whole(samples: &[f32], utt: &Utt, threshold: f32) -> Option<(usize, (usize, usize))> {
         let wins: Vec<((u32, u32), Vec<u8>, f32)> = utt
             .wins
             .iter()
@@ -3079,7 +3106,8 @@ mod straddle {
                 )
             })
             .collect();
-        u2_cut(&wins, 0, threshold, 0).map(|c| c as usize)
+        u2_cut_span(&wins, 0, threshold, 0)
+            .map(|(c, (cs, ce))| (c as usize, (cs as usize, ce as usize)))
     }
 
     /// The shipped gate on one utterance `[u, ue)` (>= 1 window): window 1 `caller` keeps it;
@@ -3104,6 +3132,7 @@ mod straddle {
                 lost: 0,
                 wins: 0,
                 c2o: None,
+                scores: Vec::new(),
             };
         }
         let utt = Utt {
@@ -3130,38 +3159,35 @@ mod straddle {
             let (del, _) = head_align(&cref, &hyp);
             cref.len() - del.min(cref.len())
         };
-        let finish = |lost: usize, c2: Option<(usize, usize)>, dropped: bool| -> Judged {
-            // c2 = (origin of the kept part, cut): caller words cut out of the kept part.
-            let extra = c2.map_or(0, |(origin, cut)| {
-                let end = (ue + C2_PRE_ROLL_MS).min(total);
-                lcs(&cref, &words(origin, end))
-                    .saturating_sub(lcs(&cref, &words(origin, cut.min(end))))
-            });
-            let cls = c2.map(|(_, cut)| {
-                let trunc = clean.len() >= (LEAD_MS + 15_000 + TAIL_MS) * SAMPLES_PER_MS;
-                let v_end = voiced(clean).map_or(0, |v| v.1);
-                if trunc && cut + WINDOW_MS >= LEAD_MS + 15_000 {
-                    1
-                } else if cut >= v_end {
-                    0
-                } else {
-                    2
+        let finish =
+            |lost: usize, c2: Option<(usize, usize, (usize, usize))>, dropped: bool| -> Judged {
+                // c2 = (origin of the kept part, cut, confirming window span), scene ms: caller words
+                // cut out of the kept part.
+                let extra = c2.map_or(0, |(origin, cut, _)| {
+                    let end = (ue + C2_PRE_ROLL_MS).min(total);
+                    lcs(&cref, &words(origin, end))
+                        .saturating_sub(lcs(&cref, &words(origin, cut.min(end))))
+                });
+                let cls = c2.map(|(_, _, span)| {
+                    let trunc = clean.len() >= (LEAD_MS + 15_000 + TAIL_MS) * SAMPLES_PER_MS;
+                    let v_end = voiced(clean).map_or(0, |v| v.1);
+                    c2o_class(trunc, v_end, span)
+                });
+                let lost = lost + extra;
+                Judged {
+                    out: if dropped {
+                        UlOut::Dropped
+                    } else if lost > 0 {
+                        UlOut::Partly
+                    } else {
+                        UlOut::Caller
+                    },
+                    lost,
+                    wins: n,
+                    c2o: cls.map(|c| (c, extra)),
+                    scores: utt.wins.iter().map(|w| w.1).collect(),
                 }
-            });
-            let lost = lost + extra;
-            Judged {
-                out: if dropped {
-                    UlOut::Dropped
-                } else if lost > 0 {
-                    UlOut::Partly
-                } else {
-                    UlOut::Caller
-                },
-                lost,
-                wins: n,
-                c2o: cls.map(|c| (c, extra)),
-            }
-        };
+            };
         match o {
             Some((k, cut, u1, found)) => {
                 if dump {
@@ -3172,19 +3198,53 @@ mod straddle {
                     let origin = cut / FRAME_MS * FRAME_MS;
                     let floor = found.map_or(300, |f| (f + 750).saturating_sub(origin)) as u32;
                     let w2 = u2_windows_raw(samples, ue, reference, &utt, k, origin, embedder);
-                    let c2 =
-                        u2_cut(&w2, floor, threshold, 1).map(|c| (origin, origin + c as usize));
+                    let c2 = u2_cut_span(&w2, floor, threshold, 1).map(|(c, (cs, ce))| {
+                        (
+                            origin,
+                            origin + c as usize,
+                            (origin + cs as usize, origin + ce as usize),
+                        )
+                    });
                     finish(lost, c2, false)
                 } else {
                     finish(0, None, false)
                 }
             }
             None if end_caller && first_caller => {
-                let c2 = ul_c2o_whole(samples, &utt, threshold).map(|c| (u, c));
+                let c2 = ul_c2o_whole(samples, &utt, threshold).map(|(c, span)| (u, c, span));
                 finish(0, c2, false)
             }
             None if end_caller => finish(0, None, false),
             None => finish(kept(u), None, true),
+        }
+    }
+
+    /// Appends a lost utterance's window scores to the TSV at `NM_UL_WINDOWS` (never committed):
+    /// set, mode, speaker, outcome, words lost, comma-separated window scores.
+    fn ul_windows_tsv(set: &str, mode: &str, speaker: &str, j: &Judged) {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let Some(path) = std::env::var_os("NM_UL_WINDOWS") else {
+            return;
+        };
+        let _g = LOCK.lock().unwrap();
+        let scores: Vec<String> = j.scores.iter().map(|x| format!("{x:.3}")).collect();
+        let line = format!(
+            "{set}\t{mode}\t{speaker}\t{}\t{}\t{}\n",
+            if j.out == UlOut::Dropped {
+                "dropped"
+            } else {
+                "partly"
+            },
+            j.lost,
+            scores.join(",")
+        );
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = f.write_all(line.as_bytes());
         }
     }
 
@@ -3438,6 +3498,9 @@ mod straddle {
                                         4
                                     }
                                 });
+                            }
+                            if cause.is_some() {
+                                ul_windows_tsv(&set, mode, &sid, &j);
                             }
                             UL.lock().unwrap().push(UlRec {
                                 set: set.clone(),
@@ -4035,5 +4098,70 @@ mod straddle {
             ));
         }
         Ok(md)
+    }
+
+    /// The caller -> other classifier's blind spot (decision pp): window n-1 holds the last
+    /// caller words, window n lies mostly past the voiced end, both `other`. The cut lands at
+    /// most at window n-1's middle, so the old cut-point classifier says (c) mid-speech; the
+    /// confirming window says (a) bed tail.
+    #[cfg(test)]
+    mod classifier_tests {
+        use super::*;
+
+        /// The classifier before decision pp: by the cut point.
+        fn c2o_class_by_cut(trunc: bool, v_end: usize, cut: usize) -> usize {
+            if trunc && cut + WINDOW_MS >= LEAD_MS + 15_000 {
+                1
+            } else if cut >= v_end {
+                0
+            } else {
+                2
+            }
+        }
+
+        #[test]
+        fn confirming_window_past_voiced_end_is_bed_tail_not_mid_speech() {
+            // 800 ms lead, caller tone 800..5000 ms, 2 s silent tail.
+            let speech_end = 5000;
+            let mut clean = vec![0f32; LEAD_MS * SAMPLES_PER_MS];
+            clean.extend(
+                (0..(speech_end - LEAD_MS) * SAMPLES_PER_MS).map(|i| {
+                    0.3 * (2.0 * std::f32::consts::PI * 200.0 * i as f32 / 16_000.0).sin()
+                }),
+            );
+            clean.extend(vec![0f32; TAIL_MS * SAMPLES_PER_MS]);
+            let v_end = voiced(&clean).map(|v| v.1).unwrap();
+            assert_eq!(v_end, speech_end);
+            // Windows on the scene clock: caller, caller, other (holds the last caller words,
+            // 3800..5300), other (5300..6800, all past v_end).
+            let utt = Utt {
+                wins: vec![
+                    (800, 0.6, 0.0),
+                    (2300, 0.6, 0.0),
+                    (3800, 0.1, 0.0),
+                    (5300, 0.1, 0.0),
+                ],
+                rechecks: Vec::new(),
+            };
+            let (cut, span) = ul_c2o_whole(&clean, &utt, 0.459).expect("two other windows confirm");
+            assert_eq!(span, (5300, 6800));
+            assert!(
+                cut <= 3800 + WINDOW_MS / 2,
+                "cut {cut} past window n-1's middle"
+            );
+            let old = c2o_class_by_cut(false, v_end, cut);
+            let new = c2o_class(false, v_end, span);
+            eprintln!("blind-spot check: cut {cut} ms, confirm {span:?}, v_end {v_end}: old class {old}, new class {new}");
+            assert_eq!(old, 2, "old classifier: (c) mid-speech");
+            assert_eq!(new, 0, "new classifier: (a) bed tail");
+        }
+
+        #[test]
+        fn confirming_window_after_truncation_is_artefact() {
+            let ce = LEAD_MS + 15_000 + 700;
+            assert_eq!(c2o_class(true, LEAD_MS + 15_000, (ce - WINDOW_MS, ce)), 1);
+            assert_eq!(c2o_class(false, LEAD_MS + 14_000, (ce - WINDOW_MS, ce)), 0);
+            assert_eq!(c2o_class(true, 9000, (3000, 4500)), 2);
+        }
     }
 }

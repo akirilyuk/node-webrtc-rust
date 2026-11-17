@@ -2402,6 +2402,24 @@ mod librispeech {
         best.1
     }
 
+    /// One row of the S1/S2/S4 table. `v`: (S1 worst relative FRR change %, S2 max FAR delta pt,
+    /// S2 max pairs >= 5 % delta, S2 any new pair >= 20 %). `harness`: the same-session tune EER
+    /// ratio to the reference when the harness check flagged the model.
+    fn s_row(name: &str, v: (f64, f64, i64, bool), s4: f32, harness: Option<f64>) -> String {
+        let pf = |ok: bool| if ok { "pass" } else { "**FAIL**" };
+        format!(
+            "| {name} | {} {:+.1} % | {} {:+.3} pt, {:+}, {} | {} {s4:+.3} | {} |\n",
+            pf(v.0 <= -25.0),
+            v.0,
+            pf(v.1 <= 0.03 && v.2 <= 1 && !v.3),
+            v.1,
+            v.2,
+            if v.3 { "new pair" } else { "no new pair" },
+            pf(s4 >= 0.0),
+            harness.map_or("ok".to_string(), |r| format!("**check: EER {r:.1} x ref**")),
+        )
+    }
+
     /// Ascending copy as f64, for [`q`].
     fn sorted64<'a>(v: impl Iterator<Item = &'a f32>) -> Vec<f64> {
         let mut out: Vec<f64> = v.map(|x| f64::from(*x)).collect();
@@ -2498,9 +2516,11 @@ mod librispeech {
         );
         // thr[model][mode][cond]
         let mut thr = vec![[[0.0f32; 2]; 2]; models.len()];
-        // Harness check: a model whose tune EER is far above the reference's in any cell is not
-        // judged (its scores may come from a broken extractor setup, not from the model).
-        let mut unverified = vec![false; models.len()];
+        // Harness check: a model whose same-session tune EER is far above the reference's is
+        // flagged in the S table (its scores may come from a broken extractor setup); its S
+        // verdicts stand until a probe clears or condemns the harness.
+        let mut flagged = vec![false; models.len()];
+        let mut eer_ratio = vec![0.0f64; models.len()];
         let mut diag_md = String::from(
             "| model | mode | cond | gen p10 | gen p50 | imp p50 | imp p99.9 | EER % | sane (EER <= 3 x ref) | BAD_SAME gen p50 |\n|---|---|---|---|---|---|---|---|---|---|\n",
         );
@@ -2551,7 +2571,10 @@ mod librispeech {
                     let g = sorted64(tune_scores[m].0[k].iter().flatten());
                     let i = sorted64(tune_scores[m].1[k].iter().flatten().flatten());
                     let sane = eers[m] <= 3.0 * eers[0];
-                    unverified[m] |= !sane;
+                    if mode == Mode::SameSession {
+                        flagged[m] |= !sane;
+                        eer_ratio[m] = eer_ratio[m].max(eers[m] / eers[0].max(1e-9));
+                    }
                     let bad_p50 = tune_sp
                         .iter()
                         .enumerate()
@@ -2648,7 +2671,7 @@ mod librispeech {
             "\n#### Known bad callers on the tune set (`test-clean`), at the tuned thresholds\n\n",
         );
         md.push_str(&bad_md);
-        md.push_str("\n#### Tune-set score check (`test-clean`, raw cosine, harness sanity)\n\nA model with sane = no in any cell is reported as UNVERIFIED (harness check) instead of FAIL below.\n\n");
+        md.push_str("\n#### Tune-set score check (`test-clean`, raw cosine, harness sanity)\n\nA model with sane = no in any same-session cell is flagged in the harness column of the S table. Its S verdicts stand until a probe clears or condemns the harness (FALSE_ACCEPT_BENCH.md records which).\n\n");
         md.push_str(&diag_md);
         md.push_str("\n#### Airport A/B (reproduced offline, same-session thresholds, margin = min(score - thr))\n\nThe logged-score variant exists for TitaNet-small only (the logged cosines are its scores); for another model only the reproduced variant is defined.\n\n| model | thr bed | reproduced margin | logged margin | S4 |\n|---|---|---|---|---|\n");
         let mut s4 = vec![f32::INFINITY; models.len()];
@@ -2681,29 +2704,13 @@ mod librispeech {
                 if s4[m] >= 0.0 { "pass" } else { "**FAIL**" }
             ));
         }
-        md.push_str("\n#### S1, S2, S4 (same-session, every held-out set x condition; S3 is the chunk 1 table)\n\n| model | S1 (worst relative FRR change, need <= -25 %) | S2 (max FAR delta pt, need <= +0.03; pairs >= 5 % max delta, need <= +1; new pair >= 20 %) | S4 (airport min margin) |\n|---|---|---|---|\n");
+        md.push_str("\n#### S1, S2, S4 (same-session, every held-out set x condition; S3 is the chunk 1 table)\n\n| model | S1 (worst relative FRR change, need <= -25 %) | S2 (max FAR delta pt, need <= +0.03; pairs >= 5 % max delta, need <= +1; new pair >= 20 %) | S4 (airport min margin) | harness (tune EER x ref) |\n|---|---|---|---|---|\n");
         for m in 1..models.len() {
-            let v = verdict[m];
-            let fail = if unverified[m] {
-                "UNVERIFIED (harness check)"
-            } else {
-                "**FAIL**"
-            };
-            md.push_str(&format!(
-                "| {} | {} {:+.1} % | {} {:+.3} pt, {:+}, {} | {} {:+.3} |\n",
-                models[m].name,
-                if v.0 <= -25.0 { "pass" } else { fail },
-                v.0,
-                if v.1 <= 0.03 && v.2 <= 1 && !v.3 {
-                    "pass"
-                } else {
-                    fail
-                },
-                v.1,
-                v.2,
-                if v.3 { "new pair" } else { "no new pair" },
-                if s4[m] >= 0.0 { "pass" } else { fail },
+            md.push_str(&s_row(
+                &models[m].name,
+                verdict[m],
                 s4[m],
+                flagged[m].then_some(eer_ratio[m]),
             ));
         }
         print!("{md}");
@@ -2763,6 +2770,20 @@ mod librispeech {
         #[test]
         fn eer_of_identical_scores_is_half() {
             assert_eq!(eer(&[0.5, 0.5], &[0.5, 0.5]), 0.5);
+        }
+
+        #[test]
+        fn unverified_passing_row_is_flagged() {
+            let r = s_row("m", (-30.0, 0.0, 0, false), 0.1, Some(5.0));
+            assert!(r.contains("pass"), "{r}");
+            assert!(r.contains("check: EER 5.0"), "{r}");
+        }
+
+        #[test]
+        fn verified_failing_row_says_fail() {
+            let r = s_row("m", (10.0, 0.0, 0, false), 0.1, None);
+            assert!(r.contains("**FAIL**"), "{r}");
+            assert!(r.trim_end().ends_with("| ok |"), "{r}");
         }
 
         #[test]

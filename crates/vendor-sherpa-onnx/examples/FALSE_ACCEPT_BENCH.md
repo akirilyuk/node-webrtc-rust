@@ -543,3 +543,38 @@ Logs: `.test-logs/crr2b1-fa-product-today.log`, `.test-logs/crr2b1-fa-product-c2
 Known gap: the bench enrollment trims each file to its voiced span, while the product appends the whole VAD utterance (trailing hangover included, internal long pauses dropped). This is the same approximation as chunk 1, and slightly optimistic.
 
 Default-path re-check after the report-header change (`FA_ENROLL=fixed`, `.test-logs/crr2b1-fa-default-fixed2.log`): the fresh md differs from the earlier fixed run only in the TitaNet embed-latency line (17.5 / 18.7 ms vs 18.5 / 19.4 ms, machine timing); every table is identical.
+
+## Model check (plan `2026-11-17-speaker-model-screen`, chunk 1)
+
+Which English release assets of `k2-fsa/sherpa-onnx` tag `speaker-recongition-models` may be used, load through `SpeakerEmbeddingExtractorConfig`, and fit the gate's time budget. Licences and sources: `benchmarks/speaker/README.md` §Licenses (all 13 allow commercial use, so none is dropped). Models are in `/tmp/speaker-models` (sha256 checked against the release `checksum.txt`, all 13 match) and are never committed.
+
+Run (one thread, `num_threads: 1`, as the gate; 294 windows of 1.8 s = 1.5 s + 300 ms pre-roll and 327 windows of 750 ms, one per `test-clean` utterance cut 1 s in, same windows for every model, 5 warm-up embeds):
+
+```text
+heavy-run.sh --label model-check -- target/release/examples/false_accept_bench \
+  --model-check /tmp/speaker-models --librispeech <dir>/LibriSpeech --windows 300
+```
+
+S3 (plan §5): 19 sub-windows of 750 ms at p99 must fit 450 ms (19 x the p99 of one sub-window, the worst case of a serial scan), and the 1.5 s p99 must be at most 2x TitaNet-small's (2 x 19.2 = 38.4 ms).
+
+| model | licence | dim | 1.5 s p50 / p99 ms | 750 ms p50 / p99 ms | 19 x 750 ms p99 ms (vs 450) | S3 | into chunk 2 |
+|---|---|---|---|---|---|---|---|
+| `nemo_en_titanet_small` (reference, today) | Apache-2.0 (NeMo) | 192 | 17.7 / 19.2 | 8.0 / 8.5 | 162 | pass | reference |
+| `nemo_en_speakerverification_speakernet` | Apache-2.0 (NeMo) | 256 | 13.2 / 14.0 | 6.0 / 6.2 | 118 | pass | yes |
+| `3dspeaker_speech_campplus_sv_en_voxceleb_16k` | Apache-2.0 | 512 | 26.0 / 27.6 | 12.7 / 13.3 | 253 | pass | yes |
+| `3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced` | Apache-2.0 | 192 | 25.8 / 27.3 | 12.5 / 13.7 | 261 | pass | yes |
+| `wespeaker_en_voxceleb_CAM++` | Apache-2.0 / CC BY 4.0 | 512 | 26.1 / 27.1 | 12.9 / 13.7 | 260 | pass | yes |
+| `wespeaker_en_voxceleb_CAM++_LM` | Apache-2.0 / CC BY 4.0 | 512 | 26.2 / 27.9 | 12.8 / 13.9 | 265 | pass | yes |
+| `3dspeaker_speech_eres2net_sv_en_voxceleb_16k` | Apache-2.0 | 192 | 68.1 / 71.0 | 30.0 / 30.8 | 585 | FAIL (needs a scan change) | accuracy only |
+| `nemo_en_titanet_large` | CC BY 4.0 | 192 | 70.7 / 78.1 | 31.1 / 32.6 | 619 | FAIL (needs a scan change) | accuracy only |
+| `wespeaker_en_voxceleb_resnet34` | Apache-2.0 / CC BY 4.0 | 256 | 85.0 / 87.9 | 36.8 / 38.0 | 722 | FAIL (needs a scan change) | accuracy only |
+| `wespeaker_en_voxceleb_resnet34_LM` (1b, Piper only) | CC BY 4.0 | 256 | 84.7 / 87.4 | 37.0 / 38.8 | 738 | FAIL (needs a scan change) | accuracy only |
+| `wespeaker_en_voxceleb_resnet152_LM` | Apache-2.0 / CC BY 4.0 | 256 | 259.0 / 274.6 | 110.6 / 113.4 | 2154 | FAIL (needs a scan change) | accuracy only |
+| `wespeaker_en_voxceleb_resnet221_LM` | Apache-2.0 / CC BY 4.0 | 256 | 372.0 / 383.7 | 161.9 / 165.6 | 3146 | FAIL (needs a scan change) | accuracy only |
+| `wespeaker_en_voxceleb_resnet293_LM` | CC BY 4.0 | 256 | 492.8 / 518.7 | 209.9 / 214.0 | 4066 | FAIL (needs a scan change) | accuracy only |
+
+Notes:
+
+- S3 here is speed only. A FAIL model is not dropped: chunk 2 may still measure its accuracy, marked "needs a scan change"; it goes to the full bar only after a user decision (plan §5).
+- The cards of the 3D-Speaker and WeSpeaker models carry the licence as metadata only (empty body); WeSpeaker's docs say VoxCeleb-trained models follow CC BY 4.0. Both allow commercial use.
+- Log: `.test-logs/20261117-204227-model-check.log` (exit 0, heavy-run, 698 s). A first run with `--windows 200` (`.test-logs/20261117-203457-model-check.log`, exit 0) gave 181 windows of 1.8 s, below the 200 the plan asks for, so it was repeated with 300.

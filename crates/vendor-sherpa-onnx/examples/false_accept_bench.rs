@@ -656,7 +656,90 @@ fn fit_airport(models: &mut [Embedder], ap: &Airport, path: &Path) -> Result<Air
     })
 }
 
+/// Model check (plan `2026-11-17-speaker-model-screen`, chunk 1): embedding dimension and
+/// single-thread embed latency per model on the same real-speech windows.
+/// `--model-check <models dir> --librispeech <LibriSpeech dir> [--windows 200]`; no other flag.
+fn model_check(argv: &[String]) -> Result<(), String> {
+    let arg = |k: &str| {
+        argv.iter()
+            .position(|a| a == k)
+            .and_then(|i| argv.get(i + 1))
+    };
+    let dir = PathBuf::from(arg("--model-check").ok_or("--model-check needs a dir")?);
+    let root = PathBuf::from(arg("--librispeech").ok_or("missing --librispeech")?);
+    let n: usize = arg("--windows").map_or(Ok(200), |s| s.parse().map_err(|_| "bad --windows"))?;
+    let sr = SR as usize;
+    let (w15, w75) = (sr * (1500 + PRE_ROLL_MS) / 1000, sr * 750 / 1000);
+    // Windows: one per test-clean utterance (sorted), cut at a fixed offset inside the utterance.
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut stack = vec![root.join("test-clean")];
+    while let Some(d) = stack.pop() {
+        for e in fs::read_dir(&d).map_err(|e| format!("{}: {e}", d.display()))? {
+            let p = e.map_err(|e| e.to_string())?.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "wav") {
+                files.push(p);
+            }
+        }
+    }
+    files.sort();
+    let step = (files.len() / n).max(1);
+    let (mut a15, mut a75) = (Vec::new(), Vec::new());
+    for f in files.iter().step_by(step) {
+        let a = read_wav(f)?;
+        if a.len() > sr + w15 {
+            a15.push(a[sr..sr + w15].to_vec());
+        }
+        if a.len() > sr + w75 {
+            a75.push(a[sr..sr + w75].to_vec());
+        }
+        if a15.len() >= n && a75.len() >= n {
+            break;
+        }
+    }
+    println!(
+        "windows: {} x 1.8 s (1.5 s + 300 ms pre-roll), {} x 750 ms",
+        a15.len(),
+        a75.len()
+    );
+    println!("| model | dim | 1.5 s p50 / p99 ms | 750 ms p50 / p99 ms | 19 x 750 ms p99 ms | S3 scan <= 450 ms |");
+    let mut models: Vec<PathBuf> = fs::read_dir(&dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "onnx"))
+        .collect();
+    models.sort();
+    for m in models {
+        let mut emb = Embedder::open(&m)?;
+        let mut dim = 0;
+        for w in a15.iter().take(5) {
+            dim = emb.embed(w, None)?.len(); // warm-up
+        }
+        for w in &a15 {
+            emb.embed(w, Some(15))?;
+        }
+        for w in &a75 {
+            emb.embed(w, Some(75))?;
+        }
+        let (mut t15, mut t75) = (emb.times[&15].clone(), emb.times[&75].clone());
+        let (p50a, p99a) = (percentile(&mut t15, 0.5), percentile(&mut t15, 0.99));
+        let (p50b, p99b) = (percentile(&mut t75, 0.5), percentile(&mut t75, 0.99));
+        println!(
+            "| {} | {dim} | {p50a:.1} / {p99a:.1} | {p50b:.1} / {p99b:.1} | {:.0} | {} |",
+            emb.name,
+            19.0 * p99b,
+            if 19.0 * p99b <= 450.0 { "pass" } else { "FAIL" }
+        );
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.iter().any(|a| a == "--model-check") {
+        return model_check(&argv);
+    }
     let args = parse_args()?;
     fs::create_dir_all(&args.cache).map_err(|e| e.to_string())?;
     if let Some(root) = &args.librispeech {

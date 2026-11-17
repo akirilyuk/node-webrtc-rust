@@ -525,3 +525,23 @@ Other speakers' utterances (3 bystanders per caller, 3 files each) scored agains
 - The loss is concentrated in a few speakers: the median speaker loses 0 words in every row, the maximum is 1 - 102 words same-session and 152 - 295 cross-session, and the top 5 speakers hold 80 - 100 % of the lost words (672, 8555, 3729 in test-clean; 6319, 3576 in dev-clean; 1686 in dev-other same-session; 4446, 1988, 3915, 1585 cross-session).
 - Cause: the oracle reference recovers most lost utterances. Same-session: 13 of 24 (test-clean bed), 11 of 13 (clean), 16 of 22 (dev-clean bed), 9 of 9 (clean), 5 of 7 (dev-other bed); cross-session 24 of 25, 11 of 11, 28 of 30, 25 of 25, 48 of 54, 53 of 54. Removing the bed from the test utterance recovers 0 - 3 per bed row, short utterances 0 - 4, the speaker-model cause 0 - 4, unexplained 0 - 1.
 - Bystander accepts per set are 0 - 4 of about 240 - 340 utterances; the window FAR is 0.00 - 0.97 %, highest on dev-other same-session (one pair at or above 20 %).
+
+## Candidate bench against the ship bar (caller-reject-rate, chunk 2) - PARTIAL, no verdict
+
+Bench-only: `near_miss_bench --utterance-loss` takes `NM_CAND` (comma list: `e<ms>` enrollment span, `c2` multi-segment enrollment, `c3` reject a poor enrollment with bound `NM_C3_MIN`, `c4n<N>` repeated near-miss accept, `c7r<N>` N consecutive `other` windows for a caller -> other cut, `c7nm` near-miss windows are not `other` evidence). With `NM_CAND` unset the harness reproduces the chunk 1 baseline (test-clean same-session: bed 189 words / 15 dropped / 9 partly, clean 118 / 10 / 3). Commit e0318f26 is the first line of each log (`.test-logs/crr2-<label>-<set>.log`).
+
+Finding on enrollment: the product appends whole utterances, so the median enrollment already consumes 8.7 s of voiced speech on LibriSpeech (`enrollSpeechMs` 3000 is only the floor). C1 5000 therefore changes little (median 9.6 s) and moves the test set (a longer enrollment uses more files, so the tested utterances differ: 539 vs 557); C1 8000 was not run.
+
+Tuning set, test-clean, same-session (words lost above floor / dropped / partly; bystander-only utterances accepted):
+
+| candidate | bed words | bed dropped / partly | clean words | clean dropped / partly | words per speaker median / max (bed, clean) | bystander accepted (bed, clean) |
+| --- | --- | --- | --- | --- | --- | --- |
+| today | 189 | 15 / 9 | 118 | 10 / 3 | 0 / 66, 0 / 58 | 2/333, 0/337 |
+| C2 | 186 | 15 / 8 | 101 | 9 / 3 | 0 / 66, 0 / 41 | 2/333, 0/337 |
+| C1 5000 | 186 | 15 / 8 | 118 | 10 / 3 | 0 / 66, 0 / 58 | 2/324, 0/328 |
+
+Cross-session (not gating): C2 302 -> 315 words (bed), 184 -> 184 (clean); C1 5000 302 -> 327 (bed), 184 -> 197 (clean).
+
+Not run: C3, C2+C3, C1 8000, C4, C7 variants (switches are implemented and compile), and every held-out set (dev-clean, dev-other), the Piper reroll, the `false_accept_bench`-scale baselines, long-other 12/18 s, airport A/B and the C7 takeover set. No bar row is therefore evaluated and no candidate passes or fails the bar yet. C7's third variant (caller sub-window scan veto before the cut) is not implemented.
+
+Common Voice: not used. The official dataset page (commonvoice.mozilla.org/en/datasets) is script-rendered and shows no licence text to a plain fetch; the only CC0 statement reachable is the project README on GitHub, which is not the dataset page, and the download needs an account and terms acceptance. Per decision oo it is skipped.

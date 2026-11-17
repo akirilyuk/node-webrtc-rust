@@ -583,6 +583,10 @@ Notes:
 
 Per-window screen on real speech with the §5 bar fixed before any bench. Tune: LibriSpeech `test-clean` (40 speakers). Judged held-out: `dev-clean` (40 speakers) and `dev-other` (33 speakers; OpenSLR SLR12, CC BY 4.0), bed (Tocumen at -12 dB) and clean, same-session, product enrollment (`FA_ENROLL=product`), 1.5 s windows (+300 ms pre-roll), raw cosine. Cross-session is reported, not gating.
 
+Same-session split: this bench's existing LibriSpeech layout (enrollment from the voiced start of each speaker's longest chapter, windows from the rest of that chapter), not `near_miss_bench --ls-split` (last 15 files per chapter) that plan chunk 2 step 2 names. It is a fair comparison because the reference is re-measured on the same layout in every run, so every model is scored on identical enrollments and windows.
+
+Harness check: each run also prints, per model x mode x condition on the tune set, genuine p10/p50, impostor p50/p99.9, the EER and each known bad caller's genuine p50. A model whose tune EER is above 3 x TitaNet-small's in any cell is reported as "UNVERIFIED (harness check)" instead of FAIL.
+
 Threshold: TitaNet-small stays at 0.459. Every other model gets, per mode and condition, the **lowest** threshold whose pooled impostor accepts on the tune speakers are at most TitaNet-small's at 0.459. The plan text says "highest"; a higher threshold only rejects more callers, so the FAR-matched maximum-acceptance threshold is the lowest one that still matches the FAR. It is applied unchanged to both held-out sets.
 
 Run (one model per heavy-run invocation; TitaNet-small is re-run in each as the reference and its rows are identical across runs):
@@ -644,6 +648,8 @@ Known bad callers (test-clean, FRR bed / clean %, own tuned thresholds; referenc
 S1 (worst relative FRR change, need <= -25 %): **FAIL** +6907.7 %. S2 (max FAR delta pt, pairs >= 5 % delta, new pair >= 20 %): **FAIL** -0.027 pt, -1, new pair. S4 (airport min reproduced margin at the bed threshold 0.502): **FAIL** -0.437.
 
 Known bad callers (test-clean, FRR bed / clean %, own tuned thresholds; reference above): 61 M 100.0 / 100.0; 672 M 34.3 / 30.0; 1284 F 13.4 / 14.9; 8555 F 100.0 / 100.0; 4446 F 100.0 / 100.0.
+
+Verdict label: a model result, not a harness defect. A one-off probe with the bench's extractor config (model, `num_threads` 1, 16 kHz float samples in [-1, 1]) separated speakers for the other 3D-Speaker model, whose metadata is the same (`framework` 3d-speaker, `normalize_samples` 1, `feature_normalize_type` global-mean): campplus zh_en advanced scored a LibriSpeech 1.8 s genuine median of 0.731 against a cross-speaker median of 0.078 (TitaNet-small: 0.707 / 0.050). campplus en scored 0.582 / 0.099, with per-speaker genuine medians split between 0.64-0.70 (1089, 1284, 2300) and 0.23-0.28 (61, 121, 5683). On the sherpa-onnx release's own wavs it scored leijun-sr-2 against fangjun's enrollment at 0.854, above leijun's own 0.663. Scaling the input by 32768 left its scores unchanged to 0.005, so the global-mean normalization is applied. The extractor config has no other documented field to set.
 
 Status (partial): reference, `speakernet` and `3dspeaker campplus en` are measured above; both candidates fail S1, S2 and S4. Not yet measured: `campplus zh_en advanced`, `wespeaker CAM++`, `wespeaker CAM++_LM` (full screen) and `eres2net`, `titanet_large`, `resnet34`, `resnet34_LM` (accuracy only, "needs a scan change").
 Logs: `.test-logs/20261117-210015-fa-default-pre.log`, `.test-logs/20261117-211029-fa-default-post.log` (exit 0, identity diff equal), `.test-logs/20261117-212043-fa-screen-ref.log`, `.test-logs/20261117-213210-fa-screen-nemo_en_speakerverification_speakernet.log`, `.test-logs/20261117-215129-fa-screen-3dspeaker_speech_campplus_sv_en_voxceleb_16k.log` (all exit 0).

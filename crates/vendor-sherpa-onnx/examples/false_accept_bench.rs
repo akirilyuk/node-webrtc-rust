@@ -2382,6 +2382,33 @@ mod librispeech {
         v.get(n0).map_or(f32::MIN, |x| above(*x))
     }
 
+    /// Equal error rate of raw scores: at the candidate threshold (every score, and above them all)
+    /// where FRR (genuine < thr) and FAR (impostor >= thr) are closest, their mean.
+    fn eer(gen: &[f32], imp: &[f32]) -> f64 {
+        if gen.is_empty() || imp.is_empty() {
+            return 0.0;
+        }
+        let mut cands: Vec<f32> = gen.iter().chain(imp).copied().collect();
+        cands.push(f32::INFINITY);
+        let mut best = (f64::INFINITY, 0.0);
+        for t in cands {
+            let frr = rate(gen, t, false).0 as f64 / gen.len() as f64;
+            let far = rate(imp, t, true).0 as f64 / imp.len() as f64;
+            let d = (frr - far).abs();
+            if d < best.0 {
+                best = (d, (frr + far) / 2.0);
+            }
+        }
+        best.1
+    }
+
+    /// Ascending copy as f64, for [`q`].
+    fn sorted64<'a>(v: impl Iterator<Item = &'a f32>) -> Vec<f64> {
+        let mut out: Vec<f64> = v.map(|x| f64::from(*x)).collect();
+        out.sort_by(f64::total_cmp);
+        out
+    }
+
     /// Airport caller windows of one model: minimum of (score - thr) over the reproduced windows.
     fn airport_margin(
         models: &mut [Embedder],
@@ -2471,6 +2498,12 @@ mod librispeech {
         );
         // thr[model][mode][cond]
         let mut thr = vec![[[0.0f32; 2]; 2]; models.len()];
+        // Harness check: a model whose tune EER is far above the reference's in any cell is not
+        // judged (its scores may come from a broken extractor setup, not from the model).
+        let mut unverified = vec![false; models.len()];
+        let mut diag_md = String::from(
+            "| model | mode | cond | gen p10 | gen p50 | imp p50 | imp p99.9 | EER % | sane (EER <= 3 x ref) | BAD_SAME gen p50 |\n|---|---|---|---|---|---|---|---|---|---|\n",
+        );
         let mut bad_md = String::from(
             "| model | mode | speaker | FRR bed % | FRR clean % |\n|---|---|---|---|---|\n",
         );
@@ -2499,6 +2532,51 @@ mod librispeech {
                     } else {
                         far_matched(&tune_scores[m].1[k], n0)
                     };
+                }
+            }
+            for k in 0..2 {
+                let eers: Vec<f64> = (0..models.len())
+                    .map(|m| {
+                        let g: Vec<f32> = tune_scores[m].0[k].iter().flatten().copied().collect();
+                        let i: Vec<f32> = tune_scores[m].1[k]
+                            .iter()
+                            .flatten()
+                            .flatten()
+                            .copied()
+                            .collect();
+                        eer(&g, &i)
+                    })
+                    .collect();
+                for m in 0..models.len() {
+                    let g = sorted64(tune_scores[m].0[k].iter().flatten());
+                    let i = sorted64(tune_scores[m].1[k].iter().flatten().flatten());
+                    let sane = eers[m] <= 3.0 * eers[0];
+                    unverified[m] |= !sane;
+                    let bad_p50 = tune_sp
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, sp)| BAD_SAME.contains(&sp.id.as_str()))
+                        .map(|(a, sp)| {
+                            format!(
+                                "{} {:.3}",
+                                sp.id,
+                                q(&sorted64(tune_scores[m].0[k][a].iter()), 0.5)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    diag_md.push_str(&format!(
+                        "| {} | {} | {} | {:.3} | {:.3} | {:.3} | {:.3} | {:.2} | {} | {bad_p50} |\n",
+                        models[m].name,
+                        mode.name(),
+                        if k == 0 { "bed" } else { "clean" },
+                        q(&g, 0.1),
+                        q(&g, 0.5),
+                        q(&i, 0.5),
+                        q(&i, 0.999),
+                        100.0 * eers[m],
+                        if sane { "yes" } else { "**no**" },
+                    ));
                 }
             }
             let bad: &[&str] = if mode == Mode::SameSession {
@@ -2570,6 +2648,8 @@ mod librispeech {
             "\n#### Known bad callers on the tune set (`test-clean`), at the tuned thresholds\n\n",
         );
         md.push_str(&bad_md);
+        md.push_str("\n#### Tune-set score check (`test-clean`, raw cosine, harness sanity)\n\nA model with sane = no in any cell is reported as UNVERIFIED (harness check) instead of FAIL below.\n\n");
+        md.push_str(&diag_md);
         md.push_str("\n#### Airport A/B (reproduced offline, same-session thresholds, margin = min(score - thr))\n\nThe logged-score variant exists for TitaNet-small only (the logged cosines are its scores); for another model only the reproduced variant is defined.\n\n| model | thr bed | reproduced margin | logged margin | S4 |\n|---|---|---|---|---|\n");
         let mut s4 = vec![f32::INFINITY; models.len()];
         for m in 0..models.len() {
@@ -2604,20 +2684,25 @@ mod librispeech {
         md.push_str("\n#### S1, S2, S4 (same-session, every held-out set x condition; S3 is the chunk 1 table)\n\n| model | S1 (worst relative FRR change, need <= -25 %) | S2 (max FAR delta pt, need <= +0.03; pairs >= 5 % max delta, need <= +1; new pair >= 20 %) | S4 (airport min margin) |\n|---|---|---|---|\n");
         for m in 1..models.len() {
             let v = verdict[m];
+            let fail = if unverified[m] {
+                "UNVERIFIED (harness check)"
+            } else {
+                "**FAIL**"
+            };
             md.push_str(&format!(
                 "| {} | {} {:+.1} % | {} {:+.3} pt, {:+}, {} | {} {:+.3} |\n",
                 models[m].name,
-                if v.0 <= -25.0 { "pass" } else { "**FAIL**" },
+                if v.0 <= -25.0 { "pass" } else { fail },
                 v.0,
                 if v.1 <= 0.03 && v.2 <= 1 && !v.3 {
                     "pass"
                 } else {
-                    "**FAIL**"
+                    fail
                 },
                 v.1,
                 v.2,
                 if v.3 { "new pair" } else { "no new pair" },
-                if s4[m] >= 0.0 { "pass" } else { "**FAIL**" },
+                if s4[m] >= 0.0 { "pass" } else { fail },
                 s4[m],
             ));
         }
@@ -2663,6 +2748,32 @@ mod librispeech {
             assert_eq!(c.enroll_ms, ENROLL_MS);
             assert!(!c.c2);
             assert!(cand::parse_cand("c2,c4n3", 0.35).unwrap().c2);
+        }
+    }
+
+    #[cfg(test)]
+    mod screen_tests {
+        use super::*;
+
+        #[test]
+        fn eer_of_separable_scores_is_zero() {
+            assert_eq!(eer(&[0.9, 0.8], &[0.1, 0.2]), 0.0);
+        }
+
+        #[test]
+        fn eer_of_identical_scores_is_half() {
+            assert_eq!(eer(&[0.5, 0.5], &[0.5, 0.5]), 0.5);
+        }
+
+        #[test]
+        fn far_matched_admits_exactly_n0() {
+            let imp = vec![vec![vec![0.9f32, 0.6], vec![0.8, 0.7]]];
+            let flat: Vec<f32> = imp.iter().flatten().flatten().copied().collect();
+            let thr = far_matched(&imp, 2);
+            assert!(thr > 0.7 && thr <= 0.8, "{thr}");
+            assert_eq!(rate(&flat, thr, true).0, 2);
+            assert_eq!(rate(&flat, far_matched(&imp, 0), true).0, 0);
+            assert_eq!(far_matched(&imp, 4), f32::MIN);
         }
     }
 }

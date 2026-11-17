@@ -95,11 +95,13 @@ export {
   SessionPod,
   type SessionPodChangeEvent,
   type SessionPodCloseOutcome,
+  type IceServersOption,
   type SessionPodOptions,
   type SessionPodSessionInfo,
 } from './session-pod.js'
 export {
   SessionPodCapacityFullError,
+  SessionPodIceServersResolverError,
   SessionPodRecycleRequiredError,
 } from './session-pod-errors.js'
 

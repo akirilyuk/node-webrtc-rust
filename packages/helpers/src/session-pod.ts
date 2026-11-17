@@ -33,17 +33,34 @@ import {
 import type { VoiceSessionHandler } from './voice-session-handler.js'
 import {
   SessionPodCapacityFullError,
+  SessionPodIceServersResolverError,
   SessionPodRecycleRequiredError,
 } from './session-pod-errors.js'
 
 interface IceServerConfig {
   urls: string | string[]
+  username?: string
+  credential?: string
 }
+
+/**
+ * ICE servers for a session: a fixed list, or a function called once per session
+ * (with the session id) when its slot is prepared. Use the function form for
+ * per-session credentials such as short-lived TURN usernames.
+ */
+export type IceServersOption =
+  | IceServerConfig[]
+  | ((sessionId: string) => IceServerConfig[] | Promise<IceServerConfig[]>)
 
 export interface SessionPodOptions {
   /** WebSocket URL the pod uses to join rooms as the server-side peer. */
   signalingUrl: string
-  iceServers: IceServerConfig[]
+  /**
+   * ICE servers for every session, or a resolver called once per session when its slot is
+   * prepared. A resolver that throws or rejects fails only that session's preparation with
+   * {@link SessionPodIceServersResolverError} (`ice_servers_resolver_failed`).
+   */
+  iceServers: IceServersOption
   voiceConfig: VoiceAgentConfig
   /** When true (default), tear down the session slot once the last client disconnects. */
   teardownIdleSessions?: boolean
@@ -348,6 +365,16 @@ export class SessionPod {
     return clientId
   }
 
+  private async resolveIceServers(sessionId: string): Promise<IceServerConfig[]> {
+    const option = this.options.iceServers
+    if (typeof option !== 'function') return option
+    try {
+      return await option(sessionId)
+    } catch (err) {
+      throw new SessionPodIceServersResolverError(sessionId, err)
+    }
+  }
+
   private async prepareSessionSlot(sessionId: string): Promise<void> {
     const serverPeerId = this.options.serverPeerId ?? VOICE_AGENT_SERVER_PEER_ID
     const signaling = new SignalingClient({
@@ -355,11 +382,13 @@ export class SessionPod {
       room: sessionId,
       peerId: serverPeerId,
     })
+    // Resolve before any await another session could interleave with; keep the result local.
+    const iceServers = await this.resolveIceServers(sessionId)
     await signaling.connect()
 
     const voiceHandler = this.wrapVoiceHandler(sessionId, this.options.voiceHandler)
     const clientMixGraph = this.resolveClientMixGraph()
-    const host = new VoiceAgentSessionHost(signaling, this.options.iceServers, {
+    const host = new VoiceAgentSessionHost(signaling, iceServers, {
       voiceConfig: this.options.voiceConfig,
       sessionMode: this.options.sessionMode,
       sessionBudget: this.sessionBudget,

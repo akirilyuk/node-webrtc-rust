@@ -322,6 +322,8 @@ export const SERVER_PEER_ID = VOICE_AGENT_SERVER_PEER_ID
 
 interface IceServerConfig {
   urls: string | string[]
+  username?: string
+  credential?: string
 }
 
 interface ClientSession {

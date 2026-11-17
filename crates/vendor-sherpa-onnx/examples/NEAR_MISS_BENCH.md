@@ -641,3 +641,29 @@ Pooled consecutive FAR (accepted / 480) at T = 12 s and 18 s. Baseline = `LO_ENR
 | product + C2 + C4 N=3 | 3.12 % (15) | 5.62 % (27) | 17.92 % (86) | 19.17 % (92) |
 
 Reading: C2 is identical to the baseline in every cell (the product enrollment takes one segment: every reference scene's first enrollment segment is ≥ 4992 ms ≥ the 3000 ms span, so the C2 mean is that one embedding, identical by construction; bar 6 does not exercise C2 here). C4 N=3 leaves the mixed set unchanged and raises the one-voice consecutive FAR from 6.04 % / 8.54 % to 17.92 % / 19.17 %: a same-voice stream has many near-miss windows, so a repeated near-miss accept admits it. The sliding column is the same for all four candidates (6.04 / 9.79 mixed, 10.42 / 12.08 one voice at 12 / 18 s). C4 N=3 fails bar 6 (+10.6 pt one voice at 18 s against +0.5 pt; plan decision ww).
+
+### Bar 1 gate (decision ww) (caller-reject-rate, chunk 2b-2)
+
+Built at 0c923017. `near_miss_bench --utterance-loss`, today (NM_CAND "") vs C2 (NM_CAND `c2`), dev-clean and dev-other, Tocumen bed -12 dB and clean. Logs: `.test-logs/20261117-121352-crr2b2-gate-ul-{today,c2}-{dev-clean,dev-other}.log` (SHA and NM_CAND on line 1); outputs `/tmp/crr2b2g-ul-*.md`.
+
+Caller words lost above the floor, same-session (the binding enrollment, §5):
+
+| set | row | today | C2 | today ≥ 10 | mm verdict |
+| --- | --- | --- | --- | --- | --- |
+| dev-clean | bed | 241 | 237 | yes | pass (lower) |
+| dev-clean | clean | 199 | 199 | yes | **fail (equal, not strictly lower)** |
+| dev-other | bed | 60 | 52 | yes | pass (lower) |
+| dev-other | clean | 0 | 0 | no | pass (not higher) |
+
+Cross-session, reported only: dev-clean bed 567 / 521, clean 544 / 539; dev-other bed 485 / 480, clean 550 / 550.
+
+Bar 2 (dropped), same-session today / C2: dev-clean bed 13 / 13, clean 10 / 10; dev-other bed 1 / 1, clean 0 / 0. Cross-session: dev-clean bed 26 / 27 (+1), clean 30 / 30; dev-other bed 32 / 31, clean 33 / 32.
+Bar 3 (caller-only false splits), same-session: dev-clean bed 12 / 12, clean 5 / 5; dev-other bed 14 / 11, clean 0 / 0. Cross-session: dev-clean bed 16 / 11, clean 4 / 3; dev-other bed 9 / 10 (+1), clean 7 / 8 (+1).
+
+Piper reroll, today only: the run was stopped by decision before it finished and is not reported. C2 cannot change the Piper sets: every scene has exactly one enrollment segment, 5457-5523 ms in both reroll fixtures, which is at least the 3000 ms span, so the C2 mean is that one embedding (equal by construction).
+
+**Verdict: C2 fails bar 1 on dev-clean clean (199 -> 199). No candidate passes; the plan stops per §5.** (C4 N=3 had already failed bar 6, decision ww.)
+
+### Open harness defect: `--evidence` default path differs between c134666a and 1a0a0e19 (not fixed)
+
+`crr2b1-ev-ident` (pre c134666a vs post 1a0a0e19, NM_CAND default, log `.test-logs/20261117-110615-crr2b1-ev-ident.log`) is not identical beyond timing lines. The last column of the Piper straddle and LibriSpeech straddle rows differs, e.g. Piper straddle today `433 / 6450 / 52539 / 162` vs `433 / 6450 / 51627 / 157`. The `no_confirm` refactor in 1a0a0e19 changed a default-path count; the cause has not been investigated. Nothing in the bar-1 verdict depends on `--evidence`.

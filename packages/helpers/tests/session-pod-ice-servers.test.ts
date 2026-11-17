@@ -59,7 +59,7 @@ describe('SessionPod iceServers', () => {
   })
 
   it('array form is passed to every session unchanged', async () => {
-    const servers = [{ urls: 'stun:stun.example.test:3478' }]
+    const servers = [{ urls: 'ice-test-shared' }]
     const pod = makePod(servers)
     await pod.ensureSession('a')
     await pod.ensureSession('b')
@@ -72,7 +72,7 @@ describe('SessionPod iceServers', () => {
 
   it('resolver is called once per session with that session id', async () => {
     const resolver = vi.fn(async (id: string) => [
-      { urls: 'turn:turn.example.test:3478', username: `u:${id}`, credential: `c:${id}` },
+      { urls: 'ice-test-per-session', username: `u:${id}`, credential: `c:${id}` },
     ])
     const pod = makePod(resolver)
     await pod.ensureSession('s1')
@@ -83,9 +83,9 @@ describe('SessionPod iceServers', () => {
   })
 
   it('supports a synchronous resolver', async () => {
-    const pod = makePod((id) => [{ urls: `turn:${id}.example.test` }])
+    const pod = makePod((id) => [{ urls: `ice-test-${id}` }])
     await pod.ensureSession('sync-1')
-    expect(hostCalls[0]!.iceServers).toEqual([{ urls: 'turn:sync-1.example.test' }])
+    expect(hostCalls[0]!.iceServers).toEqual([{ urls: 'ice-test-sync-1' }])
   })
 
   it('concurrent sessions each get their own servers (interleave enforced)', async () => {
@@ -97,7 +97,7 @@ describe('SessionPod iceServers', () => {
       entered.push(id)
       // Park the first session inside its resolver until the second has fully prepared.
       if (id === 'first') await firstResolverGate.promise
-      return [{ urls: 'turn:turn.example.test', username: `u:${id}`, credential: `c:${id}` }]
+      return [{ urls: 'ice-test-per-session', username: `u:${id}`, credential: `c:${id}` }]
     })
 
     const first = pod.ensureSession('first')
@@ -128,7 +128,7 @@ describe('SessionPod iceServers', () => {
     const firstConnectGate = deferred<void>()
     connectGates.set('first', firstConnectGate.promise)
     const pod = makePod(async (id) => [
-      { urls: 'turn:turn.example.test', username: `u:${id}`, credential: `c:${id}` },
+      { urls: 'ice-test-per-session', username: `u:${id}`, credential: `c:${id}` },
     ])
 
     const first = pod.ensureSession('first')
@@ -153,7 +153,7 @@ describe('SessionPod iceServers', () => {
   it('resolver rejection fails only that session with a named error', async () => {
     const pod = makePod(async (id) => {
       if (id === 'bad') throw new Error('mint failed')
-      return [{ urls: 'stun:stun.example.test' }]
+      return [{ urls: 'ice-test-shared' }]
     })
     const bad = pod.ensureSession('bad')
     const good = pod.ensureSession('good')

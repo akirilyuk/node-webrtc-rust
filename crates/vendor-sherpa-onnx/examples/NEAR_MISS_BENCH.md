@@ -623,3 +623,21 @@ Common Voice: not used. The official dataset page (commonvoice.mozilla.org/en/da
 | published n400 | 1976 | 0.043 | 0.358 | 0.783 | 34.2 % | 12.2 % |
 | reroll p (200) | 635 | 0.010 | 0.134 | 0.351 | 67.7 % | 12.9 % |
 | published p200 | 628 | 0.004 | 0.109 | 0.360 | 67.7 % | 12.4 % |
+
+### Bar 6, long-other 12 / 18 s per candidate (caller-reject-rate, chunk 2b-1, decision vv)
+
+`speaker_bench --long-other` at 005878bf on the regenerated default-seed fixtures (`speaker_fixtures` default seed, manifest sha256 `da4068d2...`), TitaNet-small, threshold 0.459, check 1.5 s, pooled tune + test, 480 streams per cell. Candidate switches: `LO_ENROLL=product` (whole enrollment segments until the `NM_CAND` span) with `NM_CAND` unset, `c2`, `c4n3`, `c2,c4n3`. C4 applies to the consecutive scheme only (the sliding column is unchanged by construction).
+
+Determinism (vv): two default runs (`LO_ENROLL` and `NM_CAND` unset), one at 1a0a0e19 and one at 005878bf, give byte-identical `long_other.md` tables. The only differing lines are the `git` SHA in the header, the "One embed ... p50 / p99" line and the cost table D (CPU s at p50, derived from that timing). Default path: 3.96 % mixed / 9.38 % one voice at 18 s (the published 3.33 % / 10.42 % do not reproduce, see vv).
+
+Pooled consecutive FAR (accepted / 480) at T = 12 s and 18 s. Baseline = `LO_ENROLL=product`, `NM_CAND` empty.
+
+| candidate | mixed 12 s | mixed 18 s | one voice 12 s | one voice 18 s |
+| --- | --- | --- | --- | --- |
+| default enrollment (segments concatenated), today | 2.50 % (12) | 3.96 % (19) | 6.04 % (29) | 9.38 % (45) |
+| product enrollment, today (baseline) | 3.12 % (15) | 5.62 % (27) | 6.04 % (29) | 8.54 % (41) |
+| product + C2 | 3.12 % (15) | 5.62 % (27) | 6.04 % (29) | 8.54 % (41) |
+| product + C4 N=3 | 3.12 % (15) | 5.62 % (27) | 17.92 % (86) | 19.17 % (92) |
+| product + C2 + C4 N=3 | 3.12 % (15) | 5.62 % (27) | 17.92 % (86) | 19.17 % (92) |
+
+Reading: C2 is identical to the baseline in every cell (the product enrollment of these fixtures apparently takes one segment within the 3 s span, so the unit-embedding mean equals the single embed; not verified per scene). C4 N=3 leaves the mixed set unchanged and raises the one-voice consecutive FAR from 6.04 % / 8.54 % to 17.92 % / 19.17 %: a same-voice stream has many near-miss windows, so a repeated near-miss accept admits it. The sliding column is the same for all four candidates (6.04 / 9.79 mixed, 10.42 / 12.08 one voice at 12 / 18 s). Whether this fails bar 6 is for 2b-2 to judge against the bar; it is reported here as measured.

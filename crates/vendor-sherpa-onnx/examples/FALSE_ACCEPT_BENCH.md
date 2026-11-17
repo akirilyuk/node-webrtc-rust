@@ -578,3 +578,72 @@ Notes:
 - S3 here is speed only. A FAIL model is not dropped: chunk 2 may still measure its accuracy, marked "needs a scan change"; it goes to the full bar only after a user decision (plan §5).
 - The cards of the 3D-Speaker and WeSpeaker models carry the licence as metadata only (empty body); WeSpeaker's docs say VoxCeleb-trained models follow CC BY 4.0. Both allow commercial use.
 - Log: `.test-logs/20261117-204227-model-check.log` (exit 0, heavy-run, 698 s). A first run with `--windows 200` (`.test-logs/20261117-203457-model-check.log`, exit 0) gave 181 windows of 1.8 s, below the 200 the plan asks for, so it was repeated with 300.
+
+## Model screen (plan `2026-11-17-speaker-model-screen`, chunk 2)
+
+Per-window screen on real speech with the §5 bar fixed before any bench. Tune: LibriSpeech `test-clean` (40 speakers). Judged held-out: `dev-clean` (40 speakers) and `dev-other` (33 speakers; OpenSLR SLR12, CC BY 4.0), bed (Tocumen at -12 dB) and clean, same-session, product enrollment (`FA_ENROLL=product`), 1.5 s windows (+300 ms pre-roll), raw cosine. Cross-session is reported, not gating.
+
+Threshold: TitaNet-small stays at 0.459. Every other model gets, per mode and condition, the **lowest** threshold whose pooled impostor accepts on the tune speakers are at most TitaNet-small's at 0.459. The plan text says "highest"; a higher threshold only rejects more callers, so the FAR-matched maximum-acceptance threshold is the lowest one that still matches the FAR. It is applied unchanged to both held-out sets.
+
+Run (one model per heavy-run invocation; TitaNet-small is re-run in each as the reference and its rows are identical across runs):
+
+```text
+FA_ENROLL=product heavy-run.sh --label fa-screen-<model> -- target/release/examples/false_accept_bench \
+  --voices-root $M --speaker-dir /tmp/speaker-models --bed <tocumen48.f32> --cache <dir> \
+  --airport-a <A 16k wav> --airport-b <B 16k wav> --bed-db -12 --librispeech <dir>/LibriSpeech \
+  --models /tmp/speaker-models:<model>.onnx [--judge dev-clean,dev-other] --out screen.md
+```
+
+`--models` is new. Without it the LibriSpeech output is unchanged: same inputs, the whole output except the final embed-timing line (wall-clock) diffed equal before and after.
+
+S3 comes from the Model check table above (both clauses: 19 x the 750 ms p99 <= 450 ms, and the 1.5 s p99 <= 2 x TitaNet-small's 19.2 ms = 38.4 ms). S4: the airport A/B reproduced offline at the model's own same-session bed threshold. The logged-score variant exists for TitaNet-small only (the logged cosines are its scores), so for another model only the reproduced variant is defined.
+
+### Reference: TitaNet-small @0.459 (same-session, held-out)
+
+| set | cond | FRR % | FAR % | pairs >= 5 % / >= 20 % |
+|---|---|---|---|---|
+| dev-clean | bed | 1.5 (42/2791) | 0.1 (110/108849) | 7 / 1 |
+| dev-clean | clean | 0.9 (26/2791) | 0.1 (68/108849) | 5 / 1 |
+| dev-other | bed | 3.7 (85/2299) | 0.1 (48/73568) | 2 / 1 |
+| dev-other | clean | 3.0 (70/2299) | 0.1 (55/73568) | 3 / 2 |
+
+Cross-session (information): FRR bed / clean 6.2 / 5.8 % on dev-clean and 16.8 / 21.1 % on dev-other; FAR 0.1-0.2 %. Airport A/B: reproduced +0.098, logged +0.055 (pass). Known bad callers on test-clean, same-session FRR bed / clean %: 61 3.8 / 3.8, 672 32.9 / 30.0, 1284 16.4 / 11.9, 8555 22.4 / 0.0; cross-session 4446 100 / 100.
+
+### Candidates
+
+#### `nemo_en_speakerverification_speakernet` (S3 pass (118 ms / 14.0 ms))
+
+| mode | set | cond | thr | FRR % | FAR % | FRR vs ref | FAR vs ref pt | pairs >= 5 % | pairs >= 20 % | new pair >= 20 % |
+|---|---|---|---|---|---|---|---|---|---|---|
+| same-session | dev-clean | bed | 0.543 | 16.4 (459/2791) | 0.1 (156/108849) | +992.9 % | +0.042 | 12 | 1 | **yes** |
+| same-session | dev-clean | clean | 0.572 | 19.8 (553/2791) | 0.0 (49/108849) | +2026.9 % | -0.017 | 4 | 0 | no |
+| same-session | dev-other | bed | 0.543 | 23.1 (532/2299) | 0.2 (149/73568) | +525.9 % | +0.137 | 15 | 0 | no |
+| same-session | dev-other | clean | 0.572 | 29.9 (687/2299) | 0.1 (55/73568) | +881.4 % | +0.000 | 3 | 0 | no |
+| cross-session | dev-clean | bed | 0.550 | 26.9 (796/2960) | 0.2 (190/115440) | +335.0 % | +0.082 | 9 | 3 | **yes** |
+| cross-session | dev-clean | clean | 0.569 | 29.8 (881/2960) | 0.1 (85/115440) | +412.2 % | +0.019 | 5 | 1 | **yes** |
+| cross-session | dev-other | bed | 0.550 | 41.0 (977/2381) | 0.4 (282/76192) | +144.9 % | +0.226 | 16 | 7 | **yes** |
+| cross-session | dev-other | clean | 0.569 | 46.2 (1101/2381) | 0.2 (165/76192) | +118.9 % | +0.063 | 10 | 3 | **yes** |
+
+S1 (worst relative FRR change, need <= -25 %): **FAIL** +2026.9 %. S2 (max FAR delta pt, pairs >= 5 % delta, new pair >= 20 %): **FAIL** +0.137 pt, +13, new pair. S4 (airport min reproduced margin at the bed threshold 0.543): **FAIL** -0.085.
+
+Known bad callers (test-clean, FRR bed / clean %, own tuned thresholds; reference above): 61 M 26.6 / 40.5; 672 M 57.1 / 67.1; 1284 F 23.9 / 28.4; 8555 F 32.8 / 31.3; 4446 F 92.1 / 89.5.
+
+#### `3dspeaker_speech_campplus_sv_en_voxceleb_16k` (S3 pass (253 ms / 27.6 ms))
+
+| mode | set | cond | thr | FRR % | FAR % | FRR vs ref | FAR vs ref pt | pairs >= 5 % | pairs >= 20 % | new pair >= 20 % |
+|---|---|---|---|---|---|---|---|---|---|---|
+| same-session | dev-clean | bed | 0.502 | 64.1 (1789/2791) | 0.0 (9/108849) | +4159.5 % | -0.093 | 0 | 0 | no |
+| same-session | dev-clean | clean | 0.520 | 65.3 (1822/2791) | 0.0 (3/108849) | +6907.7 % | -0.060 | 0 | 0 | no |
+| same-session | dev-other | bed | 0.502 | 63.9 (1468/2299) | 0.0 (28/73568) | +1627.1 % | -0.027 | 1 | 1 | **yes** |
+| same-session | dev-other | clean | 0.520 | 65.4 (1504/2299) | 0.0 (5/73568) | +2048.6 % | -0.068 | 0 | 0 | no |
+| cross-session | dev-clean | bed | 0.478 | 64.4 (1906/2960) | 0.1 (59/115440) | +941.5 % | -0.031 | 7 | 1 | **yes** |
+| cross-session | dev-clean | clean | 0.500 | 64.5 (1908/2960) | 0.0 (26/115440) | +1009.3 % | -0.032 | 3 | 0 | no |
+| cross-session | dev-other | bed | 0.478 | 56.7 (1350/2381) | 0.2 (156/76192) | +238.3 % | +0.060 | 12 | 4 | **yes** |
+| cross-session | dev-other | clean | 0.500 | 58.9 (1403/2381) | 0.1 (52/76192) | +178.9 % | -0.085 | 5 | 0 | no |
+
+S1 (worst relative FRR change, need <= -25 %): **FAIL** +6907.7 %. S2 (max FAR delta pt, pairs >= 5 % delta, new pair >= 20 %): **FAIL** -0.027 pt, -1, new pair. S4 (airport min reproduced margin at the bed threshold 0.502): **FAIL** -0.437.
+
+Known bad callers (test-clean, FRR bed / clean %, own tuned thresholds; reference above): 61 M 100.0 / 100.0; 672 M 34.3 / 30.0; 1284 F 13.4 / 14.9; 8555 F 100.0 / 100.0; 4446 F 100.0 / 100.0.
+
+Status (partial): reference, `speakernet` and `3dspeaker campplus en` are measured above; both candidates fail S1, S2 and S4. Not yet measured: `campplus zh_en advanced`, `wespeaker CAM++`, `wespeaker CAM++_LM` (full screen) and `eres2net`, `titanet_large`, `resnet34`, `resnet34_LM` (accuracy only, "needs a scan change").
+Logs: `.test-logs/20261117-210015-fa-default-pre.log`, `.test-logs/20261117-211029-fa-default-post.log` (exit 0, identity diff equal), `.test-logs/20261117-212043-fa-screen-ref.log`, `.test-logs/20261117-213210-fa-screen-nemo_en_speakerverification_speakernet.log`, `.test-logs/20261117-215129-fa-screen-3dspeaker_speech_campplus_sv_en_voxceleb_16k.log` (all exit 0).

@@ -554,6 +554,11 @@ struct Args {
     out: Option<PathBuf>,
     /// `LibriSpeech/` root holding `SPEAKERS.TXT`, `test-clean/` and `dev-clean/` (decoded wav).
     librispeech: Option<PathBuf>,
+    /// `--models <dir>:<file,…>` (LibriSpeech mode): the model screen of plan
+    /// `2026-11-17-speaker-model-screen` chunk 2, TitaNet-small from `--speaker-dir` as reference.
+    models: Option<String>,
+    /// `--judge dev-clean,dev-other`: held-out sets of the model screen.
+    judge: String,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -577,6 +582,11 @@ fn parse_args() -> Result<Args, String> {
             .unwrap_or(-12.0),
         out: map.get("--out").map(PathBuf::from),
         librispeech: map.get("--librispeech").map(PathBuf::from),
+        models: map.get("--models").cloned(),
+        judge: map
+            .get("--judge")
+            .cloned()
+            .unwrap_or_else(|| "dev-clean,dev-other".into()),
     })
 }
 
@@ -743,6 +753,9 @@ fn run() -> Result<(), String> {
     let args = parse_args()?;
     fs::create_dir_all(&args.cache).map_err(|e| e.to_string())?;
     if let Some(root) = &args.librispeech {
+        if let Some(spec) = &args.models {
+            return librispeech::screen(&args, root, spec);
+        }
         return librispeech::run(&args, root);
     }
     let bed = resample_linear(&read_f32le(&args.bed)?, 48_000, SR);
@@ -2299,6 +2312,315 @@ mod librispeech {
             percentile(&mut times1, 0.5),
             percentile(&mut times1, 0.99),
         ));
+        print!("{md}");
+        if let Some(out) = &args.out {
+            fs::write(out, &md).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Model screen (plan `2026-11-17-speaker-model-screen` §5): 1.5 s windows only, raw cosine.
+    fn windows_15(_model: usize) -> &'static [usize] {
+        &[0]
+    }
+
+    /// Per-speaker pooled scores of model `m`: genuine[cond][caller], impostor[cond][caller][other].
+    fn raw_scores(set: &[[VoiceEmb; 2]], m: usize) -> Scores {
+        let n = set.len();
+        let mut gen = vec![vec![Vec::new(); n]; 2];
+        let mut imp = vec![vec![vec![Vec::new(); n]; n]; 2];
+        for ci in 0..2 {
+            for (a, va) in set.iter().enumerate() {
+                let e = &va[ci].enroll[m];
+                for (b, vb) in set.iter().enumerate() {
+                    for w in &vb[ci].windows[m][0] {
+                        let s = cosine(e, w);
+                        if a == b {
+                            gen[ci][a].push(s);
+                        } else {
+                            imp[ci][a][b].push(s);
+                        }
+                    }
+                }
+            }
+        }
+        (gen, imp)
+    }
+
+    /// One model, one held-out set, one mode, one condition.
+    struct Cell {
+        frr: (usize, usize),
+        far: (usize, usize),
+        ge5: usize,
+        ge20: Vec<(usize, usize)>,
+    }
+
+    fn cell(set: &[[VoiceEmb; 2]], m: usize, thr: f32, k: usize, sp: &[Speaker]) -> Cell {
+        let (gen, imp) = raw_scores(set, m);
+        let ev = Eval::new(&gen, &imp, thr, sp);
+        Cell {
+            frr: ev.frr[k],
+            far: ev.far[k],
+            ge5: ev.pairs[k].iter().filter(|p| p.0 * 100.0 >= 5.0).count(),
+            ge20: ev.pairs[k]
+                .iter()
+                .filter(|p| p.0 * 100.0 >= 20.0)
+                .map(|p| (p.1, p.2))
+                .collect(),
+        }
+    }
+
+    fn rate_pct(r: (usize, usize)) -> f64 {
+        100.0 * r.0 as f64 / r.1.max(1) as f64
+    }
+
+    /// Lowest threshold whose pooled tune FAR is at most the reference's `n0` accepts: the
+    /// loosest threshold that matches the reference's FAR (a higher one only rejects more callers).
+    fn far_matched(tune_imp_k: &[Vec<Vec<f32>>], n0: usize) -> f32 {
+        let mut v: Vec<f32> = tune_imp_k.iter().flatten().flatten().copied().collect();
+        v.sort_by(|a, b| b.total_cmp(a));
+        v.get(n0).map_or(f32::MIN, |x| above(*x))
+    }
+
+    /// Airport caller windows of one model: minimum of (score - thr) over the reproduced windows.
+    fn airport_margin(
+        models: &mut [Embedder],
+        airport: &[AirportBase],
+        m: usize,
+        thr: f32,
+    ) -> Result<f32, String> {
+        let mut min = f32::INFINITY;
+        for (ap, base) in AIRPORT.iter().zip(airport) {
+            for &k in ap.caller {
+                let end = base.u_ms + k * 1500;
+                let e = models[m].embed(clip(&base.audio, end - 1500 - PRE_ROLL_MS, end), None)?;
+                min = min.min(cosine(&base.refs[m], &e) - thr);
+            }
+        }
+        Ok(min)
+    }
+
+    /// The four known bad callers (same-session) and the cross-session one of the caller-reject-rate
+    /// plan, shown per speaker on the tune set (`test-clean`).
+    const BAD_SAME: [&str; 4] = ["672", "1284", "8555", "61"];
+    const BAD_CROSS: [&str; 1] = ["4446"];
+
+    #[allow(clippy::too_many_lines, clippy::needless_range_loop)]
+    pub(super) fn screen(args: &Args, root: &Path, spec: &str) -> Result<(), String> {
+        if !std::env::var("FA_ENROLL").is_ok_and(|v| v == "product") {
+            return Err("--models (model screen) needs FA_ENROLL=product".into());
+        }
+        let (dir, files) = spec
+            .rsplit_once(':')
+            .ok_or("--models needs <dir>:<file,...>")?;
+        let bed = resample_linear(&read_f32le(&args.bed)?, 48_000, SR);
+        let reference = "nemo_en_titanet_small.onnx";
+        let mut models = vec![Embedder::open(&args.speaker_dir.join(reference))?];
+        for f in files
+            .split(',')
+            .filter(|f| !f.is_empty() && *f != reference)
+        {
+            models.push(Embedder::open(&Path::new(dir).join(f))?);
+        }
+        let tune_sp = speakers(root, "test-clean")?;
+        let mut judges: Vec<(String, Vec<Speaker>)> = Vec::new();
+        for j in args.judge.split(',') {
+            judges.push((j.to_string(), speakers(root, j)?));
+        }
+        let mut airport = Vec::new();
+        for (ai, ap) in AIRPORT.iter().enumerate() {
+            airport.push(fit_airport(&mut models, ap, &args.airport[ai])?);
+        }
+        let embed_set = |models: &mut [Embedder],
+                         sps: &[Speaker],
+                         mode: Mode,
+                         label: &str|
+         -> Result<Vec<[VoiceEmb; 2]>, String> {
+            let mut out = Vec::new();
+            for (i, sp) in sps.iter().enumerate() {
+                eprintln!("{} {label} speaker {}", mode.name(), sp.label());
+                let (e, s, _, eb) = audio(sp, mode, true)?;
+                out.push(embed_audio(
+                    models,
+                    &eb,
+                    &e,
+                    &s,
+                    i,
+                    &bed,
+                    args.bed_db,
+                    windows_15,
+                )?);
+            }
+            Ok(out)
+        };
+        let mut md = format!(
+            "### Model screen run: {}\n\nEnrollment: product (`FA_ENROLL`=product, `NM_CAND`={}). Tune: LibriSpeech `test-clean`, {} speakers; judged held-out: {}. 1.5 s windows, raw cosine. Reference: `{reference}` at {GATE_THRESHOLD}; every other model's threshold is the lowest one whose pooled tune impostor accepts are at most the reference's, per mode and condition. Bed: Tocumen airport at {} dB.\n\n",
+            models[1..]
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            std::env::var("NM_CAND").unwrap_or_default(),
+            tune_sp.len(),
+            judges
+                .iter()
+                .map(|(j, s)| format!("`{j}` ({} speakers)", s.len()))
+                .collect::<Vec<_>>()
+                .join(", "),
+            args.bed_db,
+        );
+        // thr[model][mode][cond]
+        let mut thr = vec![[[0.0f32; 2]; 2]; models.len()];
+        let mut bad_md = String::from(
+            "| model | mode | speaker | FRR bed % | FRR clean % |\n|---|---|---|---|---|\n",
+        );
+        let mut table = String::from("| model | mode | set | cond | thr | FRR % | FAR % | FRR vs ref | FAR vs ref pt | pairs >= 5 % | pairs >= 20 % | new pair >= 20 % |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+        // Verdict state over same-session set x cond: (S1 worst relative change %, S2 max FAR
+        // delta pt, S2 max ge5 delta, S2 any new >= 20 pair).
+        let mut verdict: Vec<(f64, f64, i64, bool)> =
+            vec![(f64::NEG_INFINITY, f64::NEG_INFINITY, i64::MIN, false); models.len()];
+        for (mi, mode) in [Mode::SameSession, Mode::CrossSession]
+            .into_iter()
+            .enumerate()
+        {
+            let tune = embed_set(&mut models, &tune_sp, mode, "tune")?;
+            let tune_scores: Vec<Scores> =
+                (0..models.len()).map(|m| raw_scores(&tune, m)).collect();
+            for k in 0..2 {
+                let n0 = tune_scores[0].1[k]
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .filter(|s| **s >= GATE_THRESHOLD)
+                    .count();
+                for m in 0..models.len() {
+                    thr[m][mi][k] = if m == 0 {
+                        GATE_THRESHOLD
+                    } else {
+                        far_matched(&tune_scores[m].1[k], n0)
+                    };
+                }
+            }
+            let bad: &[&str] = if mode == Mode::SameSession {
+                &BAD_SAME
+            } else {
+                &BAD_CROSS
+            };
+            for m in 0..models.len() {
+                for (a, sp) in tune_sp.iter().enumerate() {
+                    if bad.contains(&sp.id.as_str()) {
+                        let f = |k: usize| {
+                            rate_pct(rate(&tune_scores[m].0[k][a], thr[m][mi][k], false))
+                        };
+                        bad_md.push_str(&format!(
+                            "| {} | {} | {} | {:.1} | {:.1} |\n",
+                            models[m].name,
+                            mode.name(),
+                            sp.label(),
+                            f(0),
+                            f(1)
+                        ));
+                    }
+                }
+            }
+            for (jname, jsp) in &judges {
+                let set = embed_set(&mut models, jsp, mode, jname)?;
+                for k in 0..2 {
+                    let base = cell(&set, 0, thr[0][mi][k], k, jsp);
+                    for m in 0..models.len() {
+                        let c = cell(&set, m, thr[m][mi][k], k, jsp);
+                        let (rel, dfar, dge5, new20) = (
+                            100.0 * (rate_pct(c.frr) - rate_pct(base.frr))
+                                / rate_pct(base.frr).max(1e-9),
+                            rate_pct(c.far) - rate_pct(base.far),
+                            c.ge5 as i64 - base.ge5 as i64,
+                            c.ge20.iter().any(|p| !base.ge20.contains(p)),
+                        );
+                        if m > 0 && mode == Mode::SameSession {
+                            let v = &mut verdict[m];
+                            // S1 binding number: the least reduction (largest relative change).
+                            v.0 = v.0.max(if base.frr.0 == 0 { 0.0 } else { rel });
+                            v.1 = v.1.max(dfar);
+                            v.2 = v.2.max(dge5);
+                            v.3 |= new20;
+                        }
+                        table.push_str(&format!(
+                            "| {} | {} | {jname} | {} | {:.3} | {} ({}/{}) | {} ({}/{}) | {rel:+.1} % | {dfar:+.3} | {} | {} | {} |\n",
+                            models[m].name,
+                            mode.name(),
+                            if k == 0 { "bed" } else { "clean" },
+                            thr[m][mi][k],
+                            pct(c.frr.0, c.frr.1),
+                            c.frr.0,
+                            c.frr.1,
+                            pct(c.far.0, c.far.1),
+                            c.far.0,
+                            c.far.1,
+                            c.ge5,
+                            c.ge20.len(),
+                            if new20 { "**yes**" } else { "no" },
+                        ));
+                    }
+                }
+            }
+        }
+        md.push_str("#### Per held-out set\n\n");
+        md.push_str(&table);
+        md.push_str(
+            "\n#### Known bad callers on the tune set (`test-clean`), at the tuned thresholds\n\n",
+        );
+        md.push_str(&bad_md);
+        md.push_str("\n#### Airport A/B (reproduced offline, same-session thresholds, margin = min(score - thr))\n\nThe logged-score variant exists for TitaNet-small only (the logged cosines are its scores); for another model only the reproduced variant is defined.\n\n| model | thr bed | reproduced margin | logged margin | S4 |\n|---|---|---|---|---|\n");
+        let mut s4 = vec![f32::INFINITY; models.len()];
+        for m in 0..models.len() {
+            let rep = airport_margin(&mut models, &airport, m, thr[m][0][0])?;
+            let logged = if m == 0 {
+                let l = AirScores {
+                    rep: Vec::new(),
+                    logged: AIRPORT
+                        .iter()
+                        .map(|a| {
+                            a.caller
+                                .iter()
+                                .map(|k| a.logged[*k - 1])
+                                .collect::<Vec<f32>>()
+                        })
+                        .collect(),
+                    has_logged: true,
+                };
+                Some(AirScores::margin(&l.logged, thr[0][0][0]))
+            } else {
+                None
+            };
+            s4[m] = rep.min(logged.unwrap_or(f32::INFINITY));
+            md.push_str(&format!(
+                "| {} | {:.3} | {rep:+.3} | {} | {} |\n",
+                models[m].name,
+                thr[m][0][0],
+                logged.map_or("n/a".to_string(), |l| format!("{l:+.3}")),
+                if s4[m] >= 0.0 { "pass" } else { "**FAIL**" }
+            ));
+        }
+        md.push_str("\n#### S1, S2, S4 (same-session, every held-out set x condition; S3 is the chunk 1 table)\n\n| model | S1 (worst relative FRR change, need <= -25 %) | S2 (max FAR delta pt, need <= +0.03; pairs >= 5 % max delta, need <= +1; new pair >= 20 %) | S4 (airport min margin) |\n|---|---|---|---|\n");
+        for m in 1..models.len() {
+            let v = verdict[m];
+            md.push_str(&format!(
+                "| {} | {} {:+.1} % | {} {:+.3} pt, {:+}, {} | {} {:+.3} |\n",
+                models[m].name,
+                if v.0 <= -25.0 { "pass" } else { "**FAIL**" },
+                v.0,
+                if v.1 <= 0.03 && v.2 <= 1 && !v.3 {
+                    "pass"
+                } else {
+                    "**FAIL**"
+                },
+                v.1,
+                v.2,
+                if v.3 { "new pair" } else { "no new pair" },
+                if s4[m] >= 0.0 { "pass" } else { "**FAIL**" },
+                s4[m],
+            ));
+        }
         print!("{md}");
         if let Some(out) = &args.out {
             fs::write(out, &md).map_err(|e| e.to_string())?;

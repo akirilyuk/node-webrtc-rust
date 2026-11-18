@@ -807,3 +807,16 @@ Verdict label: **FAIL (harness check flagged, cleared by probe)**. This is a res
 - The regenerated scenes are not the original ones: the TTS output differs in length (A 86.004 s vs 87.358 s, B 72.088 s vs 72.782 s), so TitaNet-small's reproduced airport margin moved from +0.098 to +0.086 (logged +0.055 unchanged). The LibriSpeech rows of the reference are identical before and after. S4 is judged per model on the same scenes as the reference row of the same run, so the regenerated pair is a valid S4 input, but a weak one (see the verdict).
 - Binaries: `speakernet`, `wespeaker CAM++` and `CAM++_LM` ran on the earlier build without the harness column and on the original scenes (`.test-logs/20261117-213210-...speakernet.log`, `...224449-...CAM++.log`, `...231007-...CAM++_LM.log`, exit 0). The other six models ran on the HEAD build (`fab_v2`) on the regenerated inputs.
 - Logs (all exit 0): `.test-logs/20261118-001200-fa-screen-ref.log` (reference on the new inputs), `.test-logs/20261118-002323-fa-screen-3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.log`, `.test-logs/20261118-004848-fa-screen-3dspeaker_speech_campplus_sv_en_voxceleb_16k.log`, `.test-logs/20261118-011405-fa-screen-3dspeaker_speech_eres2net_sv_en_voxceleb_16k.log`, `.test-logs/20261118-020423-fa-screen-nemo_en_titanet_large.log`, `.test-logs/20261118-025343-fa-screen-wespeaker_en_voxceleb_resnet34.log`, `.test-logs/20261118-035334-fa-screen-wespeaker_en_voxceleb_resnet34_LM.log`. Earlier: `.test-logs/20261117-210015-fa-default-pre.log`, `.test-logs/20261117-211029-fa-default-post.log` (identity diff equal). An earlier queue attempt for eres2net, titanet_large, resnet34 and resnet34_LM failed with exit 1 because of the input loss.
+
+### zh_en at the mapped threshold 0.4679 (plan `2026-11-18-caller-loss-zhen-c7`, chunk 2, bar 4 for R1)
+
+`FA_ENROLL=product FA_FIXED_THR=0.4679 false_accept_bench --models /tmp/speaker-models:3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx` (log `.test-logs/20261119-060454-cl2-fa-R1.log`, exit 0): one threshold for bed and clean and for both modes, in place of the screen's FAR-matched 0.457 / 0.468. Same-session, held-out, product enrollment.
+
+| set | cond | FRR % | FAR % | FAR vs TitaNet pt | pairs >= 5 % (TitaNet) | pairs >= 20 % | new pair >= 20 % |
+|---|---|---|---|---|---|---|---|
+| dev-clean | bed | 0.5 (14/2791) | 0.1 (88/108849) | -0.020 | 6 (7) | 0 | no |
+| dev-clean | clean | 0.5 (14/2791) | 0.1 (70/108849) | +0.002 | 4 (5) | 0 | no |
+| dev-other | bed | 2.0 (45/2299) | 0.1 (46/73568) | -0.003 | 3 (2) | 1 | **yes** |
+| dev-other | clean | 1.7 (39/2299) | 0.1 (56/73568) | +0.001 | 5 (3) | 1 | **yes** |
+
+Bar 4 (FAR +0.03 pt, no new pair >= 20 %, pairs >= 5 % at most +1): fails, new pair on both dev-other cells and pairs >= 5 % +2 on dev-other clean. Airport S4 at 0.4679, reproduced: +0.104 (TitaNet-small +0.086 on this scene build). Labelled "S4 margin, not bar 8" in `NEAR_MISS_BENCH.md`.

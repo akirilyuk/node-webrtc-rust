@@ -2386,6 +2386,25 @@ mod librispeech {
         100.0 * r.0 as f64 / r.1.max(1) as f64
     }
 
+    /// `FA_FIXED_THR` value: `None` when unset, else the fixed threshold.
+    fn parse_fixed_thr(v: Option<&str>) -> Result<Option<f32>, String> {
+        v.map(|v| v.parse().map_err(|e| format!("FA_FIXED_THR: {e}")))
+            .transpose()
+    }
+
+    /// Threshold of screened model `m` (0 = the TitaNet-small reference): the reference keeps the
+    /// gate threshold, every other model takes the fixed threshold when one is set, else the
+    /// FAR-matched one.
+    fn model_threshold(m: usize, fixed: Option<f32>, far_matched_thr: impl FnOnce() -> f32) -> f32 {
+        if m == 0 {
+            GATE_THRESHOLD
+        } else if let Some(t) = fixed {
+            t
+        } else {
+            far_matched_thr()
+        }
+    }
+
     /// Lowest threshold whose pooled tune FAR is at most the reference's `n0` accepts: the
     /// loosest threshold that matches the reference's FAR (a higher one only rejects more callers).
     fn far_matched(tune_imp_k: &[Vec<Vec<f32>>], n0: usize) -> f32 {
@@ -2649,6 +2668,9 @@ mod librispeech {
         );
         // thr[model][mode][cond]
         let mut thr = vec![[[0.0f32; 2]; 2]; models.len()];
+        // `FA_FIXED_THR=<t>`: every non-reference model runs at one fixed threshold in every mode
+        // and condition (plan `2026-11-18-caller-loss-zhen-c7`, chunk 2: the row's mapped 0.4679).
+        let fixed_thr = parse_fixed_thr(std::env::var("FA_FIXED_THR").ok().as_deref())?;
         // Harness check: a model whose same-session tune EER is far above the reference's is
         // flagged in the S table (its scores may come from a broken extractor setup); its S
         // verdicts stand until a probe clears or condemns the harness.
@@ -2680,11 +2702,8 @@ mod librispeech {
                     .filter(|s| **s >= GATE_THRESHOLD)
                     .count();
                 for m in 0..models.len() {
-                    thr[m][mi][k] = if m == 0 {
-                        GATE_THRESHOLD
-                    } else {
-                        far_matched(&tune_scores[m].1[k], n0)
-                    };
+                    thr[m][mi][k] =
+                        model_threshold(m, fixed_thr, || far_matched(&tune_scores[m].1[k], n0));
                 }
             }
             for k in 0..2 {
@@ -2925,6 +2944,22 @@ mod librispeech {
                 GATE_THRESHOLD,
                 node_webrtc_rust_speech::config::SpeakerGateConfig::default().threshold
             );
+        }
+
+        #[test]
+        fn fixed_threshold_override_applies_to_every_non_reference_model() {
+            assert_eq!(parse_fixed_thr(None), Ok(None));
+            assert_eq!(parse_fixed_thr(Some("0.4679")), Ok(Some(0.4679)));
+            assert!(parse_fixed_thr(Some("x")).is_err());
+            // unset: reference keeps the gate threshold, others are FAR-matched
+            assert_eq!(model_threshold(0, None, || 0.3), GATE_THRESHOLD);
+            assert_eq!(model_threshold(1, None, || 0.3), 0.3);
+            // set: every non-reference model gets it, the reference is unchanged and the
+            // FAR-matched closure is not consulted
+            assert_eq!(model_threshold(0, Some(0.4679), || 0.3), GATE_THRESHOLD);
+            for m in 1..4 {
+                assert_eq!(model_threshold(m, Some(0.4679), || unreachable!()), 0.4679);
+            }
         }
 
         #[test]

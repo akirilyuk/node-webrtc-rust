@@ -696,3 +696,102 @@ Log `.test-logs/20261118-223401-fa-map-constants.log`, exit 0. Test-clean, 40 sp
 Mapped margin: 0.5935 - 0.4679 = **0.1256** (not floored). Flags for the zh_en rows: `--thr 0.4679 --nm-floor 0.3119 --confident-other 0.2163 --adapt-margin 0.1256 --anchor-min 0.8048`.
 
 **Parity (constant plumbing).** `NM_SPLIT_DUMP` on a full dev-clean bed + clean run (40 callers, default flags; `.test-logs/20261118-223843-split-dump-full.log`, exit 0) dumped 128 other-to-caller confirms; `cargo test -p node-webrtc-rust-speech bench_split_parity -- --ignored` (`.test-logs/20261118-225537-split-parity-full.log`): 128 same, 0 differ (120 with a caller sub-window, 8 deferred). The earlier 12-caller dump compared only 17.
+
+## zh_en and C7 per-utterance bar: result (plan `2026-11-18-caller-loss-zhen-c7`, chunk 2)
+
+Bench-only. Binaries built at f37b3d69 (`/tmp/cl2/bin`); one queue, one heavy-run at a time, every run exit 0 (`/tmp/cl2/status.txt`, logs `.test-logs/20261118-*` and `20261119-*-cl2-<label>.log`, sha and `NM_CAND` on line 1, tables in `/tmp/cl2/*.md`). Inputs checked before every run (airport A/B, zh_en model, bed `/tmp/sms-inputs/bed/tocumen48.f32`, LibriSpeech trees, Piper reroll and bar-6 fixtures `da4068d2`); none changed. Rows: R0 TitaNet-small today; R1 zh_en, mapped constants (`--thr 0.4679 --nm-floor 0.3119 --confident-other 0.2163 --adapt-margin 0.1256 --anchor-min 0.8048`); R2 / R3 = R0 / R1 with `NM_CAND=c7nm` (C7 near-miss neutral); R4 / R5 = R0 / R1 with `--adapt`. Same-session, product enrollment, Tocumen bed -12 dB and clean. R0 reproduces the predecessor's "today" row (dev-clean 241 / 199 words, dev-other 60 / 0, dropped 13 / 10 / 1 / 0).
+
+Commands (per row; `$ROW` = the flags above):
+
+```text
+near_miss_bench --utterance-loss --model <titanet|zh_en> --stt $STT --librispeech $LS --bed $BED --ls-split <dev-clean|dev-other> $ROW      # bars 1, 2, 3, 5 and the bystander window FAR
+near_miss_bench --second-cut --takeover-db -3 ... --ls-split <dev-clean|dev-other>                                                         # missed takeovers, R0-R3
+near_miss_bench --evidence --fixtures /tmp/crr2b-reroll-n --fixtures /tmp/crr2b-reroll-p --straddle-piper ... (same two dirs)             # Piper reroll, R0 R1 R4 R5
+LO_ENROLL=product speaker_bench --long-other --fixed-threshold <0.459|0.4679> --checks 1.5 [--long-other-same-voice]                      # bar 6
+FA_ENROLL=product FA_FIXED_THR=0.4679 false_accept_bench --models /tmp/speaker-models:<zh_en>.onnx                                         # bar 4 at scale, S4 margin
+```
+
+### Words lost above the floor / dropped / caller-only false splits (caller -> other splits), same-session
+
+Cell = words / dropped utterances / splits. Binding value for bars 1, 2, 3.
+
+| row | dev-clean bed | dev-clean clean | dev-other bed | dev-other clean | Piper reroll (merged no-pause: words / drops; straddle 0 / 0 in every row) |
+| --- | --- | --- | --- | --- | --- |
+| R0 | 241 / 13 / 12 | 199 / 10 / 5 | 60 / 1 / 14 | 0 / 0 / 0 | 10 / 0 |
+| R1 | 125 / 9 / 10 | 151 / 9 / 8 | 35 / 5 / 7 | 9 / 3 / 0 | 9 / 3 (60 words) |
+| R2 | 129 / 13 / 1 | 120 / 10 / 0 | 4 / 1 / 2 | 0 / 0 / 0 | not measured (see below) |
+| R3 | 55 / 9 / 0 | 70 / 9 / 0 | 13 / 5 / 1 | 9 / 3 / 0 | not measured |
+| R4 | 167 / 11 / 6 | 165 / 8 / 3 | 9 / 1 / 5 | 0 / 0 / 0 | not measured (adapt is a no-op in `--evidence`: output equals R0) |
+| R5 | 93 / 6 / 8 | 123 / 5 / 7 | 15 / 2 / 4 | 0 / 0 / 0 | not measured (equals R1) |
+
+### Bystanders, same harness (same-session; window FAR % / pairs >= 5 % / pairs >= 20 % / bystander-only utterances accepted of total)
+
+Sample of about 1.3-1.6k windows per cell (3 bystanders per caller), so one window is 0.06-0.08 pt. This is not the 118k-window bar-4 measure.
+
+| row | dev-clean bed | dev-clean clean | dev-other bed | dev-other clean |
+| --- | --- | --- | --- | --- |
+| R0 | 0.06 / 1 / 0 / 1 of 336 | 0.00 / 0 / 0 / 2 of 334 | 0.86 / 1 / 1 / 4 of 271 | 0.61 / 1 / 1 / 3 of 268 |
+| R1 | 0.00 / 0 / 0 / 1 | 0.00 / 0 / 0 / 1 | 0.00 / 0 / 0 / 2 | 0.08 / 1 / 0 / 3 |
+| R2 | = R0 (C7 does not touch it) | = R0 | = R0 | = R0 |
+| R3 | = R1 | = R1 | = R1 | = R1 |
+| R4 | 0.06 / 1 / 0 / **3** | 0.00 / 0 / 0 / 3 | **0.94** / 1 / 1 / **6** | **0.83** / 1 / 1 / 3 |
+| R5 | 0.06 / 1 / 0 / **3** | 0.00 / 0 / 0 / 3 | 0.08 / 1 / 0 / 2 | 0.08 / 1 / 0 / 3 |
+
+### Missed takeovers (`--second-cut --takeover-db -3`, rule jj, shipped; splits / U2s; missed = baseline splits minus the row's, over the U2s)
+
+Baseline for the C7 effect is the same model without C7 (R2 vs R0, R3 vs R1). R4 / R5: not measured, the second-cut path has no adapt hook. The `bystander-2 words left` column is the bystander words still in the caller final.
+
+| set | cond | R0 splits / U2s | R2 splits | R2 missed vs R0 | R2 bystander-2 left / total | R1 splits / U2s | R3 splits | R3 missed vs R1 | R3 bystander-2 left / total |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| dev-clean | bed | 44 / 57 | 34 | 10 (17.5 %) | 168 / 449 (R0 90) | 49 / 60 | 42 | 7 (11.7 %) | 151 / 472 (R1 84) |
+| dev-clean | clean | 70 / 91 | 49 | 21 (23.1 %) | 294 / 733 (R0 153) | 78 / 93 | 60 | 18 (19.4 %) | 254 / 752 (R1 112) |
+| dev-other | bed | 47 / 55 | 37 | 10 (18.2 %) | 117 / 425 (R0 55) | 43 / 51 | 38 | 5 (9.8 %) | 78 / 390 (R1 42) |
+| dev-other | clean | 71 / 83 | 50 | 21 (25.3 %) | 179 / 631 (R0 88) | 62 / 74 | 50 | 12 (16.2 %) | 138 / 567 (R1 88) |
+
+### C7 trade: caller words saved against takeovers missed (words lost, same-session)
+
+| set | cond | R0 -> R2 words | R2 missed takeovers | R1 -> R3 words | R3 missed takeovers |
+| --- | --- | --- | --- | --- | --- |
+| dev-clean | bed | 241 -> 129 (-112) | 10 of 57 (17.5 %) | 125 -> 55 (-70) | 7 of 60 (11.7 %) |
+| dev-clean | clean | 199 -> 120 (-79) | 21 of 91 (23.1 %) | 151 -> 70 (-81) | 18 of 93 (19.4 %) |
+| dev-other | bed | 60 -> 4 (-56) | 10 of 55 (18.2 %) | 35 -> 13 (-22) | 5 of 51 (9.8 %) |
+| dev-other | clean | 0 -> 0 (0) | 21 of 83 (25.3 %) | 9 -> 9 (0) | 12 of 74 (16.2 %) |
+
+R3 against R0 (zh_en + C7 against today): words 241 -> 55, 199 -> 70, 60 -> 13, 0 -> 9; split rate 77 % / 77 % / 85 % / 86 % (R0) against 70 % / 65 % / 75 % / 68 % (R3).
+
+### Bar 6, long-other at 18 s (`speaker_bench --long-other`, `LO_ENROLL=product`, regenerated fixtures `da4068d2`, pooled 480 streams, consecutive scheme)
+
+| row | threshold | mixed 18 s | one voice 18 s |
+| --- | --- | --- | --- |
+| R0 | 0.459 | 5.62 % (27) | 8.54 % (41) |
+| R1 | 0.4679 | **8.33 % (40), +2.71 pt** | 7.71 % (37), -0.83 pt |
+| R2 | = R0 by construction (C7 acts on the caller -> other watch, the long-other rule depends on the threshold only) | | |
+| R3 | = R1 by construction | | |
+| R4, R5 | not measured: `speaker_bench` has no in-call reference refresh in the long-other path | | |
+
+R0 reproduces the predecessor's baseline (5.62 % / 8.54 %).
+
+### Bar 4 at scale for R1, bar 8 input, bar 9
+
+- **Bar 4 (R1, `false_accept_bench`, 118k windows per cell, FA_FIXED_THR=0.4679):** FAR delta -0.020 / +0.002 / -0.003 / +0.001 pt (within +0.03), pairs >= 5 % 6 / 4 / 3 / 5 against 7 / 5 / 2 / 3 (dev-other clean +2, bound +1), **new pair >= 20 % on dev-other bed and clean**. Fails (new pair, pairs). Rows in `FALSE_ACCEPT_BENCH.md`, "zh_en at the mapped threshold 0.4679". R2 / R3 are equal to R0 / R1 at this scale by construction. R4 / R5: not measured at scale (`false_accept_bench` has no adapt); R5 cannot be better than R1.
+- **S4 airport margin, not bar 8** (decision b; reproduced offline at the row's own threshold, minimum of score - thr over the caller windows of scenes A and B): TitaNet-small at 0.459 +0.086 (this scene build), zh_en at 0.4679 +0.104. The same for R2 / R4 and R3 / R5, because C7 and adapt do not change the offline score. Bar 8 itself is not judged: the replay harness (chunk 2b) is built only for a row that passes bars 1-7 and 9.
+- **Bar 9:** C7 and adapt add no time before the first verdict (they act after it); the zh_en rows use the screen's Model check: 1.5 s embed p99 27.3 ms (TitaNet-small 19.2 ms, bound 38.4) and the 19-window scan p99 261 ms (bound 450 ms). All rows pass.
+
+### Verdicts against bars 1-7 and 9 (same-session, held-out)
+
+| row | bar 1 words | 2 dropped | 3 false splits | 4 per-window FAR / pairs | 5 bystander accepts | 6 long-other 18 s | 7 merged no-pause (reported) | 9 latency | passes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| R0 | reference | | | | | | leaked 522 / upgraded 27 | ok | |
+| R1 | **fail**: dev-other clean 0 -> 9 | **fail**: dev-other bed 1 -> 5, clean 0 -> 3, Piper merged 0 -> 3 | **fail**: dev-clean clean 5 -> 8 | **fail**: new pair >= 20 % on dev-other, pairs >= 5 % +2 | ok (1, 1, 2, 3 against 1, 2, 4, 3) | **fail**: mixed +2.71 pt | leaked 1086 / upgraded 60 | ok | no: 1, 2, 3, 4, 6 |
+| R2 | ok (Piper: not measured) | ok (equal) | ok | ok (= R0) | ok (= R0) | ok (= R0) | = R0 | ok | yes on LibriSpeech; missed takeovers 17.5-25.3 % (user bound) |
+| R3 | **fail**: dev-other clean 0 -> 9 | **fail**: as R1 | ok | **fail** (= R1) | ok (= R1) | **fail** (= R1) | = R1 | ok | no: 1, 2, 4, 6 |
+| R4 | ok (Piper: not measured) | ok | ok | **fail** on the sample: dev-other FAR +0.08 / +0.22 pt | **fail**: dev-clean bed 1 -> 3, dev-other bed 4 -> 6 (+2) | not measured | = R0 | ok | no: 4, 5 |
+| R5 | ok | **fail**: dev-other bed 1 -> 2, Piper merged 0 -> 3 | **fail**: dev-clean clean 5 -> 7 | **fail** at scale as R1 (sample ok) | **fail**: dev-clean bed 1 -> 3 | **fail** as R1 (adapt part not measured) | = R1 | ok | no: 2, 3, 4, 5, 6 |
+
+Notes on the cells:
+
+- Bar 5's second clause (at or below 0.5 % of the set) is already exceeded by R0 on dev-other (4 of 271); the verdict uses the +1 clause.
+- Bar 1 on the Piper reroll is not measured for R2 / R3 / R4 / R5: the `--evidence` path has no caller -> other watch (C7 is ignored there, the bench prints a note) and no adapt. R2's LibriSpeech cells all pass; the Piper cell cannot show a change.
+- Bar 4 for R4 uses the 1.3-1.6k-window bystander sample; its +0.08 / +0.22 pt are one or three windows. The bar-5 failure (+2 accepted utterances) does not depend on that.
+- Fixtures: every claim above scores its scenes with the row's own `--model` (`near_miss_bench` embeds every window with it; the Piper reroll is scored the same way in the `--evidence` rows). The rules are exercised: C7 rows cut caller -> other splits from 12 / 5 / 14 / 0 to 1 / 0 / 2 / 0 (R0 -> R2) and 10 / 8 / 7 / 0 to 0 / 0 / 1 / 0 (R1 -> R3); the zh_en rows change the drop and window counts through the mapped constants; adapt changes the words (R0 -> R4 241 -> 167, 199 -> 165, 60 -> 9) and the accepts.
+- The chunk-1 build had the bench binaries built before the `FA_FIXED_THR` helper was factored into `model_threshold`; behaviour is identical (unit test `fixed_threshold_override_applies_to_every_non_reference_model`).

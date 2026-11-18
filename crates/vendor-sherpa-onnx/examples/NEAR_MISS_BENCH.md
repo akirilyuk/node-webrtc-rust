@@ -670,19 +670,29 @@ Piper reroll, today only: the run was stopped by decision before it finished and
 
 ## zh_en and C7 per-utterance bar: bench switches and constant mapping (plan `2026-11-18-caller-loss-zhen-c7`, chunk 1)
 
-Bench-only (no product code). `near_miss_bench` takes the gate's score constants as flags, with today's TitaNet-small values as defaults, so a run without them is byte-identical: `--thr` (alias of `--threshold`), `--nm-floor`, `--confident-other`, `--adapt-margin`, `--anchor-min`; `--adapt` runs the in-call reference refresh in `--utterance-loss` (the test utterances of one speaker and mode in order; an utterance commits only when every window scored `caller` and one scored at least `thr + margin`; EMA as `speaker_gate::adapt_step`, anchor bound as a flag; bystander baselines then use the adapted reference); `--map-constants <target model>` (with `--model` the reference) prints the mapping below. The constants reach the near-miss band in `product_o2c`, the C7 near-miss neutral switch, decision bb (U1 window below the confident-other bound), and C4. The long-other path in `speaker_bench` still uses `cand::c4_scores` with the product constants (C4 is not a row of this plan).
+Bench-only (no product code). `near_miss_bench` takes the gate's score constants as flags, with today's TitaNet-small values as defaults, so a run without them is byte-identical: `--thr` (alias of `--threshold`), `--nm-floor`, `--confident-other`, `--adapt-margin`, `--anchor-min`; `--adapt` runs the in-call reference refresh in `--utterance-loss` (the test utterances of one speaker and mode in order; an utterance commits only when every window scored `caller` and one scored at least `thr + margin`; EMA as `speaker_gate::adapt_step`, anchor bound as a flag; bystander baselines then use the adapted reference); `false_accept_bench --map-constants <dir>:<file>` prints the mapping below. The constants reach the near-miss band in `product_o2c`, the C7 near-miss neutral switch, decision bb (U1 window below the confident-other bound), and C4. The long-other path in `speaker_bench` still uses `cand::c4_scores` with the product constants (C4 is not a row of this plan).
 
 **R0 parity (default flags, test-clean, bed -12 dB and clean, `--ls-split test-clean`).** Log `.test-logs/20261118-215810-r0-test-clean.log`, built at 077cec71 plus this chunk's bench edits. Same-session words lost above floor: bed 194 (12 dropped, 14 partly, top five `1284: 71, 3; 672: 57, 7; 8555: 27, 3; 4507: 15, 4; 3729: 9, 1`, bystander-only accepted 2 of 342), clean 91. These are the predecessor's "today (empty)" row, exactly. Cross-session: bed 300, clean 197.
 
-**Constant mapping, zh_en (`3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced`, sha256 `aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2`).** Log `.test-logs/20261118-222109-map-constants.log`. Tune set test-clean, same-session, product enrollment, 40 callers x 2 conditions (70 enrolled, 10 skipped on the enrollment span), 6 bystander voices x 4 files per caller. Impostor windows: bed 4394, clean 4404 (the same windows for both models); genuine windows 5160.
+**Constant mapping, zh_en (`3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced`, sha256 `aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2`).** Plan §8 decision a. The first mapping in this chunk (a `near_miss_bench --map-constants` pool of about 4.4k impostor windows per condition) is **replaced** and that mode is removed: TitaNet-small had no impostor window at or above 0.459 in the bed row or at or above 0.559 anywhere, so the survival match was degenerate (threshold 0.5451, margin 0). The mapping now runs on the `false_accept_bench` same-session pool, the one that gave the screen's 0.457 / 0.468:
 
-| constant | TitaNet value | pool | TitaNet survivors / windows | mapped zh_en value |
-| --- | --- | --- | --- | --- |
-| threshold (bed) | 0.459 | impostor, bed | 0 / 4394 | 0.5451 (no survivor: just above the highest zh_en impostor window; degenerate) |
-| threshold (clean) | 0.459 | impostor, clean | 2 / 4404 | 0.4573 |
-| near-miss floor | 0.300 | impostor, pooled | 155 / 8798 | 0.3217 |
-| confident-other | 0.200 | impostor, pooled | 934 / 8798 | 0.2182 |
-| threshold + adapt margin | 0.559 | impostor, pooled | 0 / 8798 | 0.5451 (degenerate) |
-| anchor bound | 0.800 | genuine, pooled | 288 / 5160 | 0.8268 |
+```text
+FA_ENROLL=product heavy-run.sh --label fa-map-constants -- target/release/examples/false_accept_bench \
+  --voices-root $M --speaker-dir /tmp/speaker-models --bed /tmp/sms-inputs/bed/tocumen48.f32 --cache /tmp/sms-inputs/cache \
+  --airport-a ... --airport-b ... --bed-db -12 --librispeech /tmp/librispeech/LibriSpeech \
+  --map-constants /tmp/speaker-models:3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx
+```
 
-The threshold and the adapt margin are not resolved by this pool: TitaNet-small has no bystander window at or above 0.459 in the bed row and none at or above 0.559 anywhere, so "same survival" is 0 and maps to the highest zh_en window, which makes the threshold 0.5451 and the margin 0. Clean alone gives 0.4573 (2 survivors), close to the screen's FAR-matched 0.457 (bed) / 0.468 (clean). Open: a larger impostor pool or a different matching rule for the threshold and margin; the near-miss floor, confident-other and anchor bound are resolved (155, 934 and 288 survivors).
+Log `.test-logs/20261118-223401-fa-map-constants.log`, exit 0. Test-clean, 40 speakers, same-session, product enrollment, 1.5 s windows, bed -12 dB and clean: 111,969 impostor windows per condition, 5,742 genuine windows (bed + clean). Impostor-side constants are FAR-matched per condition with `far_matched` (lowest score with at most the TitaNet survivor count at or above it) and the higher of bed and clean is taken. A constant with zero TitaNet survivors in a condition stops the run; none did.
+
+| constant | TitaNet value | TitaNet survivors (bed / clean) | mapped bed | mapped clean | mapped zh_en value |
+| --- | --- | --- | --- | --- | --- |
+| threshold | 0.459 | 175 / 84 | 0.4574 | 0.4679 | **0.4679** |
+| near-miss floor | 0.300 | 3169 / 2659 | 0.3119 | 0.3116 | **0.3119** |
+| confident-other | 0.200 | 14221 / 11883 | 0.2128 | 0.2163 | **0.2163** |
+| threshold + margin (genuine survival, pooled) | 0.559 | 5312 of 5742 genuine | 0.5935 | | 0.5935 |
+| anchor bound (genuine quantile, pooled) | 0.800 | 682 of 5742 genuine | 0.8048 | | **0.8048** |
+
+Mapped margin: 0.5935 - 0.4679 = **0.1256** (not floored). Flags for the zh_en rows: `--thr 0.4679 --nm-floor 0.3119 --confident-other 0.2163 --adapt-margin 0.1256 --anchor-min 0.8048`.
+
+**Parity (constant plumbing).** `NM_SPLIT_DUMP` on a full dev-clean bed + clean run (40 callers, default flags; `.test-logs/20261118-223843-split-dump-full.log`, exit 0) dumped 128 other-to-caller confirms; `cargo test -p node-webrtc-rust-speech bench_split_parity -- --ignored` (`.test-logs/20261118-225537-split-parity-full.log`): 128 same, 0 differ (120 with a caller sub-window, 8 deferred). The earlier 12-caller dump compared only 17.

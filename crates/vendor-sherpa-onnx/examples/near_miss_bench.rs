@@ -731,7 +731,6 @@ fn run() -> Result<(), String> {
     let mut model = None;
     let mut threshold = 0.459f32;
     let mut cs = PRODUCT_CONSTS;
-    let mut map_model: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
     let mut tap_utt = None;
     let mut tap_enroll = None;
@@ -804,7 +803,6 @@ fn run() -> Result<(), String> {
             "--adapt" => {
                 let _ = straddle::ADAPT.set(());
             }
-            "--map-constants" => map_model = Some(PathBuf::from(value("--map-constants")?)),
             "--tap-scores" => {
                 tap_scores = value("--tap-scores")?
                     .split(',')
@@ -820,25 +818,6 @@ fn run() -> Result<(), String> {
     }
     let _ = CONSTS.set(cs);
     let embedder = Embedder::open(&model.ok_or("--model is required")?)?;
-    if let Some(target) = &map_model {
-        let root = librispeech
-            .as_ref()
-            .ok_or("--map-constants needs --librispeech")?;
-        let target = Embedder::open(target)?;
-        let md = straddle::map_constants(
-            &embedder,
-            &target,
-            root,
-            bed.as_deref(),
-            ls_callers,
-            threshold,
-        )?;
-        print!("{md}");
-        if let Some(path) = out {
-            fs::write(&path, &md).map_err(|e| format!("write {}: {e}", path.display()))?;
-        }
-        return Ok(());
-    }
     let mut md = format!(
         "# Near-miss re-check bench (chunk 6f, decision t)\n\nThreshold {threshold}. Sub-windows {SUB_MS} ms / hop {HOP_MS} ms over `[start(k-1), start(k) + 1500)`. Budget per window: {VERIFY_MS} ms minus the window's own embed. Excluded bystander pairs: libritts_r 120.\n\n"
     );
@@ -4012,228 +3991,6 @@ mod straddle {
         Ok(())
     }
 
-    /// Pooled window scores of one model on the tune split (same-session, product enrollment).
-    #[derive(Default)]
-    struct MapPool {
-        /// Bystander (impostor) windows: [bed, clean].
-        imp: [Vec<f32>; 2],
-        /// Caller (genuine) windows of the test utterances, bed and clean pooled.
-        genuine: Vec<f32>,
-        callers: usize,
-        skipped: usize,
-    }
-
-    const MAP_BYSTANDERS: usize = 6;
-    const MAP_BY_FILES: usize = 4;
-
-    fn map_pool(
-        embedder: &Embedder,
-        root: &Path,
-        bed: Option<&Path>,
-        max_callers: usize,
-    ) -> Result<MapPool, String> {
-        let split = LS_SPLIT.get().map_or("test-clean", |s| s.as_str());
-        let (spk, chapters) = ul_load(root, split)?;
-        let n = spk.len();
-        let bed16 = bed.map(load_bed).transpose()?;
-        let mut conds: Vec<(usize, Option<&[f32]>)> = Vec::new();
-        if let Some(b) = &bed16 {
-            conds.push((0, Some(b)));
-        }
-        conds.push((1, None));
-        let mut pool = MapPool::default();
-        for (ci_cond, cbed) in &conds {
-            for ci in 0..max_callers.min(n) {
-                let Some(ch_a) = chapters[ci].first() else {
-                    continue;
-                };
-                let salt = ci * 6151;
-                let enroll_src = &ch_a[..ch_a.len().saturating_sub(UL_TEST_SAME)];
-                let Some((reference, _, _)) = ul_enroll(enroll_src, embedder, *cbed, salt)? else {
-                    pool.skipped += 1;
-                    continue;
-                };
-                pool.callers += 1;
-                let split_at = ch_a.len().saturating_sub(UL_TEST_SAME);
-                for (r, f) in ch_a.iter().skip(split_at).enumerate() {
-                    let a = load(f)?;
-                    let (sc, _) =
-                        ul_scene(&a, cbed.map(|b| (b, (ci * 6151 + r * 99991) % b.len())));
-                    for (u, ue) in vad_utterances(&pcm48(&sc))? {
-                        if ue >= u + WINDOW_MS {
-                            pool.genuine.extend(
-                                score_windows(&sc, u, ue, embedder, &reference)
-                                    .iter()
-                                    .map(|w| w.1),
-                            );
-                        }
-                    }
-                }
-                for b in 0..MAP_BYSTANDERS {
-                    let bs = (ci + 1 + b * 3) % n;
-                    if bs == ci {
-                        continue;
-                    }
-                    let Some(bch) = chapters[bs].first() else {
-                        continue;
-                    };
-                    for (r, f) in bch.iter().skip(ci % 3).take(MAP_BY_FILES).enumerate() {
-                        let a = load(f)?;
-                        let (sc, _) = ul_scene(
-                            &a,
-                            cbed.map(|bd| (bd, (ci * 31 + b * 7907 + r * 13) % bd.len())),
-                        );
-                        for (u, ue) in vad_utterances(&pcm48(&sc))? {
-                            if ue >= u + WINDOW_MS {
-                                pool.imp[*ci_cond].extend(
-                                    score_windows(&sc, u, ue, embedder, &reference)
-                                        .iter()
-                                        .map(|w| w.1),
-                                );
-                            }
-                        }
-                    }
-                }
-                eprintln!("map pool: condition {ci_cond} speaker {ci} done");
-            }
-        }
-        Ok(pool)
-    }
-
-    fn survivors(scores: &[f32], c: f32) -> usize {
-        scores.iter().filter(|s| **s >= c).count()
-    }
-
-    /// The score `c'` of `target` with the same survival `P(score >= c')` as `c` has in `reference`
-    /// (the survivor count scales with the set sizes). `c'` lies halfway between the k-th and the
-    /// (k+1)-th highest target score, so exactly k target scores survive it (no ties at that rank);
-    /// with no survivor it is just above the highest score, with all of them just below the lowest.
-    fn quantile_map(reference: &[f32], target: &[f32], c: f32) -> f32 {
-        if reference.is_empty() || target.is_empty() {
-            return f32::NAN;
-        }
-        let f = survivors(reference, c) as f64 / reference.len() as f64;
-        let k = ((f * target.len() as f64).round() as usize).min(target.len());
-        let mut t = target.to_vec();
-        t.sort_by(|a, b| b.total_cmp(a));
-        if k == 0 {
-            t[0] + 1e-6
-        } else if k >= t.len() {
-            t[t.len() - 1] - 1e-6
-        } else {
-            (t[k - 1] + t[k]) / 2.0
-        }
-    }
-
-    /// `--map-constants`: the target model's constants from the reference model's (TitaNet-small)
-    /// by pooled impostor-window survival (threshold, near-miss floor, confident-other, adapt
-    /// margin) and genuine-window quantile (anchor bound). Plan `2026-11-18-caller-loss-zhen-c7` §4.
-    pub fn map_constants(
-        reference: &Embedder,
-        target: &Embedder,
-        root: &Path,
-        bed: Option<&Path>,
-        max_callers: usize,
-        threshold: f32,
-    ) -> Result<String, String> {
-        let r = map_pool(reference, root, bed, max_callers)?;
-        let t = map_pool(target, root, bed, max_callers)?;
-        let c = PRODUCT_CONSTS;
-        let pooled = |p: &MapPool| [p.imp[0].as_slice(), p.imp[1].as_slice()].concat();
-        let (rp, tp) = (pooled(&r), pooled(&t));
-        let (thr_bed, thr_clean) = if bed.is_some() {
-            (
-                quantile_map(&r.imp[0], &t.imp[0], threshold),
-                quantile_map(&r.imp[1], &t.imp[1], threshold),
-            )
-        } else {
-            (
-                f32::NEG_INFINITY,
-                quantile_map(&r.imp[1], &t.imp[1], threshold),
-            )
-        };
-        let thr_t = thr_bed.max(thr_clean);
-        let nm = quantile_map(&rp, &tp, c.nm_lo);
-        let conf = quantile_map(&rp, &tp, c.conf_other);
-        let top = quantile_map(&rp, &tp, threshold + c.adapt_margin);
-        let anchor = quantile_map(&r.genuine, &t.genuine, c.anchor_min);
-        let mut md = String::from(
-            "## Constant mapping (plan `2026-11-18-caller-loss-zhen-c7`, chunk 1)\n\nReference model = `--model` (TitaNet-small), target = `--map-constants`. Tune set LibriSpeech test-clean, same-session, product enrollment, bed -12 dB and clean. Impostor windows are the 1.5 s windows of other speakers' utterances against the caller's enrollment; genuine windows are the caller's own 15 test utterances. A constant maps to the target score with the same survival `P(score >= c)`; the target value lies halfway between the two neighbouring target scores, so the survivor count is the same share of the windows.\n\n",
-        );
-        md.push_str(&format!(
-            "Callers enrolled: reference {} (skipped {}), target {} (skipped {}), over both conditions. Impostor windows: reference bed {} / clean {}, target bed {} / clean {}. Genuine windows: reference {}, target {}.\n\n",
-            r.callers, r.skipped, t.callers, t.skipped,
-            r.imp[0].len(), r.imp[1].len(), t.imp[0].len(), t.imp[1].len(),
-            r.genuine.len(), t.genuine.len()
-        ));
-        md.push_str("| constant | TitaNet value | pool | TitaNet survivors / windows | mapped target value | target survivors / windows at the mapped value |\n| --- | --- | --- | --- | --- | --- |\n");
-        let row = |name: &str, v: f32, pool: &str, rs: &[f32], ts: &[f32], m: f32| {
-            format!(
-                "| {name} | {v:.3} | {pool} | {} / {} | {m:.4} | {} / {} |\n",
-                survivors(rs, v),
-                rs.len(),
-                survivors(ts, m),
-                ts.len()
-            )
-        };
-        if bed.is_some() {
-            md.push_str(&row(
-                "threshold (bed)",
-                threshold,
-                "impostor, bed",
-                &r.imp[0],
-                &t.imp[0],
-                thr_bed,
-            ));
-        }
-        md.push_str(&row(
-            "threshold (clean)",
-            threshold,
-            "impostor, clean",
-            &r.imp[1],
-            &t.imp[1],
-            thr_clean,
-        ));
-        md.push_str(&row(
-            "near-miss floor",
-            c.nm_lo,
-            "impostor, pooled",
-            &rp,
-            &tp,
-            nm,
-        ));
-        md.push_str(&row(
-            "confident-other",
-            c.conf_other,
-            "impostor, pooled",
-            &rp,
-            &tp,
-            conf,
-        ));
-        md.push_str(&row(
-            "threshold + adapt margin",
-            threshold + c.adapt_margin,
-            "impostor, pooled",
-            &rp,
-            &tp,
-            top,
-        ));
-        md.push_str(&row(
-            "anchor bound",
-            c.anchor_min,
-            "genuine, pooled",
-            &r.genuine,
-            &t.genuine,
-            anchor,
-        ));
-        md.push_str(&format!(
-            "\nThreshold used for both conditions: the higher of the two, {thr_t:.4}. Adapt margin: {top:.4} - {thr_t:.4} = {:.4}.\n\nFlags: `--thr {thr_t:.4} --nm-floor {nm:.4} --confident-other {conf:.4} --adapt-margin {:.4} --anchor-min {anchor:.4}`\n",
-            top - thr_t,
-            top - thr_t
-        ));
-        Ok(md)
-    }
-
     pub fn utterance_loss_tables() -> String {
         let recs = std::mem::take(&mut *UL.lock().unwrap());
         let far = std::mem::take(&mut *UL_FAR.lock().unwrap());
@@ -4934,38 +4691,6 @@ mod straddle {
             assert!(!c4_scores(&[0.31, 0.25, 0.25], t, 2));
             assert!(!c4_scores(&[0.42, 0.31], t, 2));
             assert!(!c4_scores(&[0.31, 0.35, 0.25], t, 0));
-        }
-
-        #[test]
-        fn quantile_map_is_identity_in_survival_for_equal_sets() {
-            let v: Vec<f32> = (0..100).map(|i| i as f32 / 100.0).collect();
-            for c in [0.05f32, 0.2, 0.3, 0.459, 0.83] {
-                let m = quantile_map(&v, &v, c);
-                assert_eq!(survivors(&v, m), survivors(&v, c), "c={c} m={m}");
-                // Halfway between neighbours: within one grid step of c.
-                assert!((m - c).abs() <= 0.01 + 1e-6, "c={c} m={m}");
-            }
-        }
-
-        #[test]
-        fn quantile_map_follows_a_monotone_rescale_and_is_monotone() {
-            let r: Vec<f32> = (0..200).map(|i| i as f32 / 200.0).collect();
-            let t: Vec<f32> = r.iter().map(|x| 0.5 * x + 0.1).collect();
-            let cs = [0.1f32, 0.2, 0.3, 0.459, 0.7];
-            let ms: Vec<f32> = cs.iter().map(|c| quantile_map(&r, &t, *c)).collect();
-            for (c, m) in cs.iter().zip(&ms) {
-                assert!((m - (0.5 * c + 0.1)).abs() < 0.01, "c={c} m={m}");
-            }
-            assert!(ms.windows(2).all(|w| w[0] <= w[1]), "{ms:?}");
-        }
-
-        #[test]
-        fn quantile_map_handles_no_survivors_and_empty_sets() {
-            let r = [0.1f32, 0.2, 0.3];
-            let t = [0.0f32, 0.5, 0.9];
-            assert!(quantile_map(&r, &t, 0.9) > 0.9);
-            assert!(quantile_map(&r, &t, 0.0) < 0.0);
-            assert!(quantile_map(&[], &t, 0.3).is_nan());
         }
 
         #[test]

@@ -559,6 +559,10 @@ struct Args {
     models: Option<String>,
     /// `--judge dev-clean,dev-other`: held-out sets of the model screen.
     judge: String,
+    /// `--map-constants <dir>:<file>` (LibriSpeech mode, `FA_ENROLL=product`): the gate constants
+    /// of one model mapped from TitaNet-small's on the same-session tune pool (plan
+    /// `2026-11-18-caller-loss-zhen-c7` decision a).
+    map_constants: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -583,6 +587,7 @@ fn parse_args() -> Result<Args, String> {
         out: map.get("--out").map(PathBuf::from),
         librispeech: map.get("--librispeech").map(PathBuf::from),
         models: map.get("--models").cloned(),
+        map_constants: map.get("--map-constants").cloned(),
         judge: map
             .get("--judge")
             .cloned()
@@ -753,6 +758,9 @@ fn run() -> Result<(), String> {
     let args = parse_args()?;
     fs::create_dir_all(&args.cache).map_err(|e| e.to_string())?;
     if let Some(root) = &args.librispeech {
+        if let Some(spec) = &args.map_constants {
+            return librispeech::map_constants(&args, root, spec);
+        }
         if let Some(spec) = &args.models {
             return librispeech::screen(&args, root, spec);
         }
@@ -2380,6 +2388,109 @@ mod librispeech {
         let mut v: Vec<f32> = tune_imp_k.iter().flatten().flatten().copied().collect();
         v.sort_by(|a, b| b.total_cmp(a));
         v.get(n0).map_or(f32::MIN, |x| above(*x))
+    }
+
+    /// Largest threshold-free count rule for a pooled genuine set: the lowest score at which at most
+    /// `n` of `scores` are at or above it (`far_matched` on a flat set).
+    fn survival_matched(scores: &[f32], n: usize) -> f32 {
+        far_matched(&[vec![scores.to_vec()]], n)
+    }
+
+    /// Constant mapping (plan `2026-11-18-caller-loss-zhen-c7`, decision a): TitaNet-small's gate
+    /// constants mapped to one other model on the same-session tune pool (`test-clean`, product
+    /// enrollment, 1.5 s windows, bed and clean). Impostor-side constants (threshold, near-miss
+    /// floor, confident-other) are FAR-matched per condition with `far_matched` and the higher of
+    /// the two is taken; a constant with no TitaNet survivor in a condition is an error (nothing to
+    /// match). Threshold + margin and the anchor bound map by genuine-window survival, pooled over
+    /// both conditions.
+    pub(super) fn map_constants(args: &Args, root: &Path, spec: &str) -> Result<(), String> {
+        if !std::env::var("FA_ENROLL").is_ok_and(|v| v == "product") {
+            return Err("--map-constants needs FA_ENROLL=product".into());
+        }
+        let (dir, file) = spec
+            .rsplit_once(':')
+            .ok_or("--map-constants needs <dir>:<file>")?;
+        let bed = resample_linear(&read_f32le(&args.bed)?, 48_000, SR);
+        let mut models = vec![
+            Embedder::open(&args.speaker_dir.join("nemo_en_titanet_small.onnx"))?,
+            Embedder::open(&Path::new(dir).join(file))?,
+        ];
+        let tune_sp = speakers(root, "test-clean")?;
+        let mode = Mode::SameSession;
+        let mut set = Vec::new();
+        for (i, sp) in tune_sp.iter().enumerate() {
+            eprintln!("map-constants speaker {}", sp.label());
+            let (e, s, _, eb) = audio(sp, mode, true)?;
+            set.push(embed_audio(
+                &mut models,
+                &eb,
+                &e,
+                &s,
+                i,
+                &bed,
+                args.bed_db,
+                windows_15,
+            )?);
+        }
+        let sc: Vec<Scores> = (0..2).map(|m| raw_scores(&set, m)).collect();
+        let flat =
+            |v: &[Vec<Vec<f32>>]| -> Vec<f32> { v.iter().flatten().flatten().copied().collect() };
+        let gflat = |v: &Vec<Vec<f32>>| -> Vec<f32> { v.iter().flatten().copied().collect() };
+        let n_imp: Vec<usize> = (0..2).map(|k| flat(&sc[0].1[k]).len()).collect();
+        let mut md = format!(
+            "### Constant mapping on the false_accept_bench pool (decision a)\n\nTitaNet-small -> `{file}`. LibriSpeech test-clean, {} speakers, same-session, product enrollment, 1.5 s windows, raw cosine, bed {} dB. Impostor windows per condition: bed {}, clean {} (target the same). Genuine windows: {} (bed + clean).\n\n| constant | TitaNet value | TitaNet survivors (bed / clean) | mapped bed | mapped clean | mapped (higher) |\n| --- | --- | --- | --- | --- | --- |\n",
+            tune_sp.len(), args.bed_db, n_imp[0], n_imp[1],
+            gflat(&sc[0].0[0]).len() + gflat(&sc[0].0[1]).len(),
+        );
+        let mut mapped = Vec::new();
+        for (name, c) in [
+            ("threshold", GATE_THRESHOLD),
+            ("near-miss floor", 0.30f32),
+            ("confident-other", 0.20f32),
+        ] {
+            let n: Vec<usize> = (0..2)
+                .map(|k| flat(&sc[0].1[k]).iter().filter(|x| **x >= c).count())
+                .collect();
+            if n.contains(&0) {
+                return Err(format!(
+                    "{name} {c}: TitaNet survivors bed {} / clean {}: zero in a condition, nothing to match (stop and report)",
+                    n[0], n[1]
+                ));
+            }
+            let m: Vec<f32> = (0..2).map(|k| far_matched(&sc[1].1[k], n[k])).collect();
+            let hi = m[0].max(m[1]);
+            md.push_str(&format!(
+                "| {name} | {c:.3} | {} / {} | {:.4} | {:.4} | {hi:.4} |\n",
+                n[0], n[1], m[0], m[1]
+            ));
+            mapped.push(hi);
+        }
+        let gen_ref: Vec<f32> = (0..2).flat_map(|k| gflat(&sc[0].0[k])).collect();
+        let gen_tgt: Vec<f32> = (0..2).flat_map(|k| gflat(&sc[1].0[k])).collect();
+        let mut gmap = |name: &str, c: f32| -> Result<f32, String> {
+            let n = gen_ref.iter().filter(|x| **x >= c).count();
+            let m = survival_matched(&gen_tgt, n);
+            md.push_str(&format!(
+                "| {name} | {c:.3} | {n} of {} genuine | {m:.4} | | {m:.4} |\n",
+                gen_ref.len()
+            ));
+            Ok(m)
+        };
+        let top = gmap(
+            "threshold + margin (genuine survival)",
+            GATE_THRESHOLD + 0.1,
+        )?;
+        let anchor = gmap("anchor bound (genuine quantile)", 0.8)?;
+        let margin = (top - mapped[0]).max(0.0);
+        md.push_str(&format!(
+            "\nMapped margin: {top:.4} - {:.4} = {:.4} (floored at 0: {margin:.4}).\n\nFlags: `--thr {:.4} --nm-floor {:.4} --confident-other {:.4} --adapt-margin {margin:.4} --anchor-min {anchor:.4}`\n",
+            mapped[0], top - mapped[0], mapped[0], mapped[1], mapped[2]
+        ));
+        print!("{md}");
+        if let Some(out) = &args.out {
+            fs::write(out, &md).map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     /// Equal error rate of raw scores: at the candidate threshold (every score, and above them all)

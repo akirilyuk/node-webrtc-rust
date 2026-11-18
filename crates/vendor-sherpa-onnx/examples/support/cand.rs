@@ -102,11 +102,29 @@ pub fn cand() -> Cand {
 /// thr) and none below [`CONFIDENT_OTHER_MAX_SCORE`]. `n == 0`: off. (Optimistic against the
 /// product: an accept does not arm the caller -> other watch, as the product's upgrade arm.)
 pub fn c4_scores(scores: &[f32], threshold: f32, n: usize) -> bool {
+    c4_scores_with(
+        scores,
+        threshold,
+        n,
+        NEAR_MISS_MIN_SCORE,
+        CONFIDENT_OTHER_MAX_SCORE,
+    )
+}
+
+/// [`c4_scores`] with explicit band bounds (`nm_lo` replaces `NEAR_MISS_MIN_SCORE`,
+/// `confident_other` replaces `CONFIDENT_OTHER_MAX_SCORE`), for a model with its own score scale.
+pub fn c4_scores_with(
+    scores: &[f32],
+    threshold: f32,
+    n: usize,
+    nm_lo: f32,
+    confident_other: f32,
+) -> bool {
     n > 0
-        && scores.iter().all(|s| *s >= CONFIDENT_OTHER_MAX_SCORE)
+        && scores.iter().all(|s| *s >= confident_other)
         && scores
             .iter()
-            .filter(|s| **s >= NEAR_MISS_MIN_SCORE && **s < threshold)
+            .filter(|s| **s >= nm_lo && **s < threshold)
             .count()
             >= n
 }

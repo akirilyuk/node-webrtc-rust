@@ -66,6 +66,34 @@ mod support;
 
 use support::{parse_json, read_wav, read_wav_stereo_48k_pcm, Json};
 
+/// The gate's score constants for the model under test (plan `2026-11-18-caller-loss-zhen-c7`,
+/// chunk 1). The defaults are the product's TitaNet-small values, so a run without the flags is
+/// unchanged; another model passes its own mapped values (`--map-constants`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Consts {
+    /// Near-miss band floor (`NEAR_MISS_MIN_SCORE`).
+    nm_lo: f32,
+    /// Confident-other bound (`CONFIDENT_OTHER_MAX_SCORE`, decision bb and C4).
+    conf_other: f32,
+    /// Adaptive reference candidate margin above the threshold (`ADAPT_MARGIN`).
+    adapt_margin: f32,
+    /// Adaptive reference anchor bound (`ANCHOR_MIN_COSINE`).
+    anchor_min: f32,
+}
+
+const PRODUCT_CONSTS: Consts = Consts {
+    nm_lo: node_webrtc_rust_speech::speaker_gate::NEAR_MISS_MIN_SCORE,
+    conf_other: node_webrtc_rust_speech::speaker_gate::CONFIDENT_OTHER_MAX_SCORE,
+    adapt_margin: node_webrtc_rust_speech::speaker_gate::ADAPT_MARGIN,
+    anchor_min: node_webrtc_rust_speech::speaker_gate::ANCHOR_MIN_COSINE,
+};
+
+static CONSTS: std::sync::OnceLock<Consts> = std::sync::OnceLock::new();
+
+fn consts() -> Consts {
+    CONSTS.get().copied().unwrap_or(PRODUCT_CONSTS)
+}
+
 const SR: i32 = 16_000;
 const SAMPLES_PER_MS: usize = 16;
 const WINDOW_MS: usize = 1500;
@@ -182,6 +210,10 @@ fn quiet_run(samples: &[f32], lo: usize, hi: usize) -> (usize, usize) {
         }
     }
     (best_end, best_len * FRAME_MS)
+}
+
+fn parse_f32(flag: &str, v: &str) -> Result<f32, String> {
+    v.parse().map_err(|e| format!("{flag}: {e}"))
 }
 
 fn num(j: &Json, key: &str) -> Option<f64> {
@@ -698,6 +730,8 @@ fn run() -> Result<(), String> {
     let mut fixtures: Vec<PathBuf> = Vec::new();
     let mut model = None;
     let mut threshold = 0.459f32;
+    let mut cs = PRODUCT_CONSTS;
+    let mut map_model: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
     let mut tap_utt = None;
     let mut tap_enroll = None;
@@ -713,8 +747,8 @@ fn run() -> Result<(), String> {
         match arg.as_str() {
             "--fixtures" => fixtures.push(PathBuf::from(value("--fixtures")?)),
             "--model" => model = Some(PathBuf::from(value("--model")?)),
-            "--threshold" => {
-                threshold = value("--threshold")?
+            "--threshold" | "--thr" => {
+                threshold = value("--thr")?
                     .parse()
                     .map_err(|e| format!("--threshold: {e}"))?
             }
@@ -759,6 +793,18 @@ fn run() -> Result<(), String> {
                     .map_err(|e| format!("--ls-callers: {e}"))?
             }
             "--window-dist" => window_dist = true,
+            "--nm-floor" => cs.nm_lo = parse_f32("--nm-floor", &value("--nm-floor")?)?,
+            "--confident-other" => {
+                cs.conf_other = parse_f32("--confident-other", &value("--confident-other")?)?
+            }
+            "--adapt-margin" => {
+                cs.adapt_margin = parse_f32("--adapt-margin", &value("--adapt-margin")?)?
+            }
+            "--anchor-min" => cs.anchor_min = parse_f32("--anchor-min", &value("--anchor-min")?)?,
+            "--adapt" => {
+                let _ = straddle::ADAPT.set(());
+            }
+            "--map-constants" => map_model = Some(PathBuf::from(value("--map-constants")?)),
             "--tap-scores" => {
                 tap_scores = value("--tap-scores")?
                     .split(',')
@@ -772,7 +818,27 @@ fn run() -> Result<(), String> {
             other => return Err(format!("unknown argument {other}")),
         }
     }
+    let _ = CONSTS.set(cs);
     let embedder = Embedder::open(&model.ok_or("--model is required")?)?;
+    if let Some(target) = &map_model {
+        let root = librispeech
+            .as_ref()
+            .ok_or("--map-constants needs --librispeech")?;
+        let target = Embedder::open(target)?;
+        let md = straddle::map_constants(
+            &embedder,
+            &target,
+            root,
+            bed.as_deref(),
+            ls_callers,
+            threshold,
+        )?;
+        print!("{md}");
+        if let Some(path) = out {
+            fs::write(&path, &md).map_err(|e| format!("write {}: {e}", path.display()))?;
+        }
+        return Ok(());
+    }
     let mut md = format!(
         "# Near-miss re-check bench (chunk 6f, decision t)\n\nThreshold {threshold}. Sub-windows {SUB_MS} ms / hop {HOP_MS} ms over `[start(k-1), start(k) + 1500)`. Budget per window: {VERIFY_MS} ms minus the window's own embed. Excluded bystander pairs: libritts_r 120.\n\n"
     );
@@ -817,6 +883,15 @@ fn run() -> Result<(), String> {
             .as_ref()
             .ok_or("--utterance-loss needs --librispeech")?;
         straddle::utterance_loss(&embedder, root, bed.as_deref(), ls_callers, threshold)?;
+        if cs != PRODUCT_CONSTS || threshold != 0.459 {
+            md.push_str(&format!(
+                "Run constants: threshold {threshold}, near-miss floor {}, confident-other {}, adapt margin {}, anchor bound {}.\n\n",
+                cs.nm_lo, cs.conf_other, cs.adapt_margin, cs.anchor_min
+            ));
+        }
+        if let Some(a) = straddle::adapt_summary() {
+            md.push_str(&a);
+        }
         md.push_str(&straddle::utterance_loss_tables());
         print!("{md}");
         if let Some(path) = out {
@@ -1047,8 +1122,6 @@ fn main() {
 /// is adjusted (up to 3 VAD passes) until the measured `t` is within 40 ms of the target.
 mod straddle {
     use super::*;
-    use node_webrtc_rust_speech::speaker_gate::NEAR_MISS_MIN_SCORE;
-
     const LEAD_MS: usize = 800;
     const TAIL_MS: usize = 2000;
     const BY_BASE_MS: usize = 3000;
@@ -2256,7 +2329,6 @@ mod straddle {
     /// section of `NEAR_MISS_BENCH.md`).
     pub static EVIDENCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     /// Product constants: `NEAR_MISS_MIN_SCORE`, `SPLIT_STAGE2_SUB_MS` / `_HOP_MS`, `SPLIT_BACKOFF_MS`.
-    const P_NM_LO: f32 = 0.30;
     const P_SUB: usize = 750;
     const P_HOP: usize = 125;
     const P_BACK: usize = 300;
@@ -2362,7 +2434,7 @@ mod straddle {
     /// word on an upgrade. Confirms under a veto mode are a subset of today's (a veto only skips a
     /// window), so today's `upgrade_leak` applies.
     fn veto_table(recs: &[EvRec], sets: &[(String, bool)]) -> String {
-        let bb = |u: &[f32]| u.iter().any(|x| *x < 0.20);
+        let bb = |u: &[f32]| u.iter().any(|x| *x < consts().conf_other);
         let mut md = String::from(
             "## Scan-miss veto for other -> caller (chunk 7f, decision gg)\n\nShipped split rule (decision bb). Per set and mode: lost caller words above the floor (measure A: split loss + no-confirm loss) / leaked bystander words; confirms at today's window / at a later window (delayed by 1 / by 2+) / no longer confirmed; rule outcome changed (split -> upgrade / upgrade -> split); caller-only false splits; confirms more than 1500 ms before the caller onset (bystander-only window, the n02 shape); scans / sub-window embeds / total ms / longest scan ms.\n\n| set | mode | lost (A) | leaked | same window | delayed 1 / 2+ | no confirm | split->upgrade / upgrade->split | caller-only false splits | early confirms | end of speech with the veto pending -> whole utterance `caller` (late barge) | scans / embeds / ms / max ms |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
         );
@@ -2528,7 +2600,7 @@ mod straddle {
         for k in 1..utt.wins.len() {
             let (start, s, ms) = utt.wins[k];
             let lo = utt.wins[k - 1].0;
-            let near = (P_NM_LO..threshold).contains(&s);
+            let near = (consts().nm_lo..threshold).contains(&s);
             if s < threshold && !near {
                 continue;
             }
@@ -2794,7 +2866,7 @@ mod straddle {
                 prev = Some(w);
                 continue;
             }
-            if c7.nm && *score >= NEAR_MISS_MIN_SCORE {
+            if c7.nm && *score >= consts().nm_lo {
                 continue;
             }
             if run.is_empty() {
@@ -3207,7 +3279,7 @@ mod straddle {
         pairs: Vec<(usize, usize)>,
     }
 
-    use super::cand::{c4_scores, cand};
+    use super::cand::{c4_scores_with, cand};
 
     /// An utterance with no other -> caller confirm: (accepted whole by C4, caller words lost).
     /// `first_other_only`: a caller-only utterance counts as lost only when window 1 is `other`.
@@ -3220,16 +3292,22 @@ mod straddle {
         first_other_only: bool,
     ) -> (bool, usize) {
         let scores: Vec<f32> = wins.iter().map(|w| w.1).collect();
-        let acc = !end_caller && c4_scores(&scores, threshold, c4);
+        let acc = !end_caller && c4_with(&scores, threshold, c4);
         let dropped = !end_caller
             && !acc
             && (!first_other_only || wins.first().is_some_and(|w| w.1 < threshold));
         (acc, if dropped { floor_kept } else { 0 })
     }
 
+    /// C4 with the model's own band bounds.
+    fn c4_with(scores: &[f32], threshold: f32, n: usize) -> bool {
+        let c = consts();
+        c4_scores_with(scores, threshold, n, c.nm_lo, c.conf_other)
+    }
+
     fn c4_accept(wins: &[Win], threshold: f32) -> bool {
         let scores: Vec<f32> = wins.iter().map(|w| w.1).collect();
-        c4_scores(&scores, threshold, cand().c4)
+        c4_with(&scores, threshold, cand().c4)
     }
 
     /// Voiced ms consumed before the gate is enrolled: (set, mode, ms).
@@ -3382,7 +3460,7 @@ mod straddle {
                 if dump {
                     dump_split_raw(embedder, samples, reference, &utt, k, threshold);
                 }
-                if u1.iter().any(|x| *x < 0.20) {
+                if u1.iter().any(|x| *x < consts().conf_other) {
                     let lost = kept(u).saturating_sub(kept(cut));
                     let origin = cut / FRAME_MS * FRAME_MS;
                     let floor = found.map_or(300, |f| (f + 750).saturating_sub(origin)) as u32;
@@ -3509,6 +3587,155 @@ mod straddle {
         Ok((!acc.is_empty()).then_some(acc))
     }
 
+    /// `--adapt`: the in-call reference refresh (`adaptReference`) runs on the test utterances of
+    /// one speaker and mode, in order (plan `2026-11-18-caller-loss-zhen-c7`, R4/R5).
+    pub static ADAPT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    /// Adaptive-reference counters over the run: (commits, anchor rejects, skipped utterances).
+    static ADAPT_N: std::sync::Mutex<(usize, usize, usize)> = std::sync::Mutex::new((0, 0, 0));
+
+    /// Candidates kept per utterance (`ADAPT_MAX_CANDIDATES` = `DEFAULT_RECHECK_MAX_WINDOWS`).
+    const ADAPT_MAX_CANDIDATES: usize = MAX_WINDOWS;
+
+    fn unit(v: &[f32]) -> Option<Vec<f32>> {
+        let n = v
+            .iter()
+            .map(|x| f64::from(*x) * f64::from(*x))
+            .sum::<f64>()
+            .sqrt();
+        if n <= f64::EPSILON || !n.is_finite() {
+            return None;
+        }
+        Some(v.iter().map(|x| (f64::from(*x) / n) as f32).collect())
+    }
+
+    /// One adaptive-reference update, mirroring `speaker_gate::adapt_step` (EMA weight
+    /// `ADAPT_ALPHA`, unit mean of the unit candidates) with the anchor bound as a parameter.
+    /// `Err(cos)` = rejected by the anchor bound; `Ok(None)` = nothing usable.
+    fn adapt_update(
+        reference: &[f32],
+        anchor: &[f32],
+        cands: &[Vec<f32>],
+        anchor_min: f32,
+    ) -> Result<Option<Vec<f32>>, f32> {
+        use node_webrtc_rust_speech::speaker_gate::ADAPT_ALPHA;
+        let Some(r) = unit(reference) else {
+            return Ok(None);
+        };
+        let mut sum = vec![0.0_f32; r.len()];
+        let mut n = 0usize;
+        for c in cands {
+            if c.len() != r.len() {
+                return Ok(None);
+            }
+            if let Some(c) = unit(c) {
+                for (s, x) in sum.iter_mut().zip(c) {
+                    *s += x;
+                }
+                n += 1;
+            }
+        }
+        let Some(c) = (n > 0).then(|| unit(&sum)).flatten() else {
+            return Ok(None);
+        };
+        let mixed: Vec<f32> = r
+            .iter()
+            .zip(&c)
+            .map(|(a, b)| (1.0 - ADAPT_ALPHA) * a + ADAPT_ALPHA * b)
+            .collect();
+        let Some(new) = unit(&mixed) else {
+            return Ok(None);
+        };
+        let cos = cosine(&new, anchor);
+        if cos < anchor_min {
+            return Err(cos);
+        }
+        Ok(Some(new))
+    }
+
+    /// Embeddings of the utterance's windows on the `score_windows` grid.
+    fn window_embeds(
+        samples: &[f32],
+        u: usize,
+        u_end: usize,
+        embedder: &Embedder,
+    ) -> Vec<Vec<f32>> {
+        let mut out = Vec::new();
+        let mut k = 1;
+        while k <= MAX_WINDOWS && u + k * WINDOW_MS <= u_end {
+            let start = u + (k - 1) * WINDOW_MS;
+            if let Some((e, _)) = embedder.embed(slice(
+                samples,
+                start.saturating_sub(PRE_ROLL_MS),
+                start + WINDOW_MS,
+            )) {
+                out.push(e);
+            }
+            k += 1;
+        }
+        out
+    }
+
+    /// The gate's settle rule after one utterance judged against `reference`: it commits only when
+    /// every window scored `caller` (no split, no other window) and at least one window scored at
+    /// least `threshold + adapt_margin`. Returns the new reference when committed.
+    fn adapt_after(
+        reference: &[f32],
+        anchor: &[f32],
+        scores: &[f32],
+        embeds: impl FnOnce() -> Vec<Vec<f32>>,
+        threshold: f32,
+    ) -> Option<Vec<f32>> {
+        let c = consts();
+        let mut n = ADAPT_N.lock().unwrap();
+        if scores.is_empty() || scores.iter().any(|x| *x < threshold) {
+            n.2 += 1;
+            return None;
+        }
+        let embeds = embeds();
+        if embeds.len() != scores.len() {
+            n.2 += 1;
+            return None;
+        }
+        let cands: Vec<Vec<f32>> = embeds
+            .into_iter()
+            .zip(scores)
+            .filter(|(_, s)| **s >= threshold + c.adapt_margin)
+            .take(ADAPT_MAX_CANDIDATES)
+            .map(|(e, _)| e)
+            .collect();
+        if cands.is_empty() {
+            n.2 += 1;
+            return None;
+        }
+        match adapt_update(reference, anchor, &cands, c.anchor_min) {
+            Ok(Some(new)) => {
+                n.0 += 1;
+                Some(new)
+            }
+            Ok(None) => {
+                n.2 += 1;
+                None
+            }
+            Err(_) => {
+                n.1 += 1;
+                None
+            }
+        }
+    }
+
+    pub fn adapt_summary() -> Option<String> {
+        ADAPT.get()?;
+        let n = ADAPT_N.lock().unwrap();
+        Some(format!(
+            "Adaptive reference (`--adapt`, margin {}, anchor bound {}): {} commits, {} rejected by the anchor bound, {} utterances committed nothing.\n\n",
+            consts().adapt_margin,
+            consts().anchor_min,
+            n.0,
+            n.1,
+            n.2
+        ))
+    }
+
     struct UlScene {
         s: Vec<f32>,
         clean: Vec<f32>,
@@ -3530,14 +3757,10 @@ mod straddle {
         &mut far[i]
     }
 
-    pub fn utterance_loss(
-        embedder: &Embedder,
-        root: &Path,
-        bed: Option<&Path>,
-        max_callers: usize,
-        threshold: f32,
-    ) -> Result<(), String> {
-        let split = LS_SPLIT.get().map_or("test-clean", |s| s.as_str());
+    /// Speakers of a LibriSpeech split (sorted) and, per speaker, the sorted wav lists of the
+    /// chapters with at least 8 files.
+    #[allow(clippy::type_complexity)]
+    fn ul_load(root: &Path, split: &str) -> Result<(Vec<PathBuf>, Vec<Vec<Vec<PathBuf>>>), String> {
         let top = root.join(split);
         let mut spk: Vec<PathBuf> = fs::read_dir(&top)
             .map_err(|e| format!("{}: {e}", top.display()))?
@@ -3564,6 +3787,18 @@ mod straddle {
             }
             chapters.push(v);
         }
+        Ok((spk, chapters))
+    }
+
+    pub fn utterance_loss(
+        embedder: &Embedder,
+        root: &Path,
+        bed: Option<&Path>,
+        max_callers: usize,
+        threshold: f32,
+    ) -> Result<(), String> {
+        let split = LS_SPLIT.get().map_or("test-clean", |s| s.as_str());
+        let (spk, chapters) = ul_load(root, split)?;
         let n = spk.len();
         let bed16 = bed.map(load_bed).transpose()?;
         let mut conds: Vec<(String, Option<&[f32]>)> = Vec::new();
@@ -3633,6 +3868,8 @@ mod straddle {
                         scenes.push(UlScene { s, clean, utts });
                     }
                     let mut p10: Option<f32> = None;
+                    let adapt = ADAPT.get().is_some();
+                    let mut current = reference.clone();
                     for sc in &scenes {
                         for &(u, ue) in &sc.utts {
                             if ue < u + WINDOW_MS {
@@ -3653,10 +3890,21 @@ mod straddle {
                                 &sc.clean,
                                 (u, ue),
                                 embedder,
-                                &reference,
+                                &current,
                                 threshold,
                                 dump,
                             );
+                            if adapt {
+                                if let Some(new) = adapt_after(
+                                    &current,
+                                    &reference,
+                                    &j.scores,
+                                    || window_embeds(&sc.s, u, ue, embedder),
+                                    threshold,
+                                ) {
+                                    current = new;
+                                }
+                            }
                             let mut cause = None;
                             if matches!(j.out, UlOut::Dropped | UlOut::Partly) {
                                 let rec = |s: &[f32], r: &[f32]| {
@@ -3729,7 +3977,7 @@ mod straddle {
                                 if ue < u + WINDOW_MS {
                                     continue;
                                 }
-                                let wins = score_windows(&s, u, ue, embedder, &reference);
+                                let wins = score_windows(&s, u, ue, embedder, &current);
                                 w_n += wins.len();
                                 w_hit += wins.iter().filter(|w| w.1 >= threshold).count();
                                 let utt = Utt {
@@ -3742,8 +3990,7 @@ mod straddle {
                                     || {
                                         let mut cache = SubCache::default();
                                         let (o, _, end) = product_o2c(
-                                            &s, &utt, embedder, &reference, threshold, 3,
-                                            &mut cache,
+                                            &s, &utt, embedder, &current, threshold, 3, &mut cache,
                                         );
                                         o.is_some() || end
                                     };
@@ -3763,6 +4010,228 @@ mod straddle {
             }
         }
         Ok(())
+    }
+
+    /// Pooled window scores of one model on the tune split (same-session, product enrollment).
+    #[derive(Default)]
+    struct MapPool {
+        /// Bystander (impostor) windows: [bed, clean].
+        imp: [Vec<f32>; 2],
+        /// Caller (genuine) windows of the test utterances, bed and clean pooled.
+        genuine: Vec<f32>,
+        callers: usize,
+        skipped: usize,
+    }
+
+    const MAP_BYSTANDERS: usize = 6;
+    const MAP_BY_FILES: usize = 4;
+
+    fn map_pool(
+        embedder: &Embedder,
+        root: &Path,
+        bed: Option<&Path>,
+        max_callers: usize,
+    ) -> Result<MapPool, String> {
+        let split = LS_SPLIT.get().map_or("test-clean", |s| s.as_str());
+        let (spk, chapters) = ul_load(root, split)?;
+        let n = spk.len();
+        let bed16 = bed.map(load_bed).transpose()?;
+        let mut conds: Vec<(usize, Option<&[f32]>)> = Vec::new();
+        if let Some(b) = &bed16 {
+            conds.push((0, Some(b)));
+        }
+        conds.push((1, None));
+        let mut pool = MapPool::default();
+        for (ci_cond, cbed) in &conds {
+            for ci in 0..max_callers.min(n) {
+                let Some(ch_a) = chapters[ci].first() else {
+                    continue;
+                };
+                let salt = ci * 6151;
+                let enroll_src = &ch_a[..ch_a.len().saturating_sub(UL_TEST_SAME)];
+                let Some((reference, _, _)) = ul_enroll(enroll_src, embedder, *cbed, salt)? else {
+                    pool.skipped += 1;
+                    continue;
+                };
+                pool.callers += 1;
+                let split_at = ch_a.len().saturating_sub(UL_TEST_SAME);
+                for (r, f) in ch_a.iter().skip(split_at).enumerate() {
+                    let a = load(f)?;
+                    let (sc, _) =
+                        ul_scene(&a, cbed.map(|b| (b, (ci * 6151 + r * 99991) % b.len())));
+                    for (u, ue) in vad_utterances(&pcm48(&sc))? {
+                        if ue >= u + WINDOW_MS {
+                            pool.genuine.extend(
+                                score_windows(&sc, u, ue, embedder, &reference)
+                                    .iter()
+                                    .map(|w| w.1),
+                            );
+                        }
+                    }
+                }
+                for b in 0..MAP_BYSTANDERS {
+                    let bs = (ci + 1 + b * 3) % n;
+                    if bs == ci {
+                        continue;
+                    }
+                    let Some(bch) = chapters[bs].first() else {
+                        continue;
+                    };
+                    for (r, f) in bch.iter().skip(ci % 3).take(MAP_BY_FILES).enumerate() {
+                        let a = load(f)?;
+                        let (sc, _) = ul_scene(
+                            &a,
+                            cbed.map(|bd| (bd, (ci * 31 + b * 7907 + r * 13) % bd.len())),
+                        );
+                        for (u, ue) in vad_utterances(&pcm48(&sc))? {
+                            if ue >= u + WINDOW_MS {
+                                pool.imp[*ci_cond].extend(
+                                    score_windows(&sc, u, ue, embedder, &reference)
+                                        .iter()
+                                        .map(|w| w.1),
+                                );
+                            }
+                        }
+                    }
+                }
+                eprintln!("map pool: condition {ci_cond} speaker {ci} done");
+            }
+        }
+        Ok(pool)
+    }
+
+    fn survivors(scores: &[f32], c: f32) -> usize {
+        scores.iter().filter(|s| **s >= c).count()
+    }
+
+    /// The score `c'` of `target` with the same survival `P(score >= c')` as `c` has in `reference`
+    /// (the survivor count scales with the set sizes). `c'` lies halfway between the k-th and the
+    /// (k+1)-th highest target score, so exactly k target scores survive it (no ties at that rank);
+    /// with no survivor it is just above the highest score, with all of them just below the lowest.
+    fn quantile_map(reference: &[f32], target: &[f32], c: f32) -> f32 {
+        if reference.is_empty() || target.is_empty() {
+            return f32::NAN;
+        }
+        let f = survivors(reference, c) as f64 / reference.len() as f64;
+        let k = ((f * target.len() as f64).round() as usize).min(target.len());
+        let mut t = target.to_vec();
+        t.sort_by(|a, b| b.total_cmp(a));
+        if k == 0 {
+            t[0] + 1e-6
+        } else if k >= t.len() {
+            t[t.len() - 1] - 1e-6
+        } else {
+            (t[k - 1] + t[k]) / 2.0
+        }
+    }
+
+    /// `--map-constants`: the target model's constants from the reference model's (TitaNet-small)
+    /// by pooled impostor-window survival (threshold, near-miss floor, confident-other, adapt
+    /// margin) and genuine-window quantile (anchor bound). Plan `2026-11-18-caller-loss-zhen-c7` §4.
+    pub fn map_constants(
+        reference: &Embedder,
+        target: &Embedder,
+        root: &Path,
+        bed: Option<&Path>,
+        max_callers: usize,
+        threshold: f32,
+    ) -> Result<String, String> {
+        let r = map_pool(reference, root, bed, max_callers)?;
+        let t = map_pool(target, root, bed, max_callers)?;
+        let c = PRODUCT_CONSTS;
+        let pooled = |p: &MapPool| [p.imp[0].as_slice(), p.imp[1].as_slice()].concat();
+        let (rp, tp) = (pooled(&r), pooled(&t));
+        let (thr_bed, thr_clean) = if bed.is_some() {
+            (
+                quantile_map(&r.imp[0], &t.imp[0], threshold),
+                quantile_map(&r.imp[1], &t.imp[1], threshold),
+            )
+        } else {
+            (
+                f32::NEG_INFINITY,
+                quantile_map(&r.imp[1], &t.imp[1], threshold),
+            )
+        };
+        let thr_t = thr_bed.max(thr_clean);
+        let nm = quantile_map(&rp, &tp, c.nm_lo);
+        let conf = quantile_map(&rp, &tp, c.conf_other);
+        let top = quantile_map(&rp, &tp, threshold + c.adapt_margin);
+        let anchor = quantile_map(&r.genuine, &t.genuine, c.anchor_min);
+        let mut md = String::from(
+            "## Constant mapping (plan `2026-11-18-caller-loss-zhen-c7`, chunk 1)\n\nReference model = `--model` (TitaNet-small), target = `--map-constants`. Tune set LibriSpeech test-clean, same-session, product enrollment, bed -12 dB and clean. Impostor windows are the 1.5 s windows of other speakers' utterances against the caller's enrollment; genuine windows are the caller's own 15 test utterances. A constant maps to the target score with the same survival `P(score >= c)`; the target value lies halfway between the two neighbouring target scores, so the survivor count is the same share of the windows.\n\n",
+        );
+        md.push_str(&format!(
+            "Callers enrolled: reference {} (skipped {}), target {} (skipped {}), over both conditions. Impostor windows: reference bed {} / clean {}, target bed {} / clean {}. Genuine windows: reference {}, target {}.\n\n",
+            r.callers, r.skipped, t.callers, t.skipped,
+            r.imp[0].len(), r.imp[1].len(), t.imp[0].len(), t.imp[1].len(),
+            r.genuine.len(), t.genuine.len()
+        ));
+        md.push_str("| constant | TitaNet value | pool | TitaNet survivors / windows | mapped target value | target survivors / windows at the mapped value |\n| --- | --- | --- | --- | --- | --- |\n");
+        let row = |name: &str, v: f32, pool: &str, rs: &[f32], ts: &[f32], m: f32| {
+            format!(
+                "| {name} | {v:.3} | {pool} | {} / {} | {m:.4} | {} / {} |\n",
+                survivors(rs, v),
+                rs.len(),
+                survivors(ts, m),
+                ts.len()
+            )
+        };
+        if bed.is_some() {
+            md.push_str(&row(
+                "threshold (bed)",
+                threshold,
+                "impostor, bed",
+                &r.imp[0],
+                &t.imp[0],
+                thr_bed,
+            ));
+        }
+        md.push_str(&row(
+            "threshold (clean)",
+            threshold,
+            "impostor, clean",
+            &r.imp[1],
+            &t.imp[1],
+            thr_clean,
+        ));
+        md.push_str(&row(
+            "near-miss floor",
+            c.nm_lo,
+            "impostor, pooled",
+            &rp,
+            &tp,
+            nm,
+        ));
+        md.push_str(&row(
+            "confident-other",
+            c.conf_other,
+            "impostor, pooled",
+            &rp,
+            &tp,
+            conf,
+        ));
+        md.push_str(&row(
+            "threshold + adapt margin",
+            threshold + c.adapt_margin,
+            "impostor, pooled",
+            &rp,
+            &tp,
+            top,
+        ));
+        md.push_str(&row(
+            "anchor bound",
+            c.anchor_min,
+            "genuine, pooled",
+            &r.genuine,
+            &t.genuine,
+            anchor,
+        ));
+        md.push_str(&format!(
+            "\nThreshold used for both conditions: the higher of the two, {thr_t:.4}. Adapt margin: {top:.4} - {thr_t:.4} = {:.4}.\n\nFlags: `--thr {thr_t:.4} --nm-floor {nm:.4} --confident-other {conf:.4} --adapt-margin {:.4} --anchor-min {anchor:.4}`\n",
+            top - thr_t,
+            top - thr_t
+        ));
+        Ok(md)
     }
 
     pub fn utterance_loss_tables() -> String {
@@ -4328,7 +4797,7 @@ mod straddle {
     #[cfg(test)]
     mod classifier_tests {
         use super::*;
-        use crate::cand::{c3_step, parse_cand, C3Step};
+        use crate::cand::{c3_step, c4_scores, parse_cand, C3Step};
 
         /// The classifier before decision pp: by the cut point.
         fn c2o_class_by_cut(trunc: bool, v_end: usize, cut: usize) -> usize {
@@ -4465,6 +4934,75 @@ mod straddle {
             assert!(!c4_scores(&[0.31, 0.25, 0.25], t, 2));
             assert!(!c4_scores(&[0.42, 0.31], t, 2));
             assert!(!c4_scores(&[0.31, 0.35, 0.25], t, 0));
+        }
+
+        #[test]
+        fn quantile_map_is_identity_in_survival_for_equal_sets() {
+            let v: Vec<f32> = (0..100).map(|i| i as f32 / 100.0).collect();
+            for c in [0.05f32, 0.2, 0.3, 0.459, 0.83] {
+                let m = quantile_map(&v, &v, c);
+                assert_eq!(survivors(&v, m), survivors(&v, c), "c={c} m={m}");
+                // Halfway between neighbours: within one grid step of c.
+                assert!((m - c).abs() <= 0.01 + 1e-6, "c={c} m={m}");
+            }
+        }
+
+        #[test]
+        fn quantile_map_follows_a_monotone_rescale_and_is_monotone() {
+            let r: Vec<f32> = (0..200).map(|i| i as f32 / 200.0).collect();
+            let t: Vec<f32> = r.iter().map(|x| 0.5 * x + 0.1).collect();
+            let cs = [0.1f32, 0.2, 0.3, 0.459, 0.7];
+            let ms: Vec<f32> = cs.iter().map(|c| quantile_map(&r, &t, *c)).collect();
+            for (c, m) in cs.iter().zip(&ms) {
+                assert!((m - (0.5 * c + 0.1)).abs() < 0.01, "c={c} m={m}");
+            }
+            assert!(ms.windows(2).all(|w| w[0] <= w[1]), "{ms:?}");
+        }
+
+        #[test]
+        fn quantile_map_handles_no_survivors_and_empty_sets() {
+            let r = [0.1f32, 0.2, 0.3];
+            let t = [0.0f32, 0.5, 0.9];
+            assert!(quantile_map(&r, &t, 0.9) > 0.9);
+            assert!(quantile_map(&r, &t, 0.0) < 0.0);
+            assert!(quantile_map(&[], &t, 0.3).is_nan());
+        }
+
+        #[test]
+        fn adapt_update_matches_the_product_adapt_step() {
+            use node_webrtc_rust_speech::speaker_gate::{adapt_step, AdaptStep, ANCHOR_MIN_COSINE};
+            let anchor = [1.0f32, 0.0, 0.0];
+            let reference = [1.0f32, 0.0, 0.0];
+            for cand in [[0.9f32, 0.4, 0.0], [0.0, 1.0, 0.0], [0.3, 0.0, 1.0]] {
+                let ours = adapt_update(&reference, &anchor, &[cand.to_vec()], ANCHOR_MIN_COSINE);
+                match adapt_step(&reference, &anchor, &[cand.to_vec()]) {
+                    AdaptStep::Commit { reference: r, .. } => {
+                        let o = ours.expect("commit").expect("some");
+                        assert!(o.iter().zip(&r).all(|(a, b)| (a - b).abs() < 1e-6));
+                    }
+                    AdaptStep::RejectAnchor { cos_to_anchor } => {
+                        assert_eq!(ours, Err(cos_to_anchor));
+                    }
+                    AdaptStep::Skip => assert_eq!(ours, Ok(None)),
+                }
+            }
+            // A looser bound commits what the product bound rejects.
+            let far = [0.0f32, 1.0, 0.0];
+            assert!(adapt_update(&reference, &anchor, &[far.to_vec()], 0.0)
+                .expect("committed")
+                .is_some());
+        }
+
+        #[test]
+        fn adapt_after_commits_only_all_caller_utterances_with_a_candidate() {
+            let anchor = vec![1.0f32, 0.0];
+            let e = || vec![vec![1.0f32, 0.1], vec![1.0, 0.1]];
+            // All windows caller, both above thr + margin: commits.
+            assert!(adapt_after(&anchor, &anchor, &[0.8, 0.8], e, 0.459).is_some());
+            // One window below the threshold: nothing.
+            assert!(adapt_after(&anchor, &anchor, &[0.8, 0.3], e, 0.459).is_none());
+            // All caller but none above thr + margin: nothing.
+            assert!(adapt_after(&anchor, &anchor, &[0.5, 0.5], e, 0.459).is_none());
         }
 
         fn win(i: u32, score: f32) -> U2Win {

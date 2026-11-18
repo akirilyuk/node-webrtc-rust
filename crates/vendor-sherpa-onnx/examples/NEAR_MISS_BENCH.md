@@ -667,3 +667,22 @@ Piper reroll, today only: the run was stopped by decision before it finished and
 ### Open harness defect: `--evidence` default path differs between c134666a and 1a0a0e19 (not fixed)
 
 `crr2b1-ev-ident` (pre c134666a vs post 1a0a0e19, NM_CAND default, log `.test-logs/20261117-110615-crr2b1-ev-ident.log`) is not identical beyond timing lines. The last column of the Piper straddle and LibriSpeech straddle rows differs, e.g. Piper straddle today `433 / 6450 / 52539 / 162` vs `433 / 6450 / 51627 / 157`. The `no_confirm` refactor in 1a0a0e19 changed a default-path count; the cause has not been investigated. Nothing in the bar-1 verdict depends on `--evidence`.
+
+## zh_en and C7 per-utterance bar: bench switches and constant mapping (plan `2026-11-18-caller-loss-zhen-c7`, chunk 1)
+
+Bench-only (no product code). `near_miss_bench` takes the gate's score constants as flags, with today's TitaNet-small values as defaults, so a run without them is byte-identical: `--thr` (alias of `--threshold`), `--nm-floor`, `--confident-other`, `--adapt-margin`, `--anchor-min`; `--adapt` runs the in-call reference refresh in `--utterance-loss` (the test utterances of one speaker and mode in order; an utterance commits only when every window scored `caller` and one scored at least `thr + margin`; EMA as `speaker_gate::adapt_step`, anchor bound as a flag; bystander baselines then use the adapted reference); `--map-constants <target model>` (with `--model` the reference) prints the mapping below. The constants reach the near-miss band in `product_o2c`, the C7 near-miss neutral switch, decision bb (U1 window below the confident-other bound), and C4. The long-other path in `speaker_bench` still uses `cand::c4_scores` with the product constants (C4 is not a row of this plan).
+
+**R0 parity (default flags, test-clean, bed -12 dB and clean, `--ls-split test-clean`).** Log `.test-logs/20261118-215810-r0-test-clean.log`, built at 077cec71 plus this chunk's bench edits. Same-session words lost above floor: bed 194 (12 dropped, 14 partly, top five `1284: 71, 3; 672: 57, 7; 8555: 27, 3; 4507: 15, 4; 3729: 9, 1`, bystander-only accepted 2 of 342), clean 91. These are the predecessor's "today (empty)" row, exactly. Cross-session: bed 300, clean 197.
+
+**Constant mapping, zh_en (`3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced`, sha256 `aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2`).** Log `.test-logs/20261118-222109-map-constants.log`. Tune set test-clean, same-session, product enrollment, 40 callers x 2 conditions (70 enrolled, 10 skipped on the enrollment span), 6 bystander voices x 4 files per caller. Impostor windows: bed 4394, clean 4404 (the same windows for both models); genuine windows 5160.
+
+| constant | TitaNet value | pool | TitaNet survivors / windows | mapped zh_en value |
+| --- | --- | --- | --- | --- |
+| threshold (bed) | 0.459 | impostor, bed | 0 / 4394 | 0.5451 (no survivor: just above the highest zh_en impostor window; degenerate) |
+| threshold (clean) | 0.459 | impostor, clean | 2 / 4404 | 0.4573 |
+| near-miss floor | 0.300 | impostor, pooled | 155 / 8798 | 0.3217 |
+| confident-other | 0.200 | impostor, pooled | 934 / 8798 | 0.2182 |
+| threshold + adapt margin | 0.559 | impostor, pooled | 0 / 8798 | 0.5451 (degenerate) |
+| anchor bound | 0.800 | genuine, pooled | 288 / 5160 | 0.8268 |
+
+The threshold and the adapt margin are not resolved by this pool: TitaNet-small has no bystander window at or above 0.459 in the bed row and none at or above 0.559 anywhere, so "same survival" is 0 and maps to the highest zh_en window, which makes the threshold 0.5451 and the margin 0. Clean alone gives 0.4573 (2 survivors), close to the screen's FAR-matched 0.457 (bed) / 0.468 (clean). Open: a larger impostor pool or a different matching rule for the threshold and margin; the near-miss floor, confident-other and anchor bound are resolved (155, 934 and 288 survivors).

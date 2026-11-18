@@ -51,6 +51,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use node_webrtc_rust_speech::speaker_gate::{
+    ADAPT_MARGIN, ANCHOR_MIN_COSINE, CONFIDENT_OTHER_MAX_SCORE, NEAR_MISS_MIN_SCORE,
+};
 use sherpa_onnx::{SpeakerEmbeddingExtractor, SpeakerEmbeddingExtractorConfig};
 
 #[path = "support/cand.rs"]
@@ -67,6 +70,7 @@ const SR: i32 = 16_000;
 const MS: usize = 16;
 const PRE_ROLL_MS: usize = 300;
 const ENROLL_MS: usize = 3000;
+/// The product's `SpeakerGateConfig` default threshold (`config.rs`), TitaNet-small.
 const GATE_THRESHOLD: f32 = 0.459;
 const MAIN_DB: f32 = -20.0;
 const WINDOWS_S: [f32; 4] = [1.5, 2.0, 2.5, 3.0];
@@ -2390,10 +2394,30 @@ mod librispeech {
         v.get(n0).map_or(f32::MIN, |x| above(*x))
     }
 
-    /// Largest threshold-free count rule for a pooled genuine set: the lowest score at which at most
-    /// `n` of `scores` are at or above it (`far_matched` on a flat set).
+    /// The lowest score at which at most `n` of `scores` are at or above it (`far_matched` on a
+    /// flat set).
     fn survival_matched(scores: &[f32], n: usize) -> f32 {
         far_matched(&[vec![scores.to_vec()]], n)
+    }
+
+    /// Impostor-side mapping of `c`: the reference survivor count `n` (scores at or above `c`) and
+    /// the target's FAR-matched score for it. `None` when the reference has no survivor (nothing to
+    /// match).
+    fn map_imp(ref_k: &[Vec<Vec<f32>>], tgt_k: &[Vec<Vec<f32>>], c: f32) -> Option<(usize, f32)> {
+        let n = ref_k
+            .iter()
+            .flatten()
+            .flatten()
+            .filter(|x| **x >= c)
+            .count();
+        (n > 0).then(|| (n, far_matched(tgt_k, n)))
+    }
+
+    /// Genuine-side mapping of `c`: the reference survivor count and the target score with the same
+    /// count of survivors.
+    fn map_gen(ref_: &[f32], tgt: &[f32], c: f32) -> (usize, f32) {
+        let n = ref_.iter().filter(|x| **x >= c).count();
+        (n, survival_matched(tgt, n))
     }
 
     /// Constant mapping (plan `2026-11-18-caller-loss-zhen-c7`, decision a): TitaNet-small's gate
@@ -2445,19 +2469,18 @@ mod librispeech {
         let mut mapped = Vec::new();
         for (name, c) in [
             ("threshold", GATE_THRESHOLD),
-            ("near-miss floor", 0.30f32),
-            ("confident-other", 0.20f32),
+            ("near-miss floor", NEAR_MISS_MIN_SCORE),
+            ("confident-other", CONFIDENT_OTHER_MAX_SCORE),
         ] {
-            let n: Vec<usize> = (0..2)
-                .map(|k| flat(&sc[0].1[k]).iter().filter(|x| **x >= c).count())
+            let mm: Vec<Option<(usize, f32)>> = (0..2)
+                .map(|k| map_imp(&sc[0].1[k], &sc[1].1[k], c))
                 .collect();
-            if n.contains(&0) {
+            let (Some((n0, m0)), Some((n1, m1))) = (mm[0], mm[1]) else {
                 return Err(format!(
-                    "{name} {c}: TitaNet survivors bed {} / clean {}: zero in a condition, nothing to match (stop and report)",
-                    n[0], n[1]
+                    "{name} {c}: zero TitaNet survivors in a condition, nothing to match (stop and report)"
                 ));
-            }
-            let m: Vec<f32> = (0..2).map(|k| far_matched(&sc[1].1[k], n[k])).collect();
+            };
+            let (n, m) = ([n0, n1], [m0, m1]);
             let hi = m[0].max(m[1]);
             md.push_str(&format!(
                 "| {name} | {c:.3} | {} / {} | {:.4} | {:.4} | {hi:.4} |\n",
@@ -2467,20 +2490,19 @@ mod librispeech {
         }
         let gen_ref: Vec<f32> = (0..2).flat_map(|k| gflat(&sc[0].0[k])).collect();
         let gen_tgt: Vec<f32> = (0..2).flat_map(|k| gflat(&sc[1].0[k])).collect();
-        let mut gmap = |name: &str, c: f32| -> Result<f32, String> {
-            let n = gen_ref.iter().filter(|x| **x >= c).count();
-            let m = survival_matched(&gen_tgt, n);
+        let mut gmap = |name: &str, c: f32| -> f32 {
+            let (n, m) = map_gen(&gen_ref, &gen_tgt, c);
             md.push_str(&format!(
                 "| {name} | {c:.3} | {n} of {} genuine | {m:.4} | | {m:.4} |\n",
                 gen_ref.len()
             ));
-            Ok(m)
+            m
         };
         let top = gmap(
             "threshold + margin (genuine survival)",
-            GATE_THRESHOLD + 0.1,
-        )?;
-        let anchor = gmap("anchor bound (genuine quantile)", 0.8)?;
+            GATE_THRESHOLD + ADAPT_MARGIN,
+        );
+        let anchor = gmap("anchor bound (genuine quantile)", ANCHOR_MIN_COSINE);
         let margin = (top - mapped[0]).max(0.0);
         md.push_str(&format!(
             "\nMapped margin: {top:.4} - {:.4} = {:.4} (floored at 0: {margin:.4}).\n\nFlags: `--thr {:.4} --nm-floor {:.4} --confident-other {:.4} --adapt-margin {margin:.4} --anchor-min {anchor:.4}`\n",
@@ -2895,6 +2917,60 @@ mod librispeech {
             let r = s_row("m", (10.0, 0.0, 0, false), 0.1, None);
             assert!(r.contains("**FAIL**"), "{r}");
             assert!(r.trim_end().ends_with("| ok |"), "{r}");
+        }
+
+        #[test]
+        fn gate_threshold_is_the_product_default() {
+            assert_eq!(
+                GATE_THRESHOLD,
+                node_webrtc_rust_speech::config::SpeakerGateConfig::default().threshold
+            );
+        }
+
+        #[test]
+        fn map_imp_is_identity_in_survival_for_equal_sets() {
+            let r = vec![vec![vec![0.9f32, 0.6], vec![0.8, 0.7]]];
+            let (n, m) = map_imp(&r, &r, 0.75).expect("survivors");
+            assert_eq!(n, 2);
+            let flat: Vec<f32> = r.iter().flatten().flatten().copied().collect();
+            assert_eq!(rate(&flat, m, true).0, 2);
+        }
+
+        #[test]
+        fn map_imp_follows_a_monotone_rescale() {
+            let r = vec![vec![vec![0.9f32, 0.6], vec![0.8, 0.7]]];
+            let t: Vec<Vec<Vec<f32>>> = r
+                .iter()
+                .map(|a| {
+                    a.iter()
+                        .map(|b| b.iter().map(|x| 0.5 * x + 0.1).collect())
+                        .collect()
+                })
+                .collect();
+            let tf: Vec<f32> = t.iter().flatten().flatten().copied().collect();
+            let rf: Vec<f32> = r.iter().flatten().flatten().copied().collect();
+            let (n1, m1) = map_imp(&r, &t, 0.65).unwrap();
+            let (n2, m2) = map_imp(&r, &t, 0.85).unwrap();
+            assert_eq!((n1, n2), (3, 1));
+            assert_eq!(rate(&tf, m1, true).0, n1);
+            assert_eq!(rate(&tf, m2, true).0, n2);
+            assert_eq!(rate(&rf, 0.65, true).0, n1);
+            assert!(m1 <= m2, "{m1} {m2}");
+        }
+
+        #[test]
+        fn map_imp_zero_survivors_is_none() {
+            let r = vec![vec![vec![0.9f32, 0.6], vec![0.8, 0.7]]];
+            assert_eq!(map_imp(&r, &r, 0.95), None);
+        }
+
+        #[test]
+        fn map_gen_matches_genuine_survival() {
+            let r = [0.5f32, 0.6, 0.7, 0.9];
+            let t: Vec<f32> = r.iter().map(|x| x + 0.05).collect();
+            let (n, m) = map_gen(&r, &t, 0.65);
+            assert_eq!(n, 2);
+            assert_eq!(t.iter().filter(|x| **x >= m).count(), 2);
         }
 
         #[test]

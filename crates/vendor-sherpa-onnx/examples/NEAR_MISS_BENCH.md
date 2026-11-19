@@ -448,3 +448,38 @@ Bar (decision kk), against bb on every held-out set: caller-only lost words abov
 - LibriSpeech dev-clean caller-only, clean: U1 [0.370,0.215,0.190,0.306], lost 17
 
 So the eu-load n01 shape (five `other` windows 0.213-0.351, about 7 s) stays an upgrade. Product unchanged; the question goes to the user (decision kk).
+
+## Caller false rejects: three bench rounds, no product change (2026-11-17 to 2026-11-19)
+
+Goal: lose fewer caller words to the speaker gate (the caller's own voice scored below the threshold) without letting more bystander speech through. Every round was bench-only. The gate in `crates/speech` is unchanged, and the defaults stay as they are: `splitOnSpeakerChange` false, `adaptReference` false, TitaNet-small at 0.459. The bench modes used here (`near_miss_bench --utterance-loss`, `false_accept_bench` model screen and `--map-constants`) live on the unmerged branches `feature/caller-reject-rate` and `feature/speaker-model-screen`. The full tables are in this file and in `FALSE_ACCEPT_BENCH.md` on those branches.
+
+**Setup.** Enrollment mirrors the product: whole caller utterances are appended until they reach 3000 ms, then one embed. Same-session mode enrolls on a speaker's first utterances and tests on the next 15. Tune set: LibriSpeech test-clean. Held-out sets: dev-clean and dev-other (OpenSLR SLR12, CC BY 4.0), plus rerolled Piper scenes. Every set runs with the Tocumen airport bed at -12 dB and clean. Words are counted with measure A (recognizer diff above the floor).
+
+**Today's loss** (0.20.0 rules, same-session):
+
+| set        | split off: utterances dropped (bed / clean) | split on: utterances lost, dropped or cut (bed / clean) |
+| ---------- | ------------------------------------------- | ------------------------------------------------------- |
+| dev-clean  | 12 of 550 / 3 of 538                        | 4.0 % / 1.7 %                                           |
+| test-clean | 15 of 557 / 10 of 550                       | 4.3 % / 2.4 %                                           |
+
+The loss is concentrated: 2 to 5 speakers hold 89-100 % of the lost words in each set. On the tune set, a better reference (the oracle mean of about 30 s of the same speaker) would recover most lost utterances. Removing the noise bed or lengthening the utterance recovers few.
+
+**Round 1: gate rules** (mean-of-segments enrollment, rejecting a poor enrollment, accepting on repeated near-miss windows, a stricter caller→other confirm). None passes. Repeated near-miss accept lets bystanders through over long stretches (long-other 18 s, one voice: 8.54 → 19.17 %). Mean enrollment does not lower held-out loss (dev-clean clean 199 → 199 words).
+
+**Round 2: other models** from the sherpa-onnx `speaker-recongition-models` release (13 assets checked for licence and load, 9 screened at matched pooled FAR). Only 3D-Speaker CAM++ zh_en advanced lowers caller rejects (worst cell -44 %). It adds bystander pairs: +4 pairs at or above 5 % FAR, and a new pair at or above 20 %. TitaNet-large has a 42 % higher worst-cell FRR than TitaNet-small. The VoxCeleb-trained English assets separate LibriSpeech speakers poorly at 1.5 s.
+
+**Round 3: per-utterance bar for zh_en and for C7 (no caller→other cut on a near-miss window).** zh_en ran with constants mapped to TitaNet's (impostor-side constants FAR-matched on about 112k impostor windows: threshold 0.4679, near-miss floor 0.3119, confident-other 0.2163). Words lost / dropped utterances / caller-only false splits, bed then clean:
+
+| row                              | dev-clean           | dev-other      | Piper reroll (words / drops) |
+| -------------------------------- | ------------------- | -------------- | ---------------------------- |
+| TitaNet-small, today             | 241/13/12, 199/10/5 | 60/1/14, 0/0/0 | 12 / 0                       |
+| zh_en                            | 125/9/10, 151/9/8   | 35/5/7, 9/3/0  | 66 / 3                       |
+| TitaNet-small + C7               | 129/13/1, 120/10/0  | 4/1/2, 0/0/0   | 12 / 0                       |
+| zh_en + C7                       | 55/9/0, 70/9/0      | 13/5/1, 9/3/0  | 66 / 3                       |
+| TitaNet-small + `adaptReference` | 167/11/6, 165/8/3   | 9/1/5, 0/0/0   | -                            |
+
+- zh_en loses more words on Piper (12 → 66). It also raises long-other FAR at 18 s with mixed voices (5.62 → 8.33 %) and adds a new pair at or above 20 % on dev-other.
+- `adaptReference` accepts 2 more bystander-only utterances as the caller.
+- C7 saves caller words but costs bystander words. Its takeover detection misses 17.5-25.3 % of real takeovers, and the bystander words left inside caller finals roughly double (dev-clean bed 90 → 168, clean 153 → 294; dev-other bed 55 → 117, clean 88 → 179). That is about as many words, or more, than it saves (+0 to +112 per set). It does not help on Piper (12 → 12), because those words are lost to other→caller splits and drops, which C7 does not change. C7 also changes nothing with `splitOnSpeakerChange` off, the default.
+
+**Decision:** no change ships. If this comes back, the target is whole-utterance drops on the default split-off path, and the few voices that cause most of them.

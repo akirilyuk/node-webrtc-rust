@@ -766,9 +766,6 @@ fn run() -> Result<(), String> {
                 if c.c2 || c.enroll_ms != cand::ENROLL_MS_DEFAULT {
                     eprintln!("note: --evidence ignores NM_CAND c2 / e<ms>: the Piper fixtures enroll from one sentence");
                 }
-                if c.c7_nm || c.c7_scan || c.c7_run != 2 {
-                    eprintln!("note: --evidence ignores NM_CAND c7*: this path has no caller -> other watch");
-                }
             }
             "--utterance-loss" => {
                 let _ = straddle::UTT_LOSS.set(());
@@ -1510,6 +1507,19 @@ mod straddle {
                 second_cut_scene(p, utt, embedder, threshold, &cref, &mut cache);
             }
             let m0 = modes[0].clone();
+            let c2o = if SECOND_CUT.get().is_none() {
+                ev_watch_lost(
+                    &p.samples,
+                    &cref,
+                    (p.u, p.u_end),
+                    embedder,
+                    &p.reference,
+                    utt,
+                    threshold,
+                )
+            } else {
+                0
+            };
             let rec = EvRec {
                 set: String::new(),
                 caller_only: false,
@@ -1521,6 +1531,7 @@ mod straddle {
                     0
                 },
                 nosplit_lost: m0.nosplit_lost,
+                c2o,
                 ref_words: cref.len(),
                 floor_gap: cref.len().saturating_sub(floor_kept),
                 modes,
@@ -2328,6 +2339,11 @@ mod straddle {
         split: Option<(usize, usize)>,
         upgrade_leak: usize,
         nosplit_lost: usize,
+        /// Caller words the caller -> other watch cuts out of the part kept as caller (above the
+        /// floor of that part; the `NM_CAND` c7* switches apply): the split-born U2 under a rule
+        /// that keeps the split (rule 1, jj), or the whole utterance when window 1 is `caller`
+        /// (rule 0). An upgrade has no watch. Added to "lost" in the per-set table.
+        c2o: usize,
         /// Reference words, and the STT floor: reference words measure A misses with the cut at
         /// the caller onset (bystander->caller) or at U1's start (caller-only), no gate.
         ref_words: usize,
@@ -2963,6 +2979,55 @@ mod straddle {
         md
     }
 
+    /// Caller words cut out of the caller part by the caller -> other watch, as the product runs it
+    /// (as in `ul_judge`): window 1 `caller` arms the whole utterance (floor 0, rule 0); a
+    /// split-born U2 (product other -> caller, mode 3) runs the 7h clock with the scan floor and
+    /// rule 1 (jj). The `NM_CAND` c7* switches apply. 0 when there is no cut.
+    fn ev_watch_lost(
+        samples: &[f32],
+        cref: &[String],
+        (u, ue): (usize, usize),
+        embedder: &Embedder,
+        reference: &[f32],
+        utt: &Utt,
+        threshold: f32,
+    ) -> usize {
+        let ctx = Some((embedder, reference));
+        if utt.wins.first().is_some_and(|w| w.1 >= threshold) {
+            return ul_c2o_whole(samples, utt, threshold, ctx)
+                .map_or(0, |(c, _)| c2o_words_lost(samples, cref, u, ue, c));
+        }
+        let mut cache = SubCache::default();
+        let (o, _, _) = product_o2c(samples, utt, embedder, reference, threshold, 3, &mut cache);
+        let Some((k, cut, _, found)) = o else {
+            return 0;
+        };
+        let origin = cut / FRAME_MS * FRAME_MS;
+        let floor = found.map_or(300, |f| (f + 750).saturating_sub(origin)) as u32;
+        let wins = u2_windows_raw(samples, ue, reference, utt, k, origin, embedder);
+        u2_cut_span(&wins, floor, threshold, 1, ctx).map_or(0, |(c, _)| {
+            c2o_words_lost(samples, cref, origin, ue, origin + c as usize)
+        })
+    }
+
+    /// Caller words (LCS against `cref`) in `[origin, end)` but not in `[origin, cut)`.
+    fn c2o_words_lost(
+        samples: &[f32],
+        cref: &[String],
+        origin: usize,
+        ue: usize,
+        cut: usize,
+    ) -> usize {
+        let total = samples.len() / SAMPLES_PER_MS;
+        let end = (ue + C2_PRE_ROLL_MS).min(total);
+        let words = |b: usize| -> Vec<String> {
+            recognize_words(slice(samples, origin, b.max(origin + FRAME_MS)))
+                .map(|(w, _)| w)
+                .unwrap_or_default()
+        };
+        lcs(cref, &words(end)).saturating_sub(lcs(cref, &words(cut.min(end))))
+    }
+
     /// A caller-only utterance `[u, ue)` of `samples` (`clean` = the same timeline without the
     /// added bed, for the reference decode).
     fn caller_only_rec(
@@ -3031,6 +3096,15 @@ mod straddle {
             })
             .collect();
         let m0 = modes[0].clone();
+        let c2o = ev_watch_lost(
+            samples,
+            &cref,
+            (u, ue),
+            embedder,
+            reference,
+            &utt,
+            threshold,
+        );
         EV.lock().unwrap().push(EvRec {
             set: set.to_string(),
             caller_only: true,
@@ -3038,6 +3112,7 @@ mod straddle {
             split: m0.split,
             upgrade_leak: 0,
             nosplit_lost: m0.nosplit_lost,
+            c2o,
             ref_words: cref.len(),
             floor_gap: cref.len().saturating_sub(floor_kept),
             modes,
@@ -4219,8 +4294,8 @@ mod straddle {
         // (split lost above floor, leaked, split kept, split upgraded) of one record.
         let eval = |rule: &dyn Fn(&[f32]) -> bool, r: &EvRec| -> (usize, usize, usize, usize) {
             match r.split {
-                None => (0, 0, 0, 0),
-                Some((lost, leak)) if rule(&r.u1) => (lost, leak, 1, 0),
+                None => (r.c2o, 0, 0, 0),
+                Some((lost, leak)) if rule(&r.u1) => (lost + r.c2o, leak, 1, 0),
                 Some(_) => (0, r.upgrade_leak, 0, 1),
             }
         };
@@ -4759,6 +4834,23 @@ mod straddle {
                 ),
                 None
             );
+        }
+
+        /// The `--evidence` watch on a caller-kept utterance (`ev_watch_lost` -> `ul_c2o_whole`:
+        /// armed from window 1, floor 0, rule 0) uses the C7 switches: windows
+        /// [caller, 0.35, 0.10, 0.35, 0.10] at 0.459 cut at the 3rd window by default and at the
+        /// 5th with c7nm.
+        #[test]
+        fn evidence_watch_applies_c7nm() {
+            let w = [
+                win(0, 0.9),
+                win(1, 0.35),
+                win(2, 0.10),
+                win(3, 0.35),
+                win(4, 0.10),
+            ];
+            assert_eq!(cut(&w, c7(2, false, false), 99), Some((3000, 4500)));
+            assert_eq!(cut(&w, c7(2, true, false), 99), Some((6000, 7500)));
         }
 
         #[test]

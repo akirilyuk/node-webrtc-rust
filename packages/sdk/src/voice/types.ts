@@ -235,7 +235,7 @@ export interface LanguageIdConfig {
    * Optional ISO 639-1 allowlist. The local Whisper identifier decides among these languages:
    * when its top pick is outside the list but within `allowlistMaxGap` logits of the best
    * listed language, that listed language is reported. Codes still outside the list are
-   * ignored (`language_id_skipped` with reason `undetermined`). With `timing: 'early'`, an
+   * ignored (`language_id_skipped` with reason `undetermined`) unless `reportOutOfSet` is `true`, in which case the top language is emitted as `user_language`. With `timing: 'early'`, an
    * early pick outside the list and beyond the gap gets one more identify at end of utterance.
    */
   allowlist?: string[]

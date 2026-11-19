@@ -931,7 +931,8 @@ pub struct LanguageIdConfig {
     /// Optional ISO 639-1 allowlist. When the identifier exposes per-language scores (local
     /// Whisper), it decides among these languages: an out-of-list top pick within
     /// `allowlist_max_gap` logits of the best allowed language resolves to that language.
-    /// Codes it still returns outside the list are ignored (`language_id_skipped`).
+    /// Codes it still returns outside the list are ignored (`language_id_skipped`) unless
+    /// `report_out_of_set` is `true`, in which case the top language is emitted as `user_language`.
     #[serde(default)]
     pub allowlist: Option<Vec<String>>,
     /// Largest logit gap between the unrestricted top language and the best allowlisted one at

@@ -116,8 +116,30 @@ async fn assert_streams(model: &str) {
     );
 }
 
+/// What an HTTP status from the vendor means for a live test.
+#[derive(Debug, PartialEq, Eq)]
+enum StatusOutcome {
+    /// 2xx: read the body and assert on it.
+    Proceed,
+    /// 5xx: the vendor is down. The run says nothing about our code, so it ends early.
+    Inconclusive,
+    /// Anything else (4xx such as a revoked key, 3xx, 1xx): a real failure.
+    Fail,
+}
+
+/// The one place a live test decides what a vendor status means. Status codes only.
+fn classify_status(status: u16) -> StatusOutcome {
+    match status {
+        200..=299 => StatusOutcome::Proceed,
+        500..=599 => StatusOutcome::Inconclusive,
+        _ => StatusOutcome::Fail,
+    }
+}
+
 /// Documented `GET {base}/v1/models`, shape `{"data": [{"id": ..}, ..]}`. Bounded to 10 s.
-async fn listed_model_ids(base: &str, key: &str) -> Vec<String> {
+/// `None` when the vendor answers 5xx (logged as `vendor_unavailable status=<code>`): the caller
+/// returns early, so no assertion passes on an outage. Other non-2xx statuses panic.
+async fn listed_model_ids(base: &str, key: &str) -> Option<Vec<String>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -128,25 +150,31 @@ async fn listed_model_ids(base: &str, key: &str) -> Vec<String> {
         .send()
         .await
         .unwrap_or_else(|err| panic!("GET /v1/models failed: {}", err.without_url()));
-    assert!(
-        response.status().is_success(),
-        "GET /v1/models answered {}",
-        response.status()
-    );
+    let status = response.status();
+    match classify_status(status.as_u16()) {
+        StatusOutcome::Proceed => {}
+        StatusOutcome::Inconclusive => {
+            println!("vendor_unavailable status={}", status.as_u16());
+            return None;
+        }
+        StatusOutcome::Fail => panic!("GET /v1/models answered {status}"),
+    }
     let body: serde_json::Value = response
         .json()
         .await
         .unwrap_or_else(|err| panic!("unreadable /v1/models body: {}", err.without_url()));
-    body.get("data")
-        .and_then(serde_json::Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.get("id").and_then(serde_json::Value::as_str))
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
+    Some(
+        body.get("data")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.get("id").and_then(serde_json::Value::as_str))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
+    )
 }
 
 /// The realtime TTS model is Premier-tagged. When the key's model list has it, it must stream;
@@ -157,10 +185,10 @@ async fn tts_realtime_3_access_matches_the_model_list() {
     const REALTIME: &str = "voxtral-mini-tts-realtime-3-0";
     let Some(key) = live_key() else { return };
     let base = resolve_base_url_from_env(None);
-    let listed = listed_model_ids(&base, &key)
-        .await
-        .iter()
-        .any(|id| id == REALTIME);
+    let Some(ids) = listed_model_ids(&base, &key).await else {
+        return;
+    };
+    let listed = ids.iter().any(|id| id == REALTIME);
     println!("mistral_tts_realtime_access {{\"listed\":{listed}}}");
     if listed {
         assert_streams(REALTIME).await;
@@ -255,4 +283,14 @@ async fn transcribe_realtime_3_live_vad_gated_roundtrip() {
         sample.pushed_ms,
         sample.total_ms
     );
+}
+
+#[test]
+fn status_classifier_separates_outage_from_failure() {
+    assert_eq!(classify_status(200), StatusOutcome::Proceed);
+    assert_eq!(classify_status(503), StatusOutcome::Inconclusive);
+    assert_eq!(classify_status(500), StatusOutcome::Inconclusive);
+    assert_eq!(classify_status(401), StatusOutcome::Fail);
+    assert_eq!(classify_status(404), StatusOutcome::Fail);
+    assert_eq!(classify_status(429), StatusOutcome::Fail);
 }

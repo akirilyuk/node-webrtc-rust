@@ -260,6 +260,7 @@ fn agent_with_slow_lid(stt_bytes: Arc<Mutex<usize>>) -> Arc<VoiceAgent> {
             allowlist: None,
             allowlist_max_gap: None,
             allowlist_min_margin: None,
+            report_out_of_set: None,
             min_speech_ms: Some(200),
             continuous: None,
             lid_max_clip_ms: None,
@@ -339,6 +340,7 @@ async fn language_id_does_not_block_inbound_pcm_or_stt() {
             allowlist: None,
             allowlist_max_gap: None,
             allowlist_min_margin: None,
+            report_out_of_set: None,
             min_speech_ms: Some(200),
             continuous: None,
             lid_max_clip_ms: None,
@@ -696,6 +698,7 @@ fn agent_with_overlap_tracking_lid(
             allowlist: None,
             allowlist_max_gap: None,
             allowlist_min_margin: None,
+            report_out_of_set: None,
             min_speech_ms: Some(200),
             continuous: None,
             lid_max_clip_ms: None,
@@ -1016,6 +1019,7 @@ fn agent_with_final_once_stt(lid_sleep_ms: u64) -> Arc<VoiceAgent> {
             allowlist: None,
             allowlist_max_gap: None,
             allowlist_min_margin: None,
+            report_out_of_set: None,
             min_speech_ms: Some(200),
             continuous: None,
             lid_max_clip_ms: None,
@@ -1115,6 +1119,7 @@ fn agent_for_lid_gate_wakeup_test() -> Arc<VoiceAgent> {
                 allowlist: None,
                 allowlist_max_gap: None,
                 allowlist_min_margin: None,
+                report_out_of_set: None,
                 min_speech_ms: Some(200),
                 continuous: None,
                 lid_max_clip_ms: None,
@@ -1282,6 +1287,40 @@ fn agent_with_counting_lid_gate(
     lid_gate_max_wait_ms: Option<u32>,
     tts_exclusion: Option<bool>,
 ) -> Arc<VoiceAgent> {
+    agent_with_counting_lid_report(
+        stt_bytes,
+        lid_calls,
+        gate_stt,
+        continuous,
+        include_stt,
+        lid_languages,
+        allowlist,
+        timing,
+        min_speech_ms,
+        min_silence_ms,
+        lid_gate_max_wait_ms,
+        tts_exclusion,
+        None,
+    )
+}
+
+/// Same as [`agent_with_counting_lid_gate`] with an explicit `report_out_of_set`.
+#[allow(clippy::too_many_arguments)]
+fn agent_with_counting_lid_report(
+    stt_bytes: Arc<Mutex<usize>>,
+    lid_calls: Arc<AtomicUsize>,
+    gate_stt: bool,
+    continuous: Option<bool>,
+    include_stt: bool,
+    lid_languages: Vec<String>,
+    allowlist: Option<Vec<String>>,
+    timing: Option<LanguageIdTiming>,
+    min_speech_ms: u32,
+    min_silence_ms: Option<u32>,
+    lid_gate_max_wait_ms: Option<u32>,
+    tts_exclusion: Option<bool>,
+    report_out_of_set: Option<bool>,
+) -> Arc<VoiceAgent> {
     let factory = Arc::new(CountingLidTestFactory {
         stt_bytes: Arc::clone(&stt_bytes),
         lid_calls: Arc::clone(&lid_calls),
@@ -1341,6 +1380,7 @@ fn agent_with_counting_lid_gate(
             allowlist,
             allowlist_max_gap: None,
             allowlist_min_margin: None,
+            report_out_of_set,
             min_speech_ms: Some(min_speech_ms),
             continuous,
             lid_max_clip_ms: None,
@@ -1515,6 +1555,7 @@ fn agent_with_timed_overlap_lid(
             allowlist: None,
             allowlist_max_gap: None,
             allowlist_min_margin: None,
+            report_out_of_set: None,
             min_speech_ms: Some(200),
             continuous: None,
             lid_max_clip_ms: None,
@@ -2076,6 +2117,7 @@ async fn lid_error_does_not_block_final() {
             allowlist: None,
             allowlist_max_gap: None,
             allowlist_min_margin: None,
+            report_out_of_set: None,
             min_speech_ms: Some(200),
             continuous: None,
             lid_max_clip_ms: None,
@@ -2229,6 +2271,7 @@ async fn tts_synthesis_waits_for_in_flight_lid() {
                 allowlist: None,
                 allowlist_max_gap: None,
                 allowlist_min_margin: None,
+                report_out_of_set: None,
                 min_speech_ms: Some(200),
                 continuous: Some(true),
                 lid_max_clip_ms: None,
@@ -2516,6 +2559,7 @@ async fn remote_tts_exclusion_off_does_not_gate_final_or_tts() {
                 allowlist: None,
                 allowlist_max_gap: None,
                 allowlist_min_margin: None,
+                report_out_of_set: None,
                 min_speech_ms: Some(200),
                 continuous: None,
                 lid_max_clip_ms: None,
@@ -3292,6 +3336,29 @@ fn early_allowlist_agent(
     )
 }
 
+fn early_allowlist_agent_report(
+    languages: Vec<&str>,
+    allowlist: Vec<&str>,
+    report_out_of_set: Option<bool>,
+    lid_calls: Arc<AtomicUsize>,
+) -> Arc<VoiceAgent> {
+    agent_with_counting_lid_report(
+        Arc::new(Mutex::new(0)),
+        lid_calls,
+        false,
+        None,
+        false,
+        languages.into_iter().map(String::from).collect(),
+        Some(allowlist.into_iter().map(String::from).collect()),
+        Some(LanguageIdTiming::Early),
+        200,
+        None,
+        None,
+        Some(true),
+        report_out_of_set,
+    )
+}
+
 fn user_language_codes(events: &[node_webrtc_rust_speech::events::SpeechEvent]) -> Vec<String> {
     events
         .iter()
@@ -3320,6 +3387,61 @@ async fn early_out_of_set_beyond_gap_runs_second_pass_at_speech_end() {
     let outcome = assert_one_first_outcome(&events);
     assert_eq!(outcome.kind, SpeechEventKind::UserLanguage);
     assert_eq!(user_language_codes(&events), vec!["es".to_string()]);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn out_of_set_beyond_gap_reported_when_opted_in() {
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = early_allowlist_agent_report(
+        vec!["de|de", "de|de", "de|de"],
+        vec!["en"],
+        Some(true),
+        Arc::clone(&lid_calls),
+    );
+    let mut rx = agent.subscribe_events();
+    let events = run_one_utterance_events(&agent, &mut rx, 40).await;
+    let outcome = assert_one_first_outcome(&events);
+    assert_eq!(outcome.kind, SpeechEventKind::UserLanguage);
+    assert_eq!(user_language_codes(&events), vec!["de".to_string()]);
+    assert_eq!(count_kind(&events, SpeechEventKind::LanguageIdSkipped), 0);
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn out_of_set_beyond_gap_skipped_by_default() {
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = early_allowlist_agent_report(
+        vec!["de|de", "de|de", "de|de"],
+        vec!["en"],
+        None,
+        Arc::clone(&lid_calls),
+    );
+    let mut rx = agent.subscribe_events();
+    let events = run_one_utterance_events(&agent, &mut rx, 40).await;
+    let outcome = assert_one_first_outcome(&events);
+    assert_eq!(outcome.kind, SpeechEventKind::LanguageIdSkipped);
+    assert_eq!(outcome.reason.as_deref(), Some("undetermined"));
+    assert!(user_language_codes(&events).is_empty());
+    agent.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn report_out_of_set_still_runs_second_pass() {
+    // Early out-of-set pick `ja`; the second identify decides the allowed `es`, so the opt-in
+    // does not short-circuit the second pass.
+    let lid_calls = Arc::new(AtomicUsize::new(0));
+    let agent = early_allowlist_agent_report(
+        vec!["ja|ja", "es|es"],
+        vec!["en", "es"],
+        Some(true),
+        Arc::clone(&lid_calls),
+    );
+    let mut rx = agent.subscribe_events();
+    let events = run_one_utterance_events(&agent, &mut rx, 40).await;
+    assert_eq!(lid_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(user_language_codes(&events), vec!["es".to_string()]);
+    assert_one_first_outcome(&events);
     agent.stop().await.unwrap();
 }
 

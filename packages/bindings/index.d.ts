@@ -439,6 +439,8 @@ export interface JsLanguageIdConfig {
   allowlistMaxGap?: number
   /** Early-timing allowed-set margin (logits) below which one end-of-utterance pass decides. */
   allowlistMinMargin?: number
+  /** Report an out-of-allowlist language (after the second pass) instead of ignoring it. */
+  reportOutOfSet?: boolean
   minSpeechMs?: number
   continuous?: boolean
   timing?: string

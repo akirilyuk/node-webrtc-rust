@@ -785,7 +785,7 @@ R0 reproduces the predecessor's baseline (5.62 % / 8.54 %).
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | R0 | reference | | | | | | leaked 522 / upgraded 27 | ok | |
 | R1 | **fail**: dev-other clean 0 -> 9 | **fail**: dev-other bed 1 -> 5, clean 0 -> 3, Piper merged 0 -> 3 | **fail**: dev-clean clean 5 -> 8 | **fail**: new pair >= 20 % on dev-other, pairs >= 5 % +2 | ok (1, 1, 2, 3 against 1, 2, 4, 3) | **fail**: mixed +2.71 pt | leaked 1086 / upgraded 60 | ok | no: 1, 2, 3, 4, 6 |
-| R2 | ok (Piper: not measured) | ok (equal) | ok | ok (= R0) | ok (= R0) | ok (= R0) | = R0 | ok | no: 1 (Piper cell); LibriSpeech cells pass; missed takeovers 17.5-25.3 % (user bound) |
+| R2 | **fail**: Piper merged no-pause 10 -> 10 (not strictly lower); LibriSpeech ok | ok (equal) | ok | ok (= R0) | ok (= R0) | ok (= R0) | = R0 | ok | no: 1 (Piper cell); LibriSpeech cells pass; missed takeovers 17.5-25.3 % (user bound) |
 | R3 | **fail**: dev-other clean 0 -> 9 | **fail**: as R1 | ok | **fail** (= R1) | ok (= R1) | **fail** (= R1) | = R1 | ok | no: 1, 2, 4, 6 |
 | R4 | ok (Piper: not measured) | ok | ok | **fail** on the sample: dev-other FAR +0.08 / +0.22 pt | **fail**: dev-clean bed 1 -> 3, dev-other bed 4 -> 6 (+2) | not measured | = R0 | ok | no: 4, 5 |
 | R5 | ok | **fail**: dev-other bed 1 -> 2, Piper merged 0 -> 3 | **fail**: dev-clean clean 5 -> 7 | **fail** at scale as R1 (sample ok) | **fail**: dev-clean bed 1 -> 3 | **fail** as R1 (adapt part not measured) | = R1 | ok | no: 2, 3, 4, 5, 6 |

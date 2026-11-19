@@ -266,6 +266,7 @@ export function toJsConfig(config?: VoiceAgentConfig): JsVoiceAgentConfig | unde
           allowlist: config.languageId.allowlist,
           allowlistMaxGap: languageIdAllowlistMaxGap(config.languageId.allowlistMaxGap),
           allowlistMinMargin: languageIdAllowlistMinMargin(config.languageId.allowlistMinMargin),
+          reportOutOfSet: config.languageId.reportOutOfSet,
           minSpeechMs: config.languageId.minSpeechMs,
           continuous: config.languageId.continuous,
           timing: config.languageId.timing,

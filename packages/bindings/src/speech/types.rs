@@ -850,6 +850,8 @@ pub struct JsLanguageIdConfig {
     pub allowlist_max_gap: Option<f64>,
     /// Early-timing allowed-set margin (logits) below which one end-of-utterance pass decides.
     pub allowlist_min_margin: Option<f64>,
+    /// Report an out-of-allowlist language (after the second pass) instead of ignoring it.
+    pub report_out_of_set: Option<bool>,
     pub min_speech_ms: Option<u32>,
     pub continuous: Option<bool>,
     pub timing: Option<String>,
@@ -873,6 +875,7 @@ impl From<JsLanguageIdConfig> for node_webrtc_rust_speech::config::LanguageIdCon
                 .allowlist_min_margin
                 .filter(|v| v.is_finite() && *v >= 0.0)
                 .map(|v| v as f32),
+            report_out_of_set: value.report_out_of_set,
             min_speech_ms: value.min_speech_ms,
             continuous: value.continuous,
             timing: value

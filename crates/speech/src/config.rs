@@ -946,6 +946,12 @@ pub struct LanguageIdConfig {
     /// [`DEFAULT_LID_ALLOWLIST_MIN_MARGIN`]; `0` turns the check off. Must be finite and >= 0.
     #[serde(default, deserialize_with = "deserialize_allowlist_min_margin")]
     pub allowlist_min_margin: Option<f32>,
+    /// With an `allowlist`: when `Some(true)`, a pick that is still outside the list after the
+    /// end-of-utterance second pass (beyond `allowlist_max_gap`) is emitted as `user_language`
+    /// with the top language instead of being ignored (`language_id_skipped` `undetermined`).
+    /// Lets the caller announce an unsupported language. Default (unset/false): ignored.
+    #[serde(default)]
+    pub report_out_of_set: Option<bool>,
     /// Minimum buffered speech (ms) before identify runs at VAD `SpeechEnd` (default mode)
     /// or before the first mid-utterance identify when `continuous` is true. Default 1000.
     #[serde(default)]
@@ -1219,6 +1225,7 @@ mod language_id_config_tests {
             allowlist: None,
             allowlist_max_gap: None,
             allowlist_min_margin: None,
+            report_out_of_set: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,
@@ -1236,6 +1243,7 @@ mod language_id_config_tests {
             allowlist: None,
             allowlist_max_gap: None,
             allowlist_min_margin: None,
+            report_out_of_set: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,
@@ -1253,6 +1261,7 @@ mod language_id_config_tests {
             allowlist: None,
             allowlist_max_gap: None,
             allowlist_min_margin: None,
+            report_out_of_set: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,
@@ -1276,6 +1285,7 @@ mod language_id_config_tests {
             allowlist: Some(vec!["en".into(), "es".into()]),
             allowlist_max_gap: gap,
             allowlist_min_margin: None,
+            report_out_of_set: None,
             min_speech_ms: None,
             continuous: None,
             timing: None,
@@ -1417,6 +1427,7 @@ mod language_id_config_tests {
             allowlist: Some(vec!["en".into(), "de".into()]),
             allowlist_max_gap: None,
             allowlist_min_margin: None,
+            report_out_of_set: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,
@@ -1437,6 +1448,7 @@ mod language_id_config_tests {
             allowlist: None,
             allowlist_max_gap: None,
             allowlist_min_margin: None,
+            report_out_of_set: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,
@@ -1456,6 +1468,7 @@ mod language_id_config_tests {
             allowlist: None,
             allowlist_max_gap: None,
             allowlist_min_margin: None,
+            report_out_of_set: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,
@@ -1469,6 +1482,7 @@ mod language_id_config_tests {
             allowlist: None,
             allowlist_max_gap: None,
             allowlist_min_margin: None,
+            report_out_of_set: None,
             min_speech_ms: None,
             continuous: Some(false),
             lid_max_clip_ms: None,
@@ -1486,6 +1500,7 @@ mod language_id_config_tests {
             allowlist: None,
             allowlist_max_gap: None,
             allowlist_min_margin: None,
+            report_out_of_set: None,
             min_speech_ms: None,
             continuous: Some(true),
             lid_max_clip_ms: None,
@@ -1503,6 +1518,7 @@ mod language_id_config_tests {
             allowlist: None,
             allowlist_max_gap: None,
             allowlist_min_margin: None,
+            report_out_of_set: None,
             min_speech_ms: None,
             continuous: None,
             lid_max_clip_ms: None,
@@ -1568,6 +1584,7 @@ mod language_id_config_tests {
                 allowlist: None,
                 allowlist_max_gap: None,
                 allowlist_min_margin: None,
+                report_out_of_set: None,
                 min_speech_ms: None,
                 continuous,
                 lid_max_clip_ms: None,

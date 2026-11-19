@@ -217,6 +217,7 @@ mod tests {
             allowlist: allowlist.map(|l| l.into_iter().map(String::from).collect()),
             allowlist_max_gap: None,
             allowlist_min_margin: None,
+            report_out_of_set: None,
             min_speech_ms: None,
             continuous: None,
             timing: None,

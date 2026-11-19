@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **lid:** `languageId.reportOutOfSet` (default `false`). With a `languageId.allowlist`, a language that is still outside the list after the end-of-utterance second pass and beyond `allowlistMaxGap` is emitted as `user_language` with the top language instead of being ignored (`language_id_skipped` `undetermined`). It lets a host announce an unsupported language. The second pass, the dedupe and the in-set decision are unchanged, and nothing changes while the flag is off.
+
 ## [0.22.0] - 2026-11-17
 
 ### Added

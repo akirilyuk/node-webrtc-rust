@@ -5971,7 +5971,9 @@ impl VoiceAgent {
                             voice_debug(format!(
                                 "LID early result {code} margin {margin:.2} < {min_margin:.2} — second pass at utterance end"
                             ));
-                        } else if !language_id_allowlist_accepts(&allowlist_cfg, &code) {
+                        } else if !language_id_allowlist_accepts(&allowlist_cfg, &code)
+                            && allowlist_cfg.report_out_of_set != Some(true)
+                        {
                             voice_debug(format!("LID result {code} not in allowlist — ignored"));
                             undetermined = true;
                         } else if inner.lid_last_emitted.as_deref() == Some(code.as_str())

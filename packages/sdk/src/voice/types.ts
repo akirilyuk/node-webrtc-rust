@@ -256,6 +256,13 @@ export interface LanguageIdConfig {
    */
   allowlistMinMargin?: number
   /**
+   * With an `allowlist`: when `true`, a language that is still outside the list after the
+   * end-of-utterance second pass (beyond `allowlistMaxGap`) is emitted as `user_language`
+   * with the top language instead of being ignored (`language_id_skipped` `undetermined`).
+   * Use it to announce an unsupported language. Default `false`.
+   */
+  reportOutOfSet?: boolean
+  /**
    * Minimum speech (ms) before the first identify attempt. Counts VAD-voiced audio;
    * pauses between words count, silence after the caller stops speaking does not. Default 1000.
    */

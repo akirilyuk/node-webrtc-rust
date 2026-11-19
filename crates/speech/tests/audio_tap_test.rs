@@ -512,6 +512,7 @@ async fn lid_tap_agent_with(
             allowlist,
             allowlist_max_gap: None,
             allowlist_min_margin: None,
+            report_out_of_set: None,
             min_speech_ms: Some(min_speech_ms),
             continuous: None,
             lid_max_clip_ms,

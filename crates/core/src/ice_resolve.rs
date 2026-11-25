@@ -119,8 +119,8 @@ pub(crate) fn rewrite_ice_url(url: &IceUrl, ip: IpAddr) -> String {
     out
 }
 
-/// Lookups per host before its urls are dropped: one retry after a timeout or a transient
-/// resolver error (worst case 2 × the bound). NXDOMAIN and other definitive answers are not retried.
+/// Lookups per host before its urls are dropped: one retry after a timeout or any resolver
+/// error other than an explicit no-such-name answer (worst case 2 x the bound).
 const RESOLVE_ATTEMPTS: u32 = 2;
 
 enum Lookup {
@@ -131,13 +131,20 @@ enum Lookup {
     Definitive(String),
 }
 
-/// A resolver error worth one retry: EAI_AGAIN ("Temporary failure in name resolution") and
-/// timeout-like io kinds. Everything else (NXDOMAIN, no such host) is definitive.
-fn is_transient(e: &io::Error) -> bool {
-    matches!(
-        e.kind(),
-        io::ErrorKind::TimedOut | io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
-    ) || e.to_string().contains("Temporary failure")
+/// Definitive only for an explicit "no such name" answer (glibc/musl/macOS EAI_NONAME,
+/// glibc EAI_NODATA). Any other resolver error gets the retry and is not cached: std reports
+/// every getaddrinfo failure as an uncategorised io error, and the EAI_AGAIN text differs by
+/// libc (glibc "Temporary failure in name resolution", musl "Try again").
+fn is_definitive(e: &io::Error) -> bool {
+    let m = e.to_string();
+    [
+        "Name or service not known",
+        "No address associated with hostname",
+        "Name does not resolve",
+        "nodename nor servname provided",
+    ]
+    .iter()
+    .any(|s| m.contains(s))
 }
 
 /// Resolution cache keyed by `host:port`; `None` means a recent failure.
@@ -270,8 +277,8 @@ where
                         Some(ip) => Lookup::Resolved(ip),
                         None => Lookup::Definitive("no addresses".to_owned()),
                     },
-                    Ok(Err(e)) if is_transient(&e) => Lookup::Transient(e.to_string()),
-                    Ok(Err(e)) => Lookup::Definitive(e.to_string()),
+                    Ok(Err(e)) if is_definitive(&e) => Lookup::Definitive(e.to_string()),
+                    Ok(Err(e)) => Lookup::Transient(e.to_string()),
                     Err(_) => Lookup::Transient("timed out".to_owned()),
                 };
                 match result {
@@ -511,6 +518,21 @@ mod tests {
                             "failed to lookup address information: Temporary failure in name resolution",
                         ))
                 }),
+                "musl_again" => Box::pin(async {
+                    Err(io::Error::other(
+                        "failed to lookup address information: Try again",
+                    ))
+                }),
+                "musl_nx" => Box::pin(async {
+                    Err(io::Error::other(
+                        "failed to lookup address information: Name does not resolve",
+                    ))
+                }),
+                "unknown" => Box::pin(async {
+                    Err(io::Error::other(
+                        "failed to lookup address information: Unknown error",
+                    ))
+                }),
                 _ => Box::pin(std::future::pending()),
             };
             fut
@@ -595,6 +617,69 @@ mod tests {
             1,
             "definitive failure is negative-cached"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn musl_try_again_is_retried_and_not_cached() {
+        let servers = vec![server("stun:stun.example:19302")];
+        let cache = Cache::default();
+        let (calls, resolver) = scripted(vec!["musl_again", "ok"]);
+        let out = resolve_with(
+            servers.clone(),
+            resolver,
+            Duration::from_millis(2_000),
+            &cache,
+        )
+        .await;
+        assert_eq!(out[0].urls, vec!["stun:9.9.9.9:19302"]);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        let cache = Cache::default();
+        let (calls, resolver) = scripted(vec!["musl_again", "musl_again", "ok"]);
+        let first = resolve_with(
+            servers.clone(),
+            resolver.clone(),
+            Duration::from_millis(2_000),
+            &cache,
+        )
+        .await;
+        assert!(first.is_empty());
+        let second = resolve_with(servers, resolver, Duration::from_millis(2_000), &cache).await;
+        assert_eq!(second[0].urls, vec!["stun:9.9.9.9:19302"]);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unrecognised_resolver_error_is_retried() {
+        let cache = Cache::default();
+        let (calls, resolver) = scripted(vec!["unknown", "ok"]);
+        let out = resolve_with(
+            vec![server("stun:stun.example:19302")],
+            resolver,
+            Duration::from_millis(2_000),
+            &cache,
+        )
+        .await;
+        assert_eq!(out[0].urls, vec!["stun:9.9.9.9:19302"]);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn musl_nxdomain_is_not_retried_and_is_cached() {
+        let cache = Cache::default();
+        let (calls, resolver) = scripted(vec!["musl_nx", "ok"]);
+        let servers = vec![server("stun:gone.example:3478")];
+        let first = resolve_with(
+            servers.clone(),
+            resolver.clone(),
+            Duration::from_millis(2_000),
+            &cache,
+        )
+        .await;
+        assert!(first.is_empty());
+        let second = resolve_with(servers, resolver, Duration::from_millis(2_000), &cache).await;
+        assert!(second.is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test(start_paused = true)]

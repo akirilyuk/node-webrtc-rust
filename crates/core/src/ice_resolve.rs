@@ -172,20 +172,53 @@ fn pick(addrs: &[SocketAddr]) -> Option<IpAddr> {
 }
 
 /// Resolves hostnames in `servers` with a bound; unresolvable urls are dropped.
+///
+/// Every dropped url is written to stderr (always on, so container logs carry it) and to
+/// `log::warn!`. A dropped STUN server can leave a peer without a reachable srflx candidate,
+/// which looks like "every ICE pair failed" with no other trace (staging 2026-11-25).
 pub(crate) async fn resolve_ice_servers(servers: Vec<IceServer>) -> Vec<IceServer> {
-    resolve_with(servers, default_lookup, resolve_timeout(), global_cache()).await
+    let (out, skipped) =
+        resolve_with_notices(servers, default_lookup, resolve_timeout(), global_cache()).await;
+    for notice in &skipped {
+        eprintln!("{notice}");
+        log::warn!("{notice}");
+    }
+    out
+}
+
+/// One line per url dropped by [`resolve_with_notices`]. Carries no credentials: ICE
+/// usernames and passwords are separate fields, never part of the url.
+pub(crate) fn skip_notice(url: &str, timeout_ms: u128, reason: &str) -> String {
+    format!("[webrtc ice_resolve] ice server {url} not resolved within {timeout_ms} ms: {reason} — skipped")
 }
 
 async fn default_lookup(hostport: String) -> io::Result<Vec<SocketAddr>> {
     Ok(tokio::net::lookup_host(hostport).await?.collect())
 }
 
+#[cfg(test)]
 pub(crate) async fn resolve_with<F, Fut>(
     servers: Vec<IceServer>,
     resolver: F,
     timeout: Duration,
     cache: &Cache,
 ) -> Vec<IceServer>
+where
+    F: Fn(String) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = io::Result<Vec<SocketAddr>>> + Send + 'static,
+{
+    resolve_with_notices(servers, resolver, timeout, cache)
+        .await
+        .0
+}
+
+/// Like `resolve_with`, plus one [`skip_notice`] per dropped url.
+pub(crate) async fn resolve_with_notices<F, Fut>(
+    servers: Vec<IceServer>,
+    resolver: F,
+    timeout: Duration,
+    cache: &Cache,
+) -> (Vec<IceServer>, Vec<String>)
 where
     F: Fn(String) -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = io::Result<Vec<SocketAddr>>> + Send + 'static,
@@ -231,6 +264,7 @@ where
     }
 
     let ms = timeout.as_millis();
+    let mut skipped = Vec::new();
     let mut out = Vec::with_capacity(servers.len());
     for mut server in servers {
         let mut urls = Vec::with_capacity(server.urls.len());
@@ -250,7 +284,7 @@ where
                         .get(&cache_key(&parsed))
                         .map(String::as_str)
                         .unwrap_or("recent resolution failure");
-                    log::warn!("ice server {url} not resolved within {ms} ms: {reason} — skipped");
+                    skipped.push(skip_notice(&url, ms, reason));
                 }
             }
         }
@@ -259,7 +293,7 @@ where
             out.push(server);
         }
     }
-    out
+    (out, skipped)
 }
 
 #[cfg(test)]
@@ -306,6 +340,44 @@ mod tests {
         assert!(parse_ice_url("garbage").is_none());
         assert!(parse_ice_url("http://x").is_none());
         assert!(parse_ice_url("stun:").is_none());
+    }
+
+    #[tokio::test]
+    async fn dropped_url_yields_one_notice_naming_it() {
+        let cache = Cache::default();
+        let (out, skipped) = resolve_with_notices(
+            vec![
+                server("stun:stalled.example:19302"),
+                server("stun:1.2.3.4:3478"),
+            ],
+            never,
+            Duration::from_millis(100),
+            &cache,
+        )
+        .await;
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            skipped,
+            vec![skip_notice("stun:stalled.example:19302", 100, "timed out")]
+        );
+        assert!(
+            skipped[0].starts_with("[webrtc ice_resolve] ice server stun:stalled.example:19302")
+        );
+        assert!(skipped[0].ends_with("— skipped"));
+    }
+
+    #[tokio::test]
+    async fn resolved_and_literal_urls_yield_no_notice() {
+        let cache = Cache::default();
+        let (out, skipped) = resolve_with_notices(
+            vec![server("stun:ok.example:3478"), server("stun:1.2.3.4:3478")],
+            |_h: String| async { Ok(vec!["5.6.7.8:3478".parse().unwrap()]) },
+            Duration::from_millis(100),
+            &cache,
+        )
+        .await;
+        assert_eq!(out.len(), 2);
+        assert!(skipped.is_empty());
     }
 
     #[tokio::test]

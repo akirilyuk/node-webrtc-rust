@@ -8,6 +8,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-11-25
+
+### Fixed
+
+- **core:** `resolve_ice_servers` retries a STUN/TURN DNS lookup once when it stalls or fails with a transient resolver error, instead of dropping the url after one lost packet. A timeout or transient error is no longer negative-cached, so the next connection looks the host up again; an explicit no-such-name answer is not retried and stays cached. A url that is still dropped is now reported on stderr and through `log::warn`, one notice per url.
+
 ## [0.23.0] - 2026-11-19
 
 ### Added

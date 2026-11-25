@@ -9,7 +9,12 @@
 //! ```
 //!
 //! Each iteration feeds 300 ms of silence, the clip, then 2500 ms of silence (so the recognizer
-//! flushes its last words), in 20 ms chunks on a fresh stream. The score is the roundtrip oracle's
+//! flushes its last words), in 20 ms chunks on a fresh stream. `--lead-range-ms <min>-<max>`
+//! draws the silence before the clip per synthesis, uniform in `min..=max` from the `--seed` RNG
+//! (reproducible); `--lead-range-ms agent` is [`AGENT_ONSET_RANGE_MS`], where the live agent's
+//! STT stream puts the caller's onset. The recognizer's reading of the first word depends on that
+//! position: "excuse me please" was clean in 3000 at 300 ms and misheard as "X accuse me, please"
+//! at 520 ms (release 0.23.1 gate, 2 of 300 at 520 ms, 4 of 300 at 640 ms). The score is the roundtrip oracle's
 //! `wordSimilarity` (`examples/voice-agent-local-sherpa/src/roundtrip-counting.ts`). `--keyword` may
 //! be given several times; a synthesis counts as `keywordMissing` when any of them is not a whole
 //! token of its transcript, and the table's `keyword` is the list joined with `,`.
@@ -56,6 +61,13 @@ use support::{
 };
 
 const LEAD_SILENCE_MS: usize = 300;
+/// Where the caller's onset lands in the live agent's fresh STT stream: the pre-roll is padded with
+/// digital silence to its capacity (`SttPreRollBuffer::drain_padded_to_capacity` in
+/// `crates/speech/src/agent.rs`, capacity `speech_pad_ms + min_speech_duration_ms`, 700-750 ms for
+/// the example presets), minus the VAD's onset-to-SpeechStart delay. Observed: 524.75 ms in the
+/// release 0.23.1 gate's `stt-in` tap (pad 500 ms + 200 ms buffered). Judged phrases are qualified
+/// over this whole range (`stt-phrase-qualification.json` `leadRangeMs`).
+const AGENT_ONSET_RANGE_MS: (usize, usize) = (450, 650);
 const TAIL_SILENCE_MS: usize = 2500;
 const SAMPLE_RATE: i32 = 16_000;
 /// `--babble`: caller levels (dBFS, voiced RMS) of the two noisy-bystander scenes,
@@ -186,7 +198,29 @@ struct Args {
     babble: Option<PathBuf>,
     /// `--seed` (default 20261030): babble draws (`--babble` only).
     seed: u64,
+    /// `--lead-range-ms` (default `LEAD_SILENCE_MS` only): silence before the clip, clean sweep.
+    lead_range_ms: (usize, usize),
     phrase: String,
+}
+
+/// `agent` or `<min>-<max>` (ms, `min <= max`); a single `<ms>` is `<ms>-<ms>`.
+fn parse_lead_range(v: &str) -> Result<(usize, usize), String> {
+    if v == "agent" {
+        return Ok(AGENT_ONSET_RANGE_MS);
+    }
+    let num = |s: &str| {
+        s.trim()
+            .parse::<usize>()
+            .map_err(|e| format!("--lead-range-ms {v:?}: {e}"))
+    };
+    let (lo, hi) = match v.split_once('-') {
+        Some((a, b)) => (num(a)?, num(b)?),
+        None => (num(v)?, num(v)?),
+    };
+    if lo > hi {
+        return Err(format!("--lead-range-ms {v:?}: min > max"));
+    }
+    Ok((lo, hi))
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -197,6 +231,7 @@ fn parse_args() -> Result<Args, String> {
     let mut dump_misses = None;
     let mut babble = None;
     let mut seed = 20_261_030u64;
+    let mut lead_range_ms = (LEAD_SILENCE_MS, LEAD_SILENCE_MS);
     let mut phrase = None;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -219,6 +254,7 @@ fn parse_args() -> Result<Args, String> {
                     .parse::<u64>()
                     .map_err(|e| format!("--seed: {e}"))?
             }
+            "--lead-range-ms" => lead_range_ms = parse_lead_range(&value("--lead-range-ms")?)?,
             other if other.starts_with("--") => return Err(format!("unknown flag {other}")),
             other => {
                 if phrase.replace(other.to_string()).is_some() {
@@ -235,6 +271,7 @@ fn parse_args() -> Result<Args, String> {
         dump_misses,
         babble,
         seed,
+        lead_range_ms,
         phrase: phrase.ok_or("missing phrase")?,
     })
 }
@@ -448,7 +485,7 @@ fn run(args: &Args) -> Result<String, String> {
     if let Some(voices_root) = &args.babble {
         return run_babble(args, voices_root, &recognizer, &tts, family);
     }
-    let lead = vec![0.0_f32; SAMPLE_RATE as usize * LEAD_SILENCE_MS / 1000];
+    let mut lead_rng = Rng::new(args.seed);
     let tail = vec![0.0_f32; SAMPLE_RATE as usize * TAIL_SILENCE_MS / 1000];
 
     let mut tally = Tally::new();
@@ -467,15 +504,18 @@ fn run(args: &Args) -> Result<String, String> {
         }
         let (clip, was_resampled) = to_recognizer_rate(raw, rate)?;
         resampled = was_resampled;
-        let mut input = Vec::with_capacity(lead.len() + clip.len() + tail.len());
-        input.extend_from_slice(&lead);
+        let (lo, hi) = args.lead_range_ms;
+        let lead_ms = lead_rng.range(lo, hi);
+        let lead_len = SAMPLE_RATE as usize * lead_ms / 1000;
+        let mut input = Vec::with_capacity(lead_len + clip.len() + tail.len());
+        input.resize(lead_len, 0.0);
         input.extend_from_slice(&clip);
         input.extend_from_slice(&tail);
         let text = recognize(&recognizer, &input);
         if !tally.add(&args.phrase, &args.keywords, text.clone()) {
             if let Some(dir) = &args.dump_misses {
                 write_wav(&dir.join(format!("miss-{i:05}.wav")), &clip)?;
-                eprintln!("phrase_sweep: miss {i}: {text:?}");
+                eprintln!("phrase_sweep: miss {i} (lead {lead_ms} ms): {text:?}");
             }
         }
         if (i + 1) % 50 == 0 {
@@ -485,13 +525,16 @@ fn run(args: &Args) -> Result<String, String> {
 
     let (keyword_json, missing_json) = tally.keyword_json(&args.keywords);
     Ok(format!(
-        "{{\"phrase\":{},\"n\":{},\"minObserved\":{},\"below075\":{},\"below060\":{},\"keyword\":{keyword_json},\"keywordMissing\":{missing_json},\"ttsSampleRate\":{},\"resampled\":{resampled},\"topTexts\":[{}]}}",
+        "{{\"phrase\":{},\"n\":{},\"minObserved\":{},\"below075\":{},\"below060\":{},\"keyword\":{keyword_json},\"keywordMissing\":{missing_json},\"ttsSampleRate\":{},\"resampled\":{resampled},\"leadRangeMs\":[{},{}],\"leadSeed\":{},\"topTexts\":[{}]}}",
         json_string(&args.phrase),
         args.n,
         tally.min_observed,
         tally.below_075,
         tally.below_060,
         tts_rate.unwrap_or(SAMPLE_RATE),
+        args.lead_range_ms.0,
+        args.lead_range_ms.1,
+        args.seed,
         tally.top_json(),
     ))
 }
@@ -501,7 +544,7 @@ fn main() {
         Ok(a) => a,
         Err(e) => {
             eprintln!(
-                "phrase_sweep: {e}\nusage: phrase_sweep --stt <dir> --tts <dir> --n <N> [--keyword <word>]... [--dump-misses <dir>] [--babble <voices-root> [--seed <n>]] \"<phrase>\""
+                "phrase_sweep: {e}\nusage: phrase_sweep --stt <dir> --tts <dir> --n <N> [--keyword <word>]... [--dump-misses <dir>] [--lead-range-ms <min>-<max>|agent] [--seed <n>] [--babble <voices-root>] \"<phrase>\""
             );
             std::process::exit(2);
         }
@@ -518,6 +561,22 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lead_range_parses_agent_pair_single_and_rejects_inverted() {
+        assert_eq!(parse_lead_range("agent"), Ok(AGENT_ONSET_RANGE_MS));
+        assert_eq!(parse_lead_range("450-650"), Ok((450, 650)));
+        assert_eq!(parse_lead_range("300"), Ok((300, 300)));
+        assert!(parse_lead_range("650-450").is_err());
+        assert!(parse_lead_range("x-1").is_err());
+    }
+
+    #[test]
+    fn agent_onset_range_covers_the_observed_gate_onset() {
+        // release 0.23.1 gate stt-in tap: onset at 524.75 ms (pad 500 + 200 ms buffered pre-roll)
+        assert!(AGENT_ONSET_RANGE_MS.0 <= 524 && 525 <= AGENT_ONSET_RANGE_MS.1);
+        assert!(!(AGENT_ONSET_RANGE_MS.0..=AGENT_ONSET_RANGE_MS.1).contains(&LEAD_SILENCE_MS));
+    }
 
     /// Dominant frequency of `samples` at `rate` by zero crossings.
     fn zero_crossing_hz(samples: &[f32], rate: i32) -> f64 {

@@ -54,6 +54,9 @@ interface QualifiedPhrase {
   minObserved: number
   keyword: string | null
   keywordMissing: number | null
+  /** `phrase_sweep --lead-range-ms`: silence before the clip, drawn per synthesis (ms). */
+  leadRangeMs?: [number, number]
+  leadSeed?: number
 }
 
 interface QualificationTable {
@@ -137,11 +140,31 @@ export function findPhraseConstants(source: string): PhraseConstant[] {
   return found
 }
 
+/**
+ * Where the live agent's STT stream puts the caller's onset (`AGENT_ONSET_RANGE_MS` in
+ * `phrase_sweep.rs`: pre-roll padded to capacity by `drain_padded_to_capacity`, minus the VAD
+ * delay). The recognizer's reading of a first word depends on that position: "excuse me please"
+ * was clean in 3000 at the old fixed 300 ms lead and misheard as "X accuse me, please" at 525 ms
+ * (release 0.23.1 gate). A qualification at 300 ms only does not count.
+ */
+export function agentOnsetRangeMs(source: string): [number, number] {
+  const m = /const AGENT_ONSET_RANGE_MS: \(usize, usize\) = \((\d+), (\d+)\);/.exec(source)
+  if (!m) throw new Error('AGENT_ONSET_RANGE_MS not found in phrase_sweep.rs')
+  return [Number(m[1]), Number(m[2])]
+}
+
+const AGENT_ONSET_RANGE = agentOnsetRangeMs(
+  readFileSync(
+    join(EXAMPLE_DIR, '..', '..', 'crates', 'vendor-sherpa-onnx', 'examples', 'phrase_sweep.rs'),
+    'utf8',
+  ),
+)
+
 function sweepCommand(item: Judged): string {
   const keyword = (item.keyword?.split(',') ?? []).map((word) => ` --keyword ${word}`).join('')
   return (
     'cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example phrase_sweep -- ' +
-    `--stt <stt-model-dir> --tts <tts-model-dir> --n ${MIN_SYNTHESES}${keyword} "${item.phrase}"`
+    `--stt <stt-model-dir> --tts <tts-model-dir> --n ${MIN_SYNTHESES} --lead-range-ms agent --seed <n>${keyword} "${item.phrase}"`
   )
 }
 
@@ -164,6 +187,11 @@ describe('STT phrase qualification', () => {
       const hint = `phrase ${JSON.stringify(item.phrase)} is judged by a roundtrip but not qualified; run: ${sweepCommand(item)} and add the output to stt-phrase-qualification.json`
       expect(entry, hint).toBeDefined()
       expect(entry!.n, `${hint} (n < ${MIN_SYNTHESES})`).toBeGreaterThanOrEqual(MIN_SYNTHESES)
+      expect(
+        entry!.leadRangeMs,
+        `${hint} (not swept over the agent onset range ${AGENT_ONSET_RANGE.join('-')} ms)`,
+      ).toEqual(AGENT_ONSET_RANGE)
+      expect(entry!.leadSeed, `${hint} (no leadSeed recorded)`).toEqual(expect.any(Number))
       if (item.keyword !== undefined) {
         expect(entry!.keyword, `${hint} (swept without --keyword ${item.keyword})`).toBe(
           item.keyword,
@@ -180,6 +208,20 @@ describe('STT phrase qualification', () => {
         ).toBeGreaterThanOrEqual(item.threshold)
       }
     }
+  })
+
+  it('reads the agent onset range from phrase_sweep.rs and refuses a 300 ms-only record', () => {
+    expect(AGENT_ONSET_RANGE[0]).toBeLessThanOrEqual(525)
+    expect(AGENT_ONSET_RANGE[1]).toBeGreaterThanOrEqual(525)
+    expect(() => agentOnsetRangeMs('const LEAD_SILENCE_MS: usize = 300;')).toThrow()
+    const legacy: QualifiedPhrase = {
+      phrase: 'x',
+      n: 3000,
+      minObserved: 1,
+      keyword: null,
+      keywordMissing: null,
+    }
+    expect(legacy.leadRangeMs).not.toEqual(AGENT_ONSET_RANGE)
   })
 
   it('table was produced for the models CI uses', () => {

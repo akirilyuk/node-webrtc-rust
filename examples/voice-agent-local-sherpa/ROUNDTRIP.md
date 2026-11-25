@@ -243,7 +243,7 @@ npm run start:roundtrip-counting-barge-recovery --workspace=@node-webrtc-rust/ex
 | ------------------------------------ | ----------------------------------------- | --------------------------------------------------------- |
 | `SHERPA_BARGE_RECOVERY_PHRASE`       | `good morning, this is the recovery test` | Round 3 source phrase                                     |
 | `SHERPA_BARGE_RECOVERY_DELAY_MS`     | `400`                                     | Ms after Agent2 TTS starts before barge TTS on `agentOut` |
-| `SHERPA_BARGE_RECOVERY_BARGE_PHRASE` | `excuse me please`                        | Sherpa TTS phrase Agent1 plays to barge Agent2            |
+| `SHERPA_BARGE_RECOVERY_BARGE_PHRASE` | `sorry I have a question`                 | Sherpa TTS phrase Agent1 plays to barge Agent2            |
 | `SHERPA_BARGE_RECOVERY_TONE_S`       | `1.0`                                     | Silence tail after barge TTS on `agentOut`                |
 
 Interrupted leg B caps are derived, not configured: barge-in must fire within `SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS` (2720 ms, `@node-webrtc-rust/sdk/voice`) of the barge onset, and leg B may hold at most the number words agent2 speaks in (onset + that bound) at the round 1 echo's speech rate, plus one word in flight (`deriveInterruptedLegCaps`).
@@ -769,16 +769,16 @@ npm run start:roundtrip-barge-in-buffered --workspace=@node-webrtc-rust/example-
 
 Event-order logic: [`src/roundtrip-barge-in-helpers.ts`](./src/roundtrip-barge-in-helpers.ts) + [`src/roundtrip-stt-lifecycle-helpers.ts`](./src/roundtrip-stt-lifecycle-helpers.ts) (Vitest, no Sherpa models).
 
-| Variable                               | Default                  | Purpose                                                            |
-| -------------------------------------- | ------------------------ | ------------------------------------------------------------------ |
-| `SHERPA_BARGE_IN_PHRASE`               | long sentence            | Agent TTS under test                                               |
-| `SHERPA_BARGE_IN_BARGE_PHRASE`         | `excuse me please`       | User-leg TTS for phase 3                                           |
-| `SHERPA_BARGE_IN_DELAY_MS`             | `700`                    | Ms after agent TTS starts before interrupt                         |
-| `SHERPA_BARGE_IN_TONE_S`               | `1.0`                    | Phase 2 tone duration                                              |
-| `SHERPA_BARGE_IN_MAX_RATIO`            | `0.65` local / `0.80` CI | Phase 3 max inbound-meter `cutMs / fullMs` (same clock as Phase 1) |
-| `SHERPA_BARGE_IN_MIN_FULL_AFTER_NOISE` | `0.75`                   | Phase 2 min `cutMs / fullMs`                                       |
-| `SHERPA_BARGE_IN_MIN_SIMILARITY`       | `0.75`                   | Phase 3 min word similarity vs barge phrase                        |
-| `SHERPA_BARGE_IN_VERBOSE`              | off                      | Log listener speech events                                         |
+| Variable                               | Default                   | Purpose                                                            |
+| -------------------------------------- | ------------------------- | ------------------------------------------------------------------ |
+| `SHERPA_BARGE_IN_PHRASE`               | long sentence             | Agent TTS under test                                               |
+| `SHERPA_BARGE_IN_BARGE_PHRASE`         | `sorry I have a question` | User-leg TTS for phase 3                                           |
+| `SHERPA_BARGE_IN_DELAY_MS`             | `700`                     | Ms after agent TTS starts before interrupt                         |
+| `SHERPA_BARGE_IN_TONE_S`               | `1.0`                     | Phase 2 tone duration                                              |
+| `SHERPA_BARGE_IN_MAX_RATIO`            | `0.65` local / `0.80` CI  | Phase 3 max inbound-meter `cutMs / fullMs` (same clock as Phase 1) |
+| `SHERPA_BARGE_IN_MIN_FULL_AFTER_NOISE` | `0.75`                    | Phase 2 min `cutMs / fullMs`                                       |
+| `SHERPA_BARGE_IN_MIN_SIMILARITY`       | `0.75`                    | Phase 3 min word similarity vs barge phrase                        |
+| `SHERPA_BARGE_IN_VERBOSE`              | off                       | Log listener speech events                                         |
 
 Success: `Semantic barge-in E2E OK — tone ignored, spoken phrase interrupted agent TTS.`
 
@@ -790,11 +790,11 @@ A barge-in must not poison the TTS phrase cache. A cancelled synthesis used to b
 
 The phrase is four sentences plus ` Run <nonce>.` (`nonce = Date.now()`), so it is never cached before the run. `d(agent)` is the time from `agent_speaking_start` to `agent_speaking_end` for one `sendTextToTTS` call.
 
-| Phase | Agent / cache scope                              | Action                                                         | Measured |
-| ----- | ------------------------------------------------ | -------------------------------------------------------------- | -------- |
-| R     | user-leg agent, `projectId = ref-<nonce>`        | speaks P, no barge                                             | `dRef`   |
-| A     | main agent, `projectId = p1-<nonce>`             | speaks P; user leg says "excuse me please" 1500 ms after start | `dA`     |
-| B     | main agent, `projectId = p1-<nonce>` (same as A) | speaks P again, no barge                                       | `dB`     |
+| Phase | Agent / cache scope                              | Action                                                                | Measured |
+| ----- | ------------------------------------------------ | --------------------------------------------------------------------- | -------- |
+| R     | user-leg agent, `projectId = ref-<nonce>`        | speaks P, no barge                                                    | `dRef`   |
+| A     | main agent, `projectId = p1-<nonce>`             | speaks P; user leg says "sorry I have a question" 1500 ms after start | `dA`     |
+| B     | main agent, `projectId = p1-<nonce>` (same as A) | speaks P again, no barge                                              | `dB`     |
 
 Pass: `dA < 0.5 x dRef` (the barge happened) and `dB >= 0.85 x dRef` (the replay is complete). All three durations are printed on one `Barge replay:` line. Duration logic: `agentSpeakingDurationMs` and `evaluateBargeReplayDurations` in [`src/roundtrip-barge-in-helpers.ts`](./src/roundtrip-barge-in-helpers.ts) (Vitest in `roundtrip-barge-in.test.ts`). The crate-level counterpart is `crates/vendor-sherpa-onnx/tests/tts_cancel_not_cached_test.rs`.
 

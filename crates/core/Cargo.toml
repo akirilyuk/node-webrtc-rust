@@ -20,6 +20,8 @@ async-trait = "0.1"
 node-webrtc-rust-mixer = { path = "../mixer" }
 
 [dev-dependencies]
+# `test-util` gives `start_paused` for the ICE resolve retry tests.
+tokio = { workspace = true, features = ["test-util"] }
 env_logger = "0.11"
 criterion = { version = "0.5", default-features = false }
 

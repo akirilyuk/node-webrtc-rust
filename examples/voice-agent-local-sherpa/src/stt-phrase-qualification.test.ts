@@ -48,7 +48,7 @@ const ECHO_LEG_MIN_SIMILARITY = 0.6
 /** `roundtrip-counting-barge-recovery.ts` `roundParams.minSimilarity` (recovery leg A). */
 const RECOVERY_LEG_A_MIN_SIMILARITY = 0.75
 
-interface QualifiedPhrase {
+export interface QualifiedPhrase {
   phrase: string
   n: number
   minObserved: number
@@ -153,6 +153,20 @@ export function agentOnsetRangeMs(source: string): [number, number] {
   return [Number(m[1]), Number(m[2])]
 }
 
+/**
+ * Why a judged clean record does not count as qualified at the agent's onset, or null when it does:
+ * it must be swept over exactly the agent onset range, with the seed recorded.
+ */
+export function onsetQualificationDefect(
+  e: QualifiedPhrase,
+  range: [number, number],
+): string | null {
+  if (!e.leadRangeMs || e.leadRangeMs[0] !== range[0] || e.leadRangeMs[1] !== range[1])
+    return `not swept over the agent onset range ${range.join('-')} ms`
+  if (typeof e.leadSeed !== 'number') return 'no leadSeed recorded'
+  return null
+}
+
 const AGENT_ONSET_RANGE = agentOnsetRangeMs(
   readFileSync(
     join(EXAMPLE_DIR, '..', '..', 'crates', 'vendor-sherpa-onnx', 'examples', 'phrase_sweep.rs'),
@@ -187,11 +201,7 @@ describe('STT phrase qualification', () => {
       const hint = `phrase ${JSON.stringify(item.phrase)} is judged by a roundtrip but not qualified; run: ${sweepCommand(item)} and add the output to stt-phrase-qualification.json`
       expect(entry, hint).toBeDefined()
       expect(entry!.n, `${hint} (n < ${MIN_SYNTHESES})`).toBeGreaterThanOrEqual(MIN_SYNTHESES)
-      expect(
-        entry!.leadRangeMs,
-        `${hint} (not swept over the agent onset range ${AGENT_ONSET_RANGE.join('-')} ms)`,
-      ).toEqual(AGENT_ONSET_RANGE)
-      expect(entry!.leadSeed, `${hint} (no leadSeed recorded)`).toEqual(expect.any(Number))
+      expect(onsetQualificationDefect(entry!, AGENT_ONSET_RANGE), hint).toBeNull()
       if (item.keyword !== undefined) {
         expect(entry!.keyword, `${hint} (swept without --keyword ${item.keyword})`).toBe(
           item.keyword,
@@ -210,18 +220,32 @@ describe('STT phrase qualification', () => {
     }
   })
 
-  it('reads the agent onset range from phrase_sweep.rs and refuses a 300 ms-only record', () => {
+  it('reads the agent onset range from phrase_sweep.rs', () => {
+    expect(AGENT_ONSET_RANGE).toEqual([450, 650])
     expect(AGENT_ONSET_RANGE[0]).toBeLessThanOrEqual(525)
     expect(AGENT_ONSET_RANGE[1]).toBeGreaterThanOrEqual(525)
     expect(() => agentOnsetRangeMs('const LEAD_SILENCE_MS: usize = 300;')).toThrow()
-    const legacy: QualifiedPhrase = {
+  })
+
+  it('onset qualification refuses legacy, 300 ms and seedless records', () => {
+    const base: QualifiedPhrase = {
       phrase: 'x',
       n: 3000,
       minObserved: 1,
       keyword: null,
       keywordMissing: null,
     }
-    expect(legacy.leadRangeMs).not.toEqual(AGENT_ONSET_RANGE)
+    const range: [number, number] = [450, 650]
+    expect(onsetQualificationDefect(base, range)).toContain('not swept')
+    expect(
+      onsetQualificationDefect({ ...base, leadRangeMs: [300, 300], leadSeed: 1 }, range),
+    ).toContain('not swept')
+    expect(onsetQualificationDefect({ ...base, leadRangeMs: [450, 650] }, range)).toBe(
+      'no leadSeed recorded',
+    )
+    expect(
+      onsetQualificationDefect({ ...base, leadRangeMs: [450, 650], leadSeed: 20261125 }, range),
+    ).toBeNull()
   })
 
   it('table was produced for the models CI uses', () => {

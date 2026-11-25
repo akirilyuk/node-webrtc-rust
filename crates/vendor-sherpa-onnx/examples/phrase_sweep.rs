@@ -63,7 +63,7 @@ use support::{
 const LEAD_SILENCE_MS: usize = 300;
 /// Where the caller's onset lands in the live agent's fresh STT stream: the pre-roll is padded with
 /// digital silence to its capacity (`SttPreRollBuffer::drain_padded_to_capacity` in
-/// `crates/speech/src/agent.rs`, capacity `speech_pad_ms + min_speech_duration_ms`, 700-750 ms for
+/// `crates/speech/src/stt_pre_roll.rs`, called from `crates/speech/src/agent.rs`, capacity `speech_pad_ms + min_speech_duration_ms`, 700-750 ms for
 /// the example presets), minus the VAD's onset-to-SpeechStart delay. Observed: 524.75 ms in the
 /// release 0.23.1 gate's `stt-in` tap (pad 500 ms + 200 ms buffered). Judged phrases are qualified
 /// over this whole range (`stt-phrase-qualification.json` `leadRangeMs`).

@@ -2,7 +2,7 @@
   "stt": "sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06",
   "tts": "vits-piper-en_US-amy-low",
   "tool": "cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example phrase_sweep",
-  "date": "2026-10-30",
+  "date": "2026-11-26",
   "phrases": [
     {
       "phrase": "good morning, this is the recovery test",
@@ -12,10 +12,11 @@
       "below060": 0,
       "keyword": null,
       "keywordMissing": null,
+      "leadRangeMs": [450, 650],
+      "leadSeed": 20261125,
       "topTexts": [
-        ["Good morning. This is the recovery test.", 2922],
-        ["Good morning. This is the recovery test", 74],
-        ["Good morning this is the recovery test.", 4]
+        ["Good morning. This is the recovery test.", 2967],
+        ["Good morning this is the recovery test.", 33]
       ],
       "babble": {
         "relDb": -15,
@@ -70,12 +71,14 @@
       "below060": 0,
       "keyword": null,
       "keywordMissing": null,
+      "leadRangeMs": [450, 650],
+      "leadSeed": 20261125,
       "topTexts": [
-        ["You said good morning. This is the recovery test.", 1860],
-        ["You said good morning, this is the recovery test.", 707],
-        ["You said good morning this is the recovery test.", 354],
-        ["You said, good morning, this is the recovery test.", 29],
-        ["You said, good morning. This is the recovery test.", 25]
+        ["You said good morning. This is the recovery test.", 1081],
+        ["You said, good morning, this is the recovery test.", 551],
+        ["You said, good morning. This is the recovery test.", 510],
+        ["You said good morning, this is the recovery test.", 480],
+        ["You said good morning this is the recovery test.", 200]
       ],
       "babble": {
         "relDb": -15,
@@ -190,9 +193,11 @@
       "below060": 0,
       "keyword": "finished",
       "keywordMissing": 0,
+      "leadRangeMs": [450, 650],
+      "leadSeed": 20261125,
       "topTexts": [
-        ["I have finished talking", 2799],
-        ["I have finished talking.", 201]
+        ["I have finished talking", 2901],
+        ["I have finished talking.", 99]
       ],
       "babble": {
         "relDb": -15,
@@ -248,10 +253,13 @@
       "below060": 0,
       "keyword": "charlie",
       "keywordMissing": 0,
+      "leadRangeMs": [450, 650],
+      "leadSeed": 20261125,
       "topTexts": [
-        ["Charlie one two three", 2525],
-        ["Charlie won two three", 474],
-        ["Charlie one, two, three", 1]
+        ["Charlie one two three", 2966],
+        ["Charlie one, two three", 14],
+        ["Charlie won two three", 14],
+        ["Charlie one, two, three", 6]
       ],
       "babble": {
         "relDb": -15,
@@ -302,12 +310,17 @@
     {
       "phrase": "bravo four five six",
       "n": 3000,
-      "minObserved": 1,
+      "minObserved": 0.75,
       "below075": 0,
       "below060": 0,
       "keyword": "four",
       "keywordMissing": 0,
-      "topTexts": [["Bravo four five six", 3000]],
+      "leadRangeMs": [450, 650],
+      "leadSeed": 20261125,
+      "topTexts": [
+        ["Bravo four five six", 2995],
+        ["Brava four five six", 5]
+      ],
       "babble": {
         "relDb": -15,
         "threshold": 0.75,
@@ -420,53 +433,61 @@
       "below060": 0,
       "keyword": null,
       "keywordMissing": null,
+      "leadRangeMs": [450, 650],
+      "leadSeed": 20261125,
       "topTexts": [
         [
           "This is a very long sentence, maybe the longest sentence ever spoken. It is so long that the length of it cannot even be measured",
-          2989
+          2547
         ],
         [
           "This is a very long sentence may be the longest sentence ever spoken. It is so long that the length of it cannot even be measured",
-          7
+          305
         ],
         [
           "This is a very long sentence, maybe the longest sentence ever spoken. It is so long that the length of it cannot even be measured.",
-          3
+          131
         ],
         [
           "This is a very long sentence maybe the longest sentence ever spoken. It is so long that the length of it cannot even be measured",
-          1
+          11
+        ],
+        [
+          "This is a very long sentence may be the longest sentence ever spoken. It is so long that the length of it cannot even be measured.",
+          4
         ]
       ]
     },
     {
       "phrase": "You said: This is a very long sentence, maybe the longest sentence ever spoken. It is so long, that the lenght of it cannot even be measured.",
       "n": 3000,
-      "minObserved": 0.8888888888888888,
+      "minObserved": 0.9259259259259259,
       "below075": 0,
       "below060": 0,
       "keyword": null,
       "keywordMissing": null,
+      "leadRangeMs": [450, 650],
+      "leadSeed": 20261125,
       "topTexts": [
         [
           "You said this is a very long sentence, maybe the longest sentence ever spoken. It is so long that the length of it cannot even be measured",
-          1490
-        ],
-        [
-          "You said this is a very long sentence, maybe the longest sentence ever spoken. It is so long that the length of it cannot even be measured.",
-          514
+          1300
         ],
         [
           "You said this is a very long sentence. Maybe the longest sentence ever spoken. It is so long that the length of it cannot even be measured",
-          290
+          629
         ],
         [
           "You said this is a very long sentence, baby the longest sentence ever spoken. It is so long that the length of it cannot even be measured",
-          188
+          334
+        ],
+        [
+          "You said this is a very long sentence, maybe the longest sentence ever spoken. It is so long that the length of it cannot even be measured.",
+          269
         ],
         [
           "You said this is a very long sentence. They be the longest sentence ever spoken. It is so long that the length of it cannot even be measured",
-          147
+          156
         ]
       ]
     },
@@ -478,23 +499,76 @@
       "below060": 0,
       "keyword": "why,need,time,speaking",
       "keywordMissing": 0,
+      "leadRangeMs": [450, 650],
+      "leadSeed": 20261125,
       "topTexts": [
         [
-          "Why do you need so much time until you start speaking clearly to the listener? Please explain every step carefully so that anyone following along can understand the complete answer without needing to ask for clarification again",
-          2740
+          "Why do you need so much time until you start speaking clearly to the listener? Please explain every step carefully so that anyone following along can understand the complete answer without needing to ask for clarification again.",
+          2577
         ],
         [
-          "Why do you need so much time until you start speaking clearly to the listener? Please explain every step carefully so that anyone following along can understand the complete answer without needing to ask for clarification again.",
-          250
+          "Why do you need so much time until you start speaking clearly to the listener? Please explain every step carefully so that anyone following along can understand the complete answer without needing to ask for clarification again",
+          419
+        ],
+        [
+          "Why do you need so much time until you start speaking clearly to the listener? Please explain every step carefully so but anyone following along can understand the complete answer without needing to ask for clarification again.",
+          1
+        ],
+        [
+          "Why do you need so much time until you start speaking clearly to the listener? Please explain every step carefully so that anyone following alone can understand the complete answer without needing to ask for clarification again.",
+          1
         ],
         [
           "Why do you need so much time until you start speaking clearly to the listener? Please explain every step carefully so that anyone following the long can understand the complete answer without needing to ask for clarification again",
-          7
-        ],
-        [
-          "Why do you need so much time until you start speaking clearly to the listener? Please explain every step carefully so but anyone following along can understand the complete answer without needing to ask for clarification again",
-          3
+          1
         ]
+      ]
+    },
+    {
+      "phrase": "wait a moment please",
+      "n": 3000,
+      "minObserved": 0.75,
+      "below075": 0,
+      "below060": 0,
+      "keyword": "wait",
+      "keywordMissing": 0,
+      "leadRangeMs": [450, 650],
+      "leadSeed": 20261125,
+      "topTexts": [
+        ["Wait a moment, please", 2464],
+        ["Wait a moment, please.", 533],
+        ["Wait and moment, please", 3]
+      ]
+    },
+    {
+      "phrase": "sorry I have a question",
+      "n": 3000,
+      "minObserved": 1,
+      "below075": 0,
+      "below060": 0,
+      "keyword": "sorry",
+      "keywordMissing": 0,
+      "leadRangeMs": [450, 650],
+      "leadSeed": 20261125,
+      "topTexts": [
+        ["Sorry, I have a question.", 2976],
+        ["Sorry I have a question.", 24]
+      ]
+    },
+    {
+      "phrase": "golf sixteen seventeen eighteen",
+      "n": 3000,
+      "minObserved": 0.75,
+      "below075": 0,
+      "below060": 0,
+      "keyword": "sixteen",
+      "keywordMissing": 0,
+      "leadRangeMs": [450, 650],
+      "leadSeed": 20261125,
+      "topTexts": [
+        ["Golf sixteen seventeen eighteen", 2993],
+        ["Golf Sixteen seventeen eighteen", 6],
+        ["Gulf Sixteen seventeen eighteen", 1]
       ]
     }
   ]

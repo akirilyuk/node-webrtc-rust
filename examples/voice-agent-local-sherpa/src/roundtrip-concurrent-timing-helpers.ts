@@ -68,10 +68,12 @@ export const LEG_CATALOG = [
   { phrase: 'bravo four five six', keyword: 'four' },
   // Not 'delta seven eight nine': "delta" was misheard ("fell to", "belt a") in 5 of 3000 clean
   // syntheses (stt-phrase-qualification.json).
-  { phrase: 'victor seven eight nine', keyword: 'victor' },
+  // Not 'victor seven eight nine' as a judged leg: with speech onset at the agent's 450-650 ms
+  // (phrase_sweep --lead-range-ms agent) "victor" went missing in 1 of 3000 clean syntheses.
+  { phrase: 'golf sixteen seventeen eighteen', keyword: 'sixteen' },
   { phrase: 'echo ten eleven twelve', keyword: 'ten' },
   { phrase: 'foxtrot thirteen fourteen fifteen', keyword: 'thirteen' },
-  { phrase: 'golf sixteen seventeen eighteen', keyword: 'sixteen' },
+  { phrase: 'victor seven eight nine', keyword: 'victor' },
 ] as const
 
 /**

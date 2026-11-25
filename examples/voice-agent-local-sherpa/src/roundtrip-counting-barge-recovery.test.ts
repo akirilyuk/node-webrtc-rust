@@ -22,7 +22,7 @@ describe('roundtrip-counting-barge-recovery helpers', () => {
   })
 
   it('DEFAULT_BARGE_PHRASE matches semantic barge-in default', () => {
-    expect(DEFAULT_BARGE_PHRASE).toBe('excuse me please')
+    expect(DEFAULT_BARGE_PHRASE).toBe('sorry I have a question')
   })
 
   it('echoPayloadForCompare strips You said prefix', () => {
@@ -114,7 +114,7 @@ describe('roundtrip-counting-barge-recovery helpers', () => {
  *
  * Model, calibrated on the two CI passes of that run: partials arrive every 1280 ms
  * (Rust `SHERPA_STREAMING_PARTIAL_INTERVAL_MS`) at a phase set by scheduling; a partial holds two
- * tokens of "excuse me please" only from 1400 ms after onset (CI: 1346 ms → "Excuse",
+ * tokens of "excuse me please" (the barge phrase until 2026-11-25; the model's numbers are kept) only from 1400 ms after onset (CI: 1346 ms → "Excuse",
  * 1437 ms → "Excuse me, ple"). Barge fires on the first grid partial at or after that. agent2 speaks
  * the 12-word echo in 4064 ms (round 1 of the run); the barge onset comes 520 ms after agent2
  * starts. Every word agent2 started before the flush is heard.

@@ -243,7 +243,7 @@ npm run start:roundtrip-counting-barge-recovery --workspace=@node-webrtc-rust/ex
 | ------------------------------------ | ----------------------------------------- | --------------------------------------------------------- |
 | `SHERPA_BARGE_RECOVERY_PHRASE`       | `good morning, this is the recovery test` | Round 3 source phrase                                     |
 | `SHERPA_BARGE_RECOVERY_DELAY_MS`     | `400`                                     | Ms after Agent2 TTS starts before barge TTS on `agentOut` |
-| `SHERPA_BARGE_RECOVERY_BARGE_PHRASE` | `excuse me please`                        | Sherpa TTS phrase Agent1 plays to barge Agent2            |
+| `SHERPA_BARGE_RECOVERY_BARGE_PHRASE` | `sorry I have a question`                 | Sherpa TTS phrase Agent1 plays to barge Agent2            |
 | `SHERPA_BARGE_RECOVERY_TONE_S`       | `1.0`                                     | Silence tail after barge TTS on `agentOut`                |
 
 Interrupted leg B caps are derived, not configured: barge-in must fire within `SEMANTIC_BARGE_IN_WORST_CASE_LATENCY_MS` (2720 ms, `@node-webrtc-rust/sdk/voice`) of the barge onset, and leg B may hold at most the number words agent2 speaks in (onset + that bound) at the round 1 echo's speech rate, plus one word in flight (`deriveInterruptedLegCaps`).
@@ -670,7 +670,7 @@ Exit code `1` if any phrase is empty or below the similarity threshold.
 
 Asserted per pass (each turn takes the first `user_speaking_start` inside its scene slot; `barge_in` and finals are paired by `utteranceId`): no `barge_in` carries a bystander utterance's id and its final has `speaker: 'other'`; every caller turn barges in, its final has `speaker: 'caller'`, and qualified phrases match the manifest text (`wordSimilarity` >= 0.75; long sentences are not judged); the barge-in comes at most 300 ms after the later of `user_speaking_start` + `checkSpeechMs` (the speaker verdict) and the first `user_speech_partial` on that `utteranceId` with at least `minSttPartialTokens` tokens (what `requireSttPartial` waits for, counted as the product counts them), and at most 3 s after `user_speaking_start`. A bystander final `unknown` with `speakerUnknownReason: 'short'` (less speech than `minCheckSpeechMs`, 1500 ms) is accepted together with its barge-in, which is the documented behaviour with `suppressShortBargeIn` off; an unknown with any other reason, or none, fails. At least 1 bystander turn per pass must be `other` without a barge-in, so a pass cannot succeed without the gate scoring a bystander; how many of the -15 dB bystanders open the VAD varies per run, so no higher count is required.
 
-The caller phrases the scene judges are qualified over babble, not only in silence. The clean sweep (`phrase_sweep`, 3000 syntheses after 300 ms of digital silence) never puts a weak onset under background chatter, and the scene does: "excuse me please" was clean in all 3000 clean runs, yet one Piper roll of it over the scene's babble was heard as "X cuse me, please." `phrase_sweep --babble <voices-root>` repeats the scene's condition: per caller level (-20 and -26 dBFS) 1000 fresh syntheses, each over two of the scene's test-set voices reading background sentences 15 dB below the caller, already talking when the window starts, with 750 ms of babble before the onset (what the agent's STT receives) and no babble sentence starting in the last second before the caller. It scores with this test's oracle (`wordSimilarity` >= 0.75). The result is the `babble` entry of a phrase in `stt-phrase-qualification.json`, and `speaker_fixtures` only picks a scene caller phrase that met that threshold in 1000 of 1000 rolls at both caller levels (a roll can still mishear a word and pass, for example "Charlie won two three"). Since the scene now avoids phrases with a weak onset, the guard against losing the lead-in before a phrase ("excuse me" heard as "use me") is the deterministic unit tests in `crates/speech/tests/stt_split_onset_test.rs`, not this scene.
+The caller phrases the scene judges are qualified over babble, not only in silence. The clean sweep (`phrase_sweep --lead-range-ms agent`, 3000 syntheses, each with its onset drawn from the agent's range of 450-650 ms of digital silence) never puts a weak onset under background chatter, and the scene does: "excuse me please" was clean in all 3000 clean runs, yet one Piper roll of it over the scene's babble was heard as "X cuse me, please." `phrase_sweep --babble <voices-root>` repeats the scene's condition: per caller level (-20 and -26 dBFS) 1000 fresh syntheses, each over two of the scene's test-set voices reading background sentences 15 dB below the caller, already talking when the window starts, with 750 ms of babble before the onset (what the agent's STT receives) and no babble sentence starting in the last second before the caller. It scores with this test's oracle (`wordSimilarity` >= 0.75). The result is the `babble` entry of a phrase in `stt-phrase-qualification.json`, and `speaker_fixtures` only picks a scene caller phrase that met that threshold in 1000 of 1000 rolls at both caller levels (a roll can still mishear a word and pass, for example "Charlie won two three"). Since the scene now avoids phrases with a weak onset, the guard against losing the lead-in before a phrase ("excuse me" heard as "use me") is the deterministic unit tests in `crates/speech/tests/stt_split_onset_test.rs`, not this scene. S3 (noisy-bystander) caller phrases are judged only over babble (750 ms babble lead, the `babble` entry), so the guard does not require `leadRangeMs` on them; "victor seven eight nine" stays an S3 caller phrase (S3 judges by similarity >= 0.75), and swapping it needs regenerated speaker fixtures.
 
 ```bash
 cargo run --release -p node-webrtc-rust-vendor-sherpa-onnx --example phrase_sweep -- \
@@ -769,16 +769,16 @@ npm run start:roundtrip-barge-in-buffered --workspace=@node-webrtc-rust/example-
 
 Event-order logic: [`src/roundtrip-barge-in-helpers.ts`](./src/roundtrip-barge-in-helpers.ts) + [`src/roundtrip-stt-lifecycle-helpers.ts`](./src/roundtrip-stt-lifecycle-helpers.ts) (Vitest, no Sherpa models).
 
-| Variable                               | Default                  | Purpose                                                            |
-| -------------------------------------- | ------------------------ | ------------------------------------------------------------------ |
-| `SHERPA_BARGE_IN_PHRASE`               | long sentence            | Agent TTS under test                                               |
-| `SHERPA_BARGE_IN_BARGE_PHRASE`         | `excuse me please`       | User-leg TTS for phase 3                                           |
-| `SHERPA_BARGE_IN_DELAY_MS`             | `700`                    | Ms after agent TTS starts before interrupt                         |
-| `SHERPA_BARGE_IN_TONE_S`               | `1.0`                    | Phase 2 tone duration                                              |
-| `SHERPA_BARGE_IN_MAX_RATIO`            | `0.65` local / `0.80` CI | Phase 3 max inbound-meter `cutMs / fullMs` (same clock as Phase 1) |
-| `SHERPA_BARGE_IN_MIN_FULL_AFTER_NOISE` | `0.75`                   | Phase 2 min `cutMs / fullMs`                                       |
-| `SHERPA_BARGE_IN_MIN_SIMILARITY`       | `0.75`                   | Phase 3 min word similarity vs barge phrase                        |
-| `SHERPA_BARGE_IN_VERBOSE`              | off                      | Log listener speech events                                         |
+| Variable                               | Default                   | Purpose                                                            |
+| -------------------------------------- | ------------------------- | ------------------------------------------------------------------ |
+| `SHERPA_BARGE_IN_PHRASE`               | long sentence             | Agent TTS under test                                               |
+| `SHERPA_BARGE_IN_BARGE_PHRASE`         | `sorry I have a question` | User-leg TTS for phase 3                                           |
+| `SHERPA_BARGE_IN_DELAY_MS`             | `700`                     | Ms after agent TTS starts before interrupt                         |
+| `SHERPA_BARGE_IN_TONE_S`               | `1.0`                     | Phase 2 tone duration                                              |
+| `SHERPA_BARGE_IN_MAX_RATIO`            | `0.65` local / `0.80` CI  | Phase 3 max inbound-meter `cutMs / fullMs` (same clock as Phase 1) |
+| `SHERPA_BARGE_IN_MIN_FULL_AFTER_NOISE` | `0.75`                    | Phase 2 min `cutMs / fullMs`                                       |
+| `SHERPA_BARGE_IN_MIN_SIMILARITY`       | `0.75`                    | Phase 3 min word similarity vs barge phrase                        |
+| `SHERPA_BARGE_IN_VERBOSE`              | off                       | Log listener speech events                                         |
 
 Success: `Semantic barge-in E2E OK — tone ignored, spoken phrase interrupted agent TTS.`
 
@@ -790,11 +790,11 @@ A barge-in must not poison the TTS phrase cache. A cancelled synthesis used to b
 
 The phrase is four sentences plus ` Run <nonce>.` (`nonce = Date.now()`), so it is never cached before the run. `d(agent)` is the time from `agent_speaking_start` to `agent_speaking_end` for one `sendTextToTTS` call.
 
-| Phase | Agent / cache scope                              | Action                                                         | Measured |
-| ----- | ------------------------------------------------ | -------------------------------------------------------------- | -------- |
-| R     | user-leg agent, `projectId = ref-<nonce>`        | speaks P, no barge                                             | `dRef`   |
-| A     | main agent, `projectId = p1-<nonce>`             | speaks P; user leg says "excuse me please" 1500 ms after start | `dA`     |
-| B     | main agent, `projectId = p1-<nonce>` (same as A) | speaks P again, no barge                                       | `dB`     |
+| Phase | Agent / cache scope                              | Action                                                                | Measured |
+| ----- | ------------------------------------------------ | --------------------------------------------------------------------- | -------- |
+| R     | user-leg agent, `projectId = ref-<nonce>`        | speaks P, no barge                                                    | `dRef`   |
+| A     | main agent, `projectId = p1-<nonce>`             | speaks P; user leg says "sorry I have a question" 1500 ms after start | `dA`     |
+| B     | main agent, `projectId = p1-<nonce>` (same as A) | speaks P again, no barge                                              | `dB`     |
 
 Pass: `dA < 0.5 x dRef` (the barge happened) and `dB >= 0.85 x dRef` (the replay is complete). All three durations are printed on one `Barge replay:` line. Duration logic: `agentSpeakingDurationMs` and `evaluateBargeReplayDurations` in [`src/roundtrip-barge-in-helpers.ts`](./src/roundtrip-barge-in-helpers.ts) (Vitest in `roundtrip-barge-in.test.ts`). The crate-level counterpart is `crates/vendor-sherpa-onnx/tests/tts_cancel_not_cached_test.rs`.
 
